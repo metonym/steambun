@@ -1,0 +1,129 @@
+import { isAbsolute, join } from "node:path";
+import type { HttpsOptions } from "../config/types";
+import type { Middleware } from "./middleware";
+
+const CORS_ALLOW_METHODS = "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS";
+const CORS_ALLOW_HEADERS = "Content-Type, Authorization";
+
+function withHeaders(res: Response, headers: Record<string, string>): Response {
+  const out = new Response(res.body, res);
+  for (const [key, value] of Object.entries(headers)) {
+    out.headers.set(key, value);
+  }
+  return out;
+}
+
+/**
+ * Permissive CORS middleware: allows all origins, answers `OPTIONS` preflight
+ * requests directly, and adds CORS headers to every other response.
+ *
+ * @example
+ * ```ts
+ * import { corsMiddleware, withMiddleware } from "steambun/runtime";
+ *
+ * const handler = withMiddleware([corsMiddleware()], (req) => Response.json({ ok: true }));
+ * ```
+ */
+export function corsMiddleware(): Middleware {
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": CORS_ALLOW_METHODS,
+    "Access-Control-Allow-Headers": CORS_ALLOW_HEADERS,
+  };
+  return async (req, next) => {
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+    const res = await next();
+    if (!res) return res;
+    return withHeaders(res, corsHeaders);
+  };
+}
+
+/**
+ * Adds static response headers to every request that reaches the handler.
+ *
+ * @example
+ * ```ts
+ * headersMiddleware({ "x-powered-by": "steambun" });
+ * ```
+ */
+export function headersMiddleware(headers: Record<string, string>): Middleware {
+  return async (_req, next) => {
+    const res = await next();
+    if (!res) return res;
+    return withHeaders(res, headers);
+  };
+}
+
+/**
+ * Builds the middleware chain steambun runs for every request: `server.cors`
+ * and `server.headers` first, then the user's `middleware` array.
+ *
+ * @example
+ * ```ts
+ * const chain = composeServerMiddleware({ cors: true }, config.middleware);
+ * const handler = withMiddleware(chain, apiHandler);
+ * ```
+ */
+export function composeServerMiddleware(
+  server: {
+    cors?: boolean;
+    headers?: Record<string, string>;
+  },
+  userMiddleware: unknown[] | undefined,
+): Middleware[] {
+  const extra: Middleware[] = [];
+  if (server.cors) extra.push(corsMiddleware());
+  if (server.headers) extra.push(headersMiddleware(server.headers));
+  for (const item of userMiddleware ?? []) {
+    if (typeof item === "function") extra.push(item as Middleware);
+  }
+  return extra;
+}
+
+/**
+ * Vite-shaped `server.https` (file paths) → `Bun.serve({ tls })` (file handles).
+ *
+ * @example
+ * ```ts
+ * const tls = tlsFromHttps({ key: "key.pem", cert: "cert.pem" }, process.cwd());
+ * Bun.serve({ tls, fetch: () => new Response("ok") });
+ * ```
+ */
+export function tlsFromHttps(
+  https: HttpsOptions | undefined,
+  root: string,
+): Bun.TLSOptions | undefined {
+  if (!https) return undefined;
+  const resolve = (path: string) =>
+    isAbsolute(path) ? path : join(root, path);
+  const ca = https.ca
+    ? Array.isArray(https.ca)
+      ? https.ca.map((path) => Bun.file(resolve(path)))
+      : Bun.file(resolve(https.ca))
+    : undefined;
+  return {
+    key: Bun.file(resolve(https.key)),
+    cert: Bun.file(resolve(https.cert)),
+    ...(ca ? { ca } : {}),
+    ...(https.passphrase ? { passphrase: https.passphrase } : {}),
+  };
+}
+
+/**
+ * `Bun.serve({ error })` handler: logs the error, and in production hides
+ * details behind a generic 500 (dev mode lets Bun's own overlay show it).
+ *
+ * @example
+ * ```ts
+ * Bun.serve({ error: createErrorHandler(false), fetch });
+ * ```
+ */
+export function createErrorHandler(dev: boolean) {
+  return function error(err: unknown) {
+    console.error(err);
+    if (dev) return;
+    return Response.json({ error: "Internal Server Error" }, { status: 500 });
+  };
+}

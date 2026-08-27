@@ -1,0 +1,14 @@
+{
+  "name": "example-zero-config",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "steambun dev",
+    "build": "steambun build",
+    "preview": "steambun preview"
+  },
+  "devDependencies": {
+    "steambun": "file:../.."
+  }
+}

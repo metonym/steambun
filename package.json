@@ -1,0 +1,46 @@
+{
+  "name": "steambun",
+  "version": "0.1.0",
+  "description": "A Bun-native, Vite-class dev & bundle toolkit",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "steambun": "./bin/steambun.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./runtime": "./src/runtime/index.ts",
+    "./client": {
+      "types": "./client.d.ts"
+    }
+  },
+  "files": [
+    "src",
+    "bin",
+    "client.d.ts"
+  ],
+  "workspaces": [
+    "examples/*"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write . --unsafe",
+    "knip": "knip-bun",
+    "build:package": "bun scripts/build-package.ts",
+    "bench": "bun run bench/index.ts"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.11",
+    "bun-types": "^1.4.0",
+    "knip": "^6.34.0",
+    "mitata": "^1.0.34",
+    "typescript": "^7.0.2"
+  }
+}
