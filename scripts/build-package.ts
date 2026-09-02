@@ -15,13 +15,11 @@ const pkg = JSON.parse(
   readFileSync(join(root, "package.json"), "utf8"),
 ) as Record<string, unknown>;
 
-// exports/bin/engines are already correct in the source package.json; only
+// exports/bin are already correct in the source package.json; only
 // the dev-only fields need stripping.
 delete pkg.scripts;
 delete pkg.devDependencies;
 delete pkg.workspaces;
-delete pkg.peerDependencies;
-delete pkg.peerDependenciesMeta;
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
