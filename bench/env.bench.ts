@@ -1,4 +1,4 @@
-import { bench, do_not_optimize, group } from "mitata";
+import { group, task } from "ostia";
 import {
   buildImportMetaEnvDefine,
   filterPublicEnv,
@@ -15,21 +15,17 @@ const PUBLIC_ENV: Record<string, string> = Object.fromEntries(
 );
 
 group("env/loader: startup path", () => {
-  bench("parseEnvFile (20 vars)", () => {
-    do_not_optimize(parseEnvFile(ENV_FILE_CONTENTS));
-  });
+  task("parseEnvFile (20 vars)", () => parseEnvFile(ENV_FILE_CONTENTS));
 
-  bench("filterPublicEnv (20 vars, 2 prefixes)", () => {
-    do_not_optimize(filterPublicEnv(PUBLIC_ENV, ["VITE_", "PUBLIC_"]));
-  });
+  task("filterPublicEnv (20 vars, 2 prefixes)", () =>
+    filterPublicEnv(PUBLIC_ENV, ["VITE_", "PUBLIC_"]),
+  );
 
-  bench("buildImportMetaEnvDefine (20 vars)", () => {
-    do_not_optimize(
-      buildImportMetaEnvDefine(PUBLIC_ENV, {
-        mode: "development",
-        command: "dev",
-        base: "/",
-      }),
-    );
-  });
+  task("buildImportMetaEnvDefine (20 vars)", () =>
+    buildImportMetaEnvDefine(PUBLIC_ENV, {
+      mode: "development",
+      command: "dev",
+      base: "/",
+    }),
+  );
 });

@@ -30,13 +30,13 @@
     "lint:fix": "biome check --write . --unsafe",
     "knip": "knip-bun",
     "build:package": "bun scripts/build-package.ts",
-    "bench": "bun run bench/index.ts"
+    "bench": "ostia bench bench/*.bench.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",
     "@types/bun": "^1.4.1",
     "knip": "^6.34.0",
-    "mitata": "^1.0.34",
+    "ostia": "^0.1.5",
     "typescript": "^7.0.2"
   }
 }

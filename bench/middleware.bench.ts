@@ -1,4 +1,4 @@
-import { bench, do_not_optimize, group } from "mitata";
+import { group, task } from "ostia";
 import type { Middleware } from "../src/runtime/middleware";
 import { withMiddleware } from "../src/runtime/middleware";
 
@@ -21,25 +21,12 @@ group("runtime/middleware: withMiddleware (per-request hot path)", () => {
   const five = chain(5);
   const twenty = chain(20);
 
-  bench("0 middleware", async () => {
-    do_not_optimize(await none(req));
-  });
-
-  bench("1 middleware", async () => {
-    do_not_optimize(await one(req));
-  });
-
-  bench("5 middleware", async () => {
-    do_not_optimize(await five(req));
-  });
-
-  bench("20 middleware", async () => {
-    do_not_optimize(await twenty(req));
-  });
+  task("0 middleware", () => none(req));
+  task("1 middleware", () => one(req));
+  task("5 middleware", () => five(req));
+  task("20 middleware", () => twenty(req));
 });
 
 group("runtime/middleware: withMiddleware (construction)", () => {
-  bench("build a 5-deep chain", () => {
-    do_not_optimize(chain(5));
-  });
+  task("build a 5-deep chain", () => chain(5));
 });

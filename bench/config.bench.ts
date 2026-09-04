@@ -1,4 +1,4 @@
-import { bench, do_not_optimize, group } from "mitata";
+import { group, task } from "ostia";
 import { resolveDefaults } from "../src/config/loader";
 import type { UserConfig } from "../src/config/types";
 
@@ -26,11 +26,9 @@ const realistic: UserConfig = {
 };
 
 group("config/loader: resolveDefaults (startup path)", () => {
-  bench("empty user config", () => {
-    do_not_optimize(resolveDefaults(empty, ctx));
-  });
+  task("empty user config", () => resolveDefaults(empty, ctx));
 
-  bench("realistic user config (proxy, api, plugins)", () => {
-    do_not_optimize(resolveDefaults(realistic, ctx));
-  });
+  task("realistic user config (proxy, api, plugins)", () =>
+    resolveDefaults(realistic, ctx),
+  );
 });
