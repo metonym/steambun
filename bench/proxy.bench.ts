@@ -1,4 +1,4 @@
-import { bench, do_not_optimize, group } from "mitata";
+import { group, task } from "ostia";
 import { createProxyRouteHandler } from "../src/runtime/proxy";
 
 // The proxy handler calls the global `fetch` for every forwarded request —
@@ -21,36 +21,30 @@ group("runtime/proxy: createProxyRouteHandler (per-request hot path)", () => {
     rewrite: (path) => path.replace(/^\/legacy/, ""),
   });
 
-  bench("string target, no rewrite/changeOrigin", async () => {
-    do_not_optimize(
-      await plain(
-        new Request("http://localhost:5173/api/users/42?sort=asc"),
-        fakeServer,
-      ),
-    );
-  });
+  task("string target, no rewrite/changeOrigin", () =>
+    plain(
+      new Request("http://localhost:5173/api/users/42?sort=asc"),
+      fakeServer,
+    ),
+  );
 
-  bench("object target with changeOrigin", async () => {
-    do_not_optimize(
-      await withChangeOrigin(
-        new Request("http://localhost:5173/api/users/42?sort=asc"),
-        fakeServer,
-      ),
-    );
-  });
+  task("object target with changeOrigin", () =>
+    withChangeOrigin(
+      new Request("http://localhost:5173/api/users/42?sort=asc"),
+      fakeServer,
+    ),
+  );
 
-  bench("object target with rewrite", async () => {
-    do_not_optimize(
-      await withRewrite(
-        new Request("http://localhost:5173/api/legacy/users/42?sort=asc"),
-        fakeServer,
-      ),
-    );
-  });
+  task("object target with rewrite", () =>
+    withRewrite(
+      new Request("http://localhost:5173/api/legacy/users/42?sort=asc"),
+      fakeServer,
+    ),
+  );
 });
 
 group("runtime/proxy: createProxyRouteHandler (construction)", () => {
-  bench("construct handler (string entry)", () => {
-    do_not_optimize(createProxyRouteHandler("/api", "http://localhost:4100"));
-  });
+  task("construct handler (string entry)", () =>
+    createProxyRouteHandler("/api", "http://localhost:4100"),
+  );
 });

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bench, do_not_optimize, group } from "mitata";
+import { group, task } from "ostia";
 import { createStaticHandler } from "../src/runtime/static";
 
 const outDir = mkdtempSync(join(tmpdir(), "steambun-static-bench-"));
@@ -20,16 +20,8 @@ const spaReq = new Request("http://localhost:4173/app/route");
 const missReq = new Request("http://localhost:4173/no-such-file");
 
 group("runtime/static: createStaticHandler (per-request hot path)", () => {
-  bench("file hit", async () => {
-    do_not_optimize(await spa(fileReq));
-  });
-  bench("directory-to-index", async () => {
-    do_not_optimize(await spa(dirReq));
-  });
-  bench("SPA fallback", async () => {
-    do_not_optimize(await spa(spaReq));
-  });
-  bench("404 without spa", async () => {
-    do_not_optimize(await noSpa(missReq));
-  });
+  task("file hit", () => spa(fileReq));
+  task("directory-to-index", () => spa(dirReq));
+  task("SPA fallback", () => spa(spaReq));
+  task("404 without spa", () => noSpa(missReq));
 });

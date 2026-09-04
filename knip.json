@@ -2,6 +2,9 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignoreExportsUsedInFile": true,
   "workspaces": {
+    ".": {
+      "entry": ["bench/**/*.bench.ts"]
+    },
     "examples/minimal": {
       "entry": ["src/main.ts", "steambun.config.ts"]
     },
