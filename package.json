@@ -13,13 +13,12 @@
     ".": "./src/index.ts",
     "./runtime": "./src/runtime/index.ts",
     "./client": {
-      "types": "./client.d.ts"
+      "types": "./src/client.d.ts"
     }
   },
   "files": [
     "src",
-    "bin",
-    "client.d.ts"
+    "bin"
   ],
   "workspaces": [
     "examples/*"

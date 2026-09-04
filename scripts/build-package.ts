@@ -29,7 +29,7 @@ writeFileSync(
   `${JSON.stringify(pkg, null, 2)}\n`,
 );
 
-for (const name of ["README.md", "LICENSE", "src", "bin", "client.d.ts"]) {
+for (const name of ["README.md", "LICENSE", "src", "bin"]) {
   const from = join(root, name);
   if (existsSync(from)) {
     cpSync(from, join(outDir, name), { recursive: true });
