@@ -13,7 +13,7 @@ import {
 } from "../env/loader";
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
-import { formatSize } from "../util/format";
+import { buildFileType, formatSize } from "../util/format";
 import { splitPlugins } from "../util/plugins";
 import { analyzeMetafile, checkBudgets } from "./analyze";
 import { writeDistServer } from "./dist-server";
@@ -34,7 +34,38 @@ export interface BuildOptions {
   configFile?: string;
 }
 
+const BUILD_FILE_TYPE_RANK: Record<string, number> = { html: 0, css: 1, js: 2 };
+
+/** html, then css, then js (unrecognized extensions last); ascending by size within each. */
+async function printBuildSummary(
+  outDir: string,
+  outputs: Bun.BuildArtifact[],
+): Promise<void> {
+  const rows: { name: string; size: number }[] = [];
+  for (const artifact of outputs) {
+    if (artifact.kind === "sourcemap") continue;
+    const { size } = await stat(artifact.path);
+    rows.push({ name: relative(outDir, artifact.path), size });
+  }
+  rows.sort((a, b) => {
+    const rankA = BUILD_FILE_TYPE_RANK[buildFileType(a.name) ?? ""] ?? 3;
+    const rankB = BUILD_FILE_TYPE_RANK[buildFileType(b.name) ?? ""] ?? 3;
+    return rankA - rankB || a.size - b.size;
+  });
+
+  const nameWidth = Math.max(0, ...rows.map((row) => row.name.length));
+  const sizes = rows.map((row) => formatSize(row.size));
+  const sizeWidth = Math.max(0, ...sizes.map((s) => s.length));
+
+  rows.forEach((row, i) => {
+    const name = row.name.padEnd(nameWidth);
+    const size = sizes[i]!.padStart(sizeWidth);
+    console.log(`  ${name}  ${size}`);
+  });
+}
+
 export async function build(opts: BuildOptions = {}): Promise<void> {
+  const startedAt = performance.now();
   const mode = opts.mode ?? "production";
   const config = await loadConfig({
     root: opts.root,
@@ -194,11 +225,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   }
 
   console.log(`[steambun] build complete: ${relative(config.root, outDir)}/`);
-  for (const artifact of result.outputs) {
-    if (artifact.kind === "sourcemap") continue;
-    const { size } = await stat(artifact.path);
-    console.log(`  ${relative(outDir, artifact.path)}  ${formatSize(size)}`);
-  }
+  await printBuildSummary(outDir, result.outputs);
 
   for (const hook of hooks) {
     if (hook.onBuildEnd) await hook.onBuildEnd(result.outputs);
@@ -211,6 +238,10 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   for (const hook of hooks) {
     if (hook.closeBundle) await hook.closeBundle({ outDir });
   }
+
+  const entryNames = htmlEntries.map((e) => relative(config.root, e.file));
+  const elapsed = Math.round(performance.now() - startedAt);
+  console.log(`[steambun] built ${entryNames.join(", ")} in ${elapsed}ms`);
 }
 
 async function buildCompiled(
