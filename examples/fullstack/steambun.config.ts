@@ -37,6 +37,25 @@ function logger(): Middleware {
   };
 }
 
+// A hooks plugin (as opposed to a native { name, setup } Bun plugin like
+// upperLoaderPlugin above) — participates in steambun's own lifecycle
+// instead of Bun's bundler.
+const hooksPlugin = {
+  name: "hooks-demo",
+  configResolved(config: import("steambun").ResolvedConfig) {
+    console.log(`[hooks-demo] resolved for mode=${config.mode}`);
+  },
+  configureApp(app: import("steambun/runtime").App) {
+    app.routes["/_hooks/ping"] = () => Response.json({ pong: true });
+  },
+  transformHtml(html: string) {
+    return html.replace(
+      "</head>",
+      `  <meta name="x-built-by" content="steambun" />\n  </head>`,
+    );
+  },
+};
+
 export default defineConfig({
   server: {
     port: 5177,
@@ -54,9 +73,16 @@ export default defineConfig({
   // src/api/users/[id].ts -> /api/users/:id.
   api: "./src/api",
   middleware: [logger()],
-  plugins: [tailwind, upperLoaderPlugin],
+  plugins: [tailwind, upperLoaderPlugin, hooksPlugin],
   define: {
     "import.meta.env.PUBLIC_TITLE": JSON.stringify("from steambun.config.ts"),
+  },
+  build: {
+    // Adds integrity=/crossorigin to local <script src>/<link stylesheet>
+    // tags, and writes dist/_headers.json with a Content-Security-Policy
+    // (both read by dist/server.js and steambun preview).
+    sri: true,
+    csp: "strict",
   },
   // build --compile bundles the static assets, api routes, proxy, and
   // middleware above into a single executable (bin/server).
