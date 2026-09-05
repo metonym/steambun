@@ -38,7 +38,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `steambun` / `steambun dev` | Dev server (default) |
 | `steambun build` | Production build to `build.outDir` (default `dist`) |
 | `steambun preview` | Serve the last production build |
-| `steambun analyze` | Print output file sizes, largest first |
+| `steambun analyze` | Report outputs, packages, and duplicates from the last build's metafile |
 | `steambun routes` | Print the route graph (HTML, `publicDir`, `api`, `proxy`) without starting a server |
 
 | Flag | Meaning |
@@ -48,7 +48,8 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `--mode <name>` | Mode. Default `development` for `dev`, `production` for `build` |
 | `--config <path>` | Config file (skips discovery) |
 | `--root <path>` | Project root (default: cwd) |
-| `--json` | Machine-readable output for `routes` |
+| `--json` | Machine-readable output for `analyze` and `routes` |
+| `--why <text>` | `analyze` only: print up to 3 shortest import chains from an entry to a path containing `<text>` |
 
 ## HTML entries
 
@@ -149,8 +150,13 @@ outDir = "dist"
 | `build.target` | `"browser"` for HTML | `"browser"` / `"bun"` / `"node"` |
 | `build.bytecode` | off | Only applied when `compile: true` |
 | `build.splitting` | off | `Bun.build({ splitting })`. Shared modules and `import()` become hashed chunks under `assetsDir`. Ignored for `standalone` and `compile` |
+| `build.cssChunking` | off | `Bun.build({ cssChunking })`. Only effective with multiple CSS-importing entries |
+| `build.minChunkSize` | | `Bun.build({ minChunkSize })`. Requires `build.splitting` |
+| `build.budgets` | | Glob → max size (`"250kb"`, `"1.5mb"`, or a byte count). `steambun build` fails when an output exceeds its budget (checked on raw, uncompressed size) |
 
 After JS/CSS minify, steambun collapses tag whitespace in the HTML output.
+
+`steambun build` writes `.steambun/metafile.json` (Bun's build metafile) so `steambun analyze` can report on it after the fact, without a full rebuild.
 
 ## publicDir
 
