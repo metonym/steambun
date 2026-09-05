@@ -89,6 +89,8 @@ export interface ResolveOptions {
   alias?: Record<string, string>;
   /** Accepted for Vite configs. Bun already resolves `.ts` / `.tsx` / `.js` / `.jsx` / `.json`. */
   extensions?: string[];
+  /** Shims Vite's `?raw` / `?url` / `?inline` import suffixes as a Bun plugin. Default `false`. */
+  viteSuffixes?: boolean;
 }
 
 export interface PreviewOptions {

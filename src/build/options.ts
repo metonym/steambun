@@ -7,6 +7,7 @@ import type {
 import { toBunEnvPattern, toPublicPath } from "../env/loader";
 import { createAliasPlugin } from "../util/alias";
 import { mergeFeatures } from "../util/features";
+import { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 
 export type BunMinify = boolean | MinifyObject;
 
@@ -62,13 +63,20 @@ export interface HtmlBuildConfigInput {
   outDir: string;
 }
 
-export function withAliasPlugin(
+/** Prepends steambun's own built-in plugins (alias, Vite import suffixes) ahead of the user's. */
+export function withBuiltinPlugins(
   config: ResolvedConfig,
   plugins: BunPlugin[],
 ): BunPlugin[] {
+  const builtins: BunPlugin[] = [];
   const alias = config.resolve?.alias;
-  if (!alias || Object.keys(alias).length === 0) return plugins;
-  return [createAliasPlugin(alias, config.root), ...plugins];
+  if (alias && Object.keys(alias).length > 0) {
+    builtins.push(createAliasPlugin(alias, config.root));
+  }
+  if (config.resolve?.viteSuffixes) {
+    builtins.push(createViteSuffixPlugin());
+  }
+  return [...builtins, ...plugins];
 }
 
 // bun-types 1.4.1 doesn't declare `cssChunking` on BuildConfig yet, though
@@ -91,7 +99,7 @@ export function createHtmlBuildConfig(
     outdir: outDir,
     root: config.root,
     define,
-    plugins: withAliasPlugin(config, plugins),
+    plugins: withBuiltinPlugins(config, plugins),
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,
     sourcemap: toBunSourcemap(config.build.sourcemap),
@@ -153,7 +161,7 @@ export function createCompiledBuildConfig(
   return {
     entrypoints: [prodServePath],
     define,
-    plugins: withAliasPlugin(config, plugins),
+    plugins: withBuiltinPlugins(config, plugins),
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,
     target: "bun",

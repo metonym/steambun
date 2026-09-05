@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BunPlugin, ResolvedConfig } from "../config/types";
 import { toBunEnvPattern } from "../env/loader";
-import { toBunMinify, withAliasPlugin } from "./options";
+import { toBunMinify, withBuiltinPlugins } from "./options";
 import { generateProdServeSource } from "./prod-server";
 
 /**
@@ -33,7 +33,7 @@ export async function writeDistServer(
     naming: "server.js",
     target: "bun",
     define,
-    plugins: withAliasPlugin(config, plugins),
+    plugins: withBuiltinPlugins(config, plugins),
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,
     ...(env ? { env } : {}),
