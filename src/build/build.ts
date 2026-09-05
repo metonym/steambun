@@ -18,6 +18,7 @@ import { splitPlugins } from "../util/plugins";
 import { analyzeMetafile, checkBudgets } from "./analyze";
 import { writeDistServer } from "./dist-server";
 import { minifyHtml } from "./html-minify";
+import { applyImportMap } from "./import-map";
 import { buildManifest } from "./manifest";
 import {
   createCompiledBuildConfig,
@@ -27,7 +28,7 @@ import {
 import { precompressDir } from "./precompress";
 import { generateProdServeSource } from "./prod-server";
 import type { RenameMap } from "./rename";
-import { renameArtifacts, renameMetafileOutputs } from "./rename";
+import { mergeRenames, renameArtifacts, renameMetafileOutputs } from "./rename";
 import { applySri, buildCspString, collectInlineHashes } from "./security";
 
 export interface BuildOptions {
@@ -150,7 +151,29 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     }
   }
 
-  const renames: RenameMap = new Map();
+  let renames: RenameMap = new Map();
+
+  if (config.build.importMap && !config.build.standalone && result.metafile) {
+    if (!config.build.splitting) {
+      console.warn(
+        "[steambun] build.importMap requires build.splitting; skipping.",
+      );
+    } else {
+      const base = config.base.endsWith("/") ? config.base : `${config.base}/`;
+      const r = await applyImportMap({
+        outDir,
+        base,
+        metafile: result.metafile,
+        htmlFiles: result.outputs
+          .filter((a) => a.path.endsWith(".html"))
+          .map((a) => a.path),
+      });
+      renames = mergeRenames(renames, r.renames);
+      console.log(
+        `[steambun] import map: ${r.renames.size} chunks keyed by content-independent ids`,
+      );
+    }
+  }
 
   let metafile = result.metafile;
   if (renames.size > 0 && metafile) {
