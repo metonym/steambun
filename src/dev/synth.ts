@@ -151,18 +151,12 @@ function generateServeSource(
 ${htmlImports}
 import { loadConfig } from "steambun";
 import {
-  addPublicDirRoutes,
-  composeServerMiddleware,
-  createErrorHandler,
-  createProxyRouteHandler,
-  createProxyWebSocketHandlers,
+  createApp,
   displayServerUrl,
   hostnameFromHost,
-  loadApiRoutes,
   openBrowser,
   resolveOpenUrl,
   tlsFromHttps,
-  withMiddleware,
 } from "steambun/runtime";
 
 const config = await loadConfig({
@@ -172,49 +166,19 @@ const config = await loadConfig({
   ${configFileSpecifier ? `configFile: ${JSON.stringify(config.configFile)},` : ""}
 });
 
-const middleware = composeServerMiddleware(config.server ?? {}, config.middleware);
-const routes = {
+const app = await createApp({
+  config,
+  mode: "dev",
+  htmlRoutes: {
 ${htmlRouteEntries}
-};
-
-if (config.publicDir) {
-  await addPublicDirRoutes(routes, config.publicDir);
-}
-
-let hasWsProxy = false;
-for (const [prefix, entry] of Object.entries(config.server?.proxy ?? {})) {
-  const handler = withMiddleware(middleware, createProxyRouteHandler(prefix, entry));
-  routes[prefix] = handler;
-  routes[prefix.endsWith("/") ? \`\${prefix}*\` : \`\${prefix}/*\`] = handler;
-  if (typeof entry === "object" && entry.ws) hasWsProxy = true;
-}
-
-if (config.api) {
-  const apiRoutes = await loadApiRoutes(config.api);
-  for (const [path, handler] of Object.entries(apiRoutes)) {
-    if (typeof handler === "function") {
-      routes[path] = withMiddleware(middleware, handler);
-    } else {
-      const wrapped = {};
-      for (const [method, fn] of Object.entries(handler)) {
-        wrapped[method] = withMiddleware(middleware, fn);
-      }
-      routes[path] = wrapped;
-    }
-  }
-}
+  },
+});
 
 const server = Bun.serve({
   port: config.server.port,
   hostname: hostnameFromHost(config.server.host),
-  development: { hmr: true, console: true },
-  id: "steambun-dev",
-  routes,
-  error: createErrorHandler(true),
-  idleTimeout: config.server.idleTimeout,
-  maxRequestBodySize: config.server.maxRequestBodySize,
   tls: tlsFromHttps(config.server.https, config.root),
-  ...(hasWsProxy ? { websocket: createProxyWebSocketHandlers() } : {}),
+  ...app.serveOptions,
 });
 
 const displayUrl = displayServerUrl(server.url);

@@ -2,6 +2,8 @@ export { createAliasPlugin } from "../util/alias";
 export { displayServerUrl, hostnameFromHost } from "../util/hostname";
 export { openBrowser, resolveOpenUrl } from "../util/open-browser";
 export { loadApiRoutes } from "./api-routes";
+export type { App, AppRoutes, CreateAppOptions, RouteRow } from "./app";
+export { createApp, printRouteTable } from "./app";
 export {
   composeServerMiddleware,
   corsMiddleware,
