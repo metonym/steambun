@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { escapeRegExp } from "../util/regexp";
 
 export interface StaticHandlerOptions {
   outDir: string;
@@ -31,34 +32,23 @@ interface HeadersRule {
   headers: Record<string, string>;
 }
 
-function loadHeadersRules(headersFile: string | undefined): HeadersRule[] {
-  if (!headersFile) return [];
+/** Parses a JSON file; a missing path, unreadable file, or bad JSON yields `undefined`. */
+function readJsonFile<T>(file: string | undefined): T | undefined {
+  if (!file) return undefined;
   try {
-    const raw = JSON.parse(readFileSync(headersFile, "utf8")) as Record<
-      string,
-      Record<string, string>
-    >;
-    return Object.entries(raw).map(([glob, headers]) => ({
-      matcher: new Bun.Glob(glob),
-      headers,
-    }));
+    return JSON.parse(readFileSync(file, "utf8")) as T;
   } catch {
-    return [];
+    return undefined;
   }
 }
 
-function loadChunkMap(
-  chunkMapFile: string | undefined,
-): Record<string, string> {
-  if (!chunkMapFile) return {};
-  try {
-    return JSON.parse(readFileSync(chunkMapFile, "utf8")) as Record<
-      string,
-      string
-    >;
-  } catch {
-    return {};
-  }
+function loadHeadersRules(headersFile: string | undefined): HeadersRule[] {
+  const raw = readJsonFile<Record<string, Record<string, string>>>(headersFile);
+  if (!raw) return [];
+  return Object.entries(raw).map(([glob, headers]) => ({
+    matcher: new Bun.Glob(glob),
+    headers,
+  }));
 }
 
 const ENCODING_PREFERENCE: Array<{ name: string; ext: string }> = [
@@ -210,9 +200,10 @@ export function createStaticHandler(
     base = "/",
   } = opts;
   const headersRules = loadHeadersRules(opts.headersFile);
-  const chunkMap = loadChunkMap(opts.chunkMapFile);
+  const chunkMap =
+    readJsonFile<Record<string, string>>(opts.chunkMapFile) ?? {};
   const chunkPattern = new RegExp(
-    `^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}@chunk/([a-z0-9]+)\\.js$`,
+    `^${escapeRegExp(base)}@chunk/([a-z0-9]+)\\.js$`,
   );
 
   return async (req: Request) => {

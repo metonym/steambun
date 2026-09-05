@@ -1,24 +1,21 @@
-import { existsSync } from "node:fs";
-import { rename, rm } from "node:fs/promises";
-import {
-  basename,
-  dirname,
-  join,
-  posix,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { basename, dirname, posix, resolve } from "node:path";
+import { escapeRegExp } from "../util/regexp";
 import type { RenameMap } from "./rename";
+import {
+  outPath,
+  outRel,
+  rehashedName,
+  relativeHref,
+  stripDotSlash,
+  writeRenamed,
+} from "./rename";
+
+const CHUNK_MAP_FILE = ".steambun-chunks.json";
 
 export interface ImportMapResult {
   renames: RenameMap;
   imports: Record<string, string>;
   chunkMap: Record<string, string>;
-}
-
-function stripDotSlash(path: string): string {
-  return path.startsWith("./") ? path.slice(2) : path;
 }
 
 /** Content-independent id per JS output: `Bun.hash` of the sorted input paths, base36. */
@@ -37,7 +34,7 @@ export function stableChunkIds(
 }
 
 /** Filename hash token (the `[hash]` in `name-[hash].js`) → stable id. */
-export function hashTokenIds(stable: Map<string, string>): Map<string, string> {
+function hashTokenIds(stable: Map<string, string>): Map<string, string> {
   const tokens = new Map<string, string>();
   for (const [rel, id] of stable) {
     const token = basename(rel).match(/-([a-z0-9]+)\.js$/)?.[1];
@@ -46,12 +43,8 @@ export function hashTokenIds(stable: Map<string, string>): Map<string, string> {
   return tokens;
 }
 
-export function chunkKey(base: string, id: string): string {
+function chunkKey(base: string, id: string): string {
   return `${base}@chunk/${id}.js`;
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const RELATIVE_JS_LITERAL = /(["'])(\.\.?\/[^"'\n]*?\.js)\1/g;
@@ -61,9 +54,8 @@ function resolveRelSpecifier(
   rel: string,
   spec: string,
 ): string {
-  const importerDir = dirname(join(outDir, ...rel.split("/")));
-  const targetAbs = resolve(importerDir, spec);
-  return relative(outDir, targetAbs).split(sep).join("/");
+  const importerDir = dirname(outPath(outDir, rel));
+  return outRel(outDir, resolve(importerDir, spec));
 }
 
 interface RewriteCtx {
@@ -153,12 +145,6 @@ export function rewriteChunkSource(src: string, ctx: RewriteCtx): string {
   return rewriteHelperTokens(rewriteSpecifiers(src, ctx), ctx.tokens);
 }
 
-/** New hash for rewritten content; renames `-<old>.<ext>` → `-<new>.<ext>`. */
-export function rehashedName(rel: string, text: string | Uint8Array): string {
-  const newHash = Bun.hash(text).toString(36).slice(0, 8);
-  return rel.replace(/-[a-z0-9]+(\.[^./]+)$/, `-${newHash}$1`);
-}
-
 function rewriteHref(
   href: string,
   htmlDirRel: string,
@@ -179,10 +165,7 @@ function rewriteHref(
 
   const renamed = renames.get(rel);
   if (!renamed) return null;
-  if (isAbsolute) return base + renamed;
-
-  const fromHtml = posix.relative(htmlDirRel, renamed);
-  return fromHtml.startsWith(".") ? fromHtml : `./${fromHtml}`;
+  return isAbsolute ? base + renamed : relativeHref(htmlDirRel, renamed);
 }
 
 const IMPORT_MAP_SCRIPT =
@@ -259,7 +242,7 @@ export async function injectImportMap(
   return rewriter.transform(new Response(html)).text();
 }
 
-/** Orchestrates the pure functions above on disk. Writes `outDir/.steambun-chunks.json`. */
+/** Orchestrates the pure functions above on disk. Writes `CHUNK_MAP_FILE` under `outDir`. */
 export async function applyImportMap(opts: {
   outDir: string;
   base: string;
@@ -271,60 +254,54 @@ export async function applyImportMap(opts: {
   const stable = stableChunkIds(metafile);
   const tokens = hashTokenIds(stable);
 
+  const rewritten = await Promise.all(
+    [...stable].map(async ([rel, id]) => {
+      const original = await Bun.file(outPath(outDir, rel)).text();
+      const text = rewriteChunkSource(original, {
+        rel,
+        outDir,
+        base,
+        stable,
+        tokens,
+      });
+      const newRel = rehashedName(rel, text);
+      if (newRel !== rel || text !== original) {
+        await writeRenamed(outDir, rel, newRel, text);
+      }
+      return { rel, id, newRel };
+    }),
+  );
+
   const renames: RenameMap = new Map();
   const imports: Record<string, string> = {};
   const chunkMap: Record<string, string> = {};
-
-  for (const [rel, id] of stable) {
-    const absPath = join(outDir, ...rel.split("/"));
-    const original = await Bun.file(absPath).text();
-    const rewritten = rewriteChunkSource(original, {
-      rel,
-      outDir,
-      base,
-      stable,
-      tokens,
-    });
-    const newRel = rehashedName(rel, rewritten);
-
-    if (newRel !== rel) {
-      const newAbsPath = join(outDir, ...newRel.split("/"));
-      await Bun.write(newAbsPath, rewritten);
-      await rm(absPath);
-      const mapPath = `${absPath}.map`;
-      if (existsSync(mapPath)) await rename(mapPath, `${newAbsPath}.map`);
-    } else if (rewritten !== original) {
-      await Bun.write(absPath, rewritten);
-    }
-
+  for (const { rel, id, newRel } of rewritten) {
     renames.set(rel, newRel);
     imports[chunkKey(base, id)] = base + newRel;
     chunkMap[id] = newRel;
   }
 
   let mergedExisting = false;
-  for (const htmlPath of htmlFiles) {
-    const html = await Bun.file(htmlPath).text();
-    if (IMPORT_MAP_SCRIPT.test(html)) mergedExisting = true;
-    const htmlDirRel = relative(outDir, dirname(htmlPath)).split(sep).join("/");
-    const updated = await injectImportMap(html, {
-      imports,
-      renames,
-      htmlDirRel,
-      base,
-    });
-    if (updated !== html) await Bun.write(htmlPath, updated);
-  }
+  await Promise.all(
+    htmlFiles.map(async (htmlPath) => {
+      const html = await Bun.file(htmlPath).text();
+      if (IMPORT_MAP_SCRIPT.test(html)) mergedExisting = true;
+      const updated = await injectImportMap(html, {
+        imports,
+        renames,
+        htmlDirRel: outRel(outDir, dirname(htmlPath)),
+        base,
+      });
+      if (updated !== html) await Bun.write(htmlPath, updated);
+    }),
+  );
   if (mergedExisting) {
     console.warn(
       '[steambun] build.importMap: merged into an existing <script type="importmap">.',
     );
   }
 
-  await Bun.write(
-    join(outDir, ".steambun-chunks.json"),
-    JSON.stringify(chunkMap),
-  );
+  await Bun.write(outPath(outDir, CHUNK_MAP_FILE), JSON.stringify(chunkMap));
 
   return { renames, imports, chunkMap };
 }
