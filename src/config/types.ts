@@ -67,6 +67,13 @@ export interface BuildOptions {
   cssChunking?: boolean;
   /** Maps to `Bun.build({ minChunkSize })`. Requires `splitting`. */
   minChunkSize?: number;
+  /**
+   * Rewrite chunk-to-chunk imports through an import map so an unchanged
+   * chunk keeps its URL when a dependency changes. Requires
+   * `build.splitting`; ignored (with one warning) for `standalone`. Default
+   * `false`.
+   */
+  importMap?: boolean;
   /** Encodings to precompute for files under `assetsDir` (and `publicDir` copies) larger than `precompressMinSize`. Default `false`. */
   precompress?: false | Array<"gzip" | "br" | "zstd">;
   /** Default `1024`. */

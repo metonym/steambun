@@ -311,6 +311,8 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
         immutablePrefix: `/${config.build.assetsDir}/`,
         precompressed: config.build.precompress !== false,
         headersFile: join(outDir, "_headers.json"),
+        chunkMapFile: join(outDir, ".steambun-chunks.json"),
+        base: config.base,
       }),
     );
     rows.push({

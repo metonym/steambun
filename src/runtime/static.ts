@@ -14,6 +14,16 @@ export interface StaticHandlerOptions {
    * matched against the resolved file's path, merged into the response.
    */
   headersFile?: string;
+  /**
+   * Path to `.steambun-chunks.json` (`build.importMap`'s id → renamed-file
+   * map). Read once at startup; a request for `${base}@chunk/<id>.js` (the
+   * dynamic-import preload helper's stable-id URL, which import maps don't
+   * apply to) 308-redirects to the current hashed file. Missing file or
+   * unknown id → no match / 404.
+   */
+  chunkMapFile?: string;
+  /** Path prefix requests are served under. Default `"/"`. */
+  base?: string;
 }
 
 interface HeadersRule {
@@ -34,6 +44,20 @@ function loadHeadersRules(headersFile: string | undefined): HeadersRule[] {
     }));
   } catch {
     return [];
+  }
+}
+
+function loadChunkMap(
+  chunkMapFile: string | undefined,
+): Record<string, string> {
+  if (!chunkMapFile) return {};
+  try {
+    return JSON.parse(readFileSync(chunkMapFile, "utf8")) as Record<
+      string,
+      string
+    >;
+  } catch {
+    return {};
   }
 }
 
@@ -178,11 +202,32 @@ async function buildResponse(
 export function createStaticHandler(
   opts: StaticHandlerOptions,
 ): (req: Request) => Response | Promise<Response> {
-  const { outDir, spa, immutablePrefix, precompressed = true } = opts;
+  const {
+    outDir,
+    spa,
+    immutablePrefix,
+    precompressed = true,
+    base = "/",
+  } = opts;
   const headersRules = loadHeadersRules(opts.headersFile);
+  const chunkMap = loadChunkMap(opts.chunkMapFile);
+  const chunkPattern = new RegExp(
+    `^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}@chunk/([a-z0-9]+)\\.js$`,
+  );
 
   return async (req: Request) => {
     const pathname = new URL(req.url).pathname;
+
+    const chunkMatch = pathname.match(chunkPattern);
+    if (chunkMatch) {
+      const target = chunkMap[chunkMatch[1]!];
+      if (!target) return new Response("Not Found", { status: 404 });
+      return new Response(null, {
+        status: 308,
+        headers: { location: `${base}${target}`, "cache-control": "no-cache" },
+      });
+    }
+
     const filePath = await resolvePath(outDir, pathname, spa);
     if (!filePath) {
       return new Response(req.method === "HEAD" ? null : "Not Found", {

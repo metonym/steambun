@@ -164,6 +164,7 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 | `build.splitting` | off | `Bun.build({ splitting })`. Shared modules and `import()` become hashed chunks under `assetsDir`. Ignored for `standalone` and `compile` |
 | `build.cssChunking` | off | `Bun.build({ cssChunking })`. Only effective with multiple CSS-importing entries |
 | `build.minChunkSize` | | `Bun.build({ minChunkSize })`. Requires `build.splitting` |
+| `build.importMap` | `false` | Rewrites chunk-to-chunk imports through a `<script type="importmap">` keyed by content-independent ids, so a shared-module change only re-hashes that one chunk instead of cascading through every importer. Requires `build.splitting`; ignored (with a warning) without it, and for `build.standalone`. Needs import map support in the browser (Chrome 89+, Safari 16.4+, Firefox 108+). `steambun preview` and `dist/server.js` answer the dynamic-import preload helper's `/@chunk/<id>.js` requests (which import maps don't cover) with a redirect to the current file |
 | `build.budgets` | | Glob → max size (`"250kb"`, `"1.5mb"`, or a byte count). `steambun build` fails when an output exceeds its budget (checked on raw, uncompressed size) |
 | `build.precompress` | `false` | `false` or a subset of `["gzip", "br", "zstd"]`. Writes `.gz`/`.br`/`.zst` siblings for compressible files (JS, CSS, HTML, SVG, JSON, txt, map, XML, wasm) at least `precompressMinSize` bytes, skipping a variant that doesn't beat the original by 5% |
 | `build.precompressMinSize` | `1024` | Minimum file size, in bytes, to precompress |
@@ -176,7 +177,7 @@ After JS/CSS minify, steambun collapses tag whitespace in the HTML output.
 
 `steambun build` writes `.steambun/metafile.json` (Bun's build metafile) so `steambun analyze` can report on it after the fact, without a full rebuild.
 
-`steambun preview` and `dist/server.js` serve assets under `assetsDir` with `Cache-Control: public, max-age=31536000, immutable` (they're content-hashed) and everything else with a weak `ETag` and `Cache-Control: no-cache` (304 on a matching `If-None-Match`); HTML always gets `no-cache`. When `build.precompress` produced a `.gz`/`.br`/`.zst` sibling, a matching `Accept-Encoding` serves it with `Content-Encoding` set and the original file's `Content-Type`. When `build.csp` wrote `_headers.json`, both also apply its headers to any response whose resolved file path matches one of its globs.
+`steambun preview` and `dist/server.js` serve assets under `assetsDir` with `Cache-Control: public, max-age=31536000, immutable` (they're content-hashed) and everything else with a weak `ETag` and `Cache-Control: no-cache` (304 on a matching `If-None-Match`); HTML always gets `no-cache`. When `build.precompress` produced a `.gz`/`.br`/`.zst` sibling, a matching `Accept-Encoding` serves it with `Content-Encoding` set and the original file's `Content-Type`. When `build.csp` wrote `_headers.json`, both also apply its headers to any response whose resolved file path matches one of its globs. With `build.importMap`, a shared-module change invalidates only that chunk instead of every page that imports it.
 
 ## publicDir
 
