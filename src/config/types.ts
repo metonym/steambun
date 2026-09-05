@@ -139,6 +139,12 @@ export interface UserConfig {
   /** (req, next) => Response | Promise<Response>. */
   middleware?: unknown[];
   compile?: boolean;
+  /**
+   * Bun `--feature` flags for `bun:bundle` dead-code elimination. Merges
+   * with the `STEAMBUN_FEATURES` env var (comma-separated) in `dev` and
+   * `build`. `dev` reflects only the env var — see the README.
+   */
+  features?: string[];
 }
 
 export type ConfigEnv = { command: Command; mode: Mode };

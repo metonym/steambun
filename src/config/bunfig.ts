@@ -231,6 +231,8 @@ function mapSteambunTable(raw: Record<string, unknown>): UserConfig {
   }
   if (typeof raw.api === "string") config.api = raw.api;
   if (typeof raw.compile === "boolean") config.compile = raw.compile;
+  const features = asStringArray(raw.features);
+  if (features) config.features = features;
   if (typeof raw.envDir === "string") config.envDir = raw.envDir;
   if (typeof raw.envPrefix === "string") config.envPrefix = raw.envPrefix;
   const prefixes = asStringArray(raw.envPrefix);

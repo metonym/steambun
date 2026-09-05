@@ -7,6 +7,7 @@ import {
 } from "../env/loader";
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
+import { mergeFeatures } from "../util/features";
 import { discoverHtmlEntries, discoverSkipDirs } from "./discover";
 import { synthesizeDevServer } from "./synth";
 
@@ -63,10 +64,23 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
 
   console.log(`[steambun] starting dev server (mode: ${mode})`);
 
+  // Bun's dev bundler has no `features` build option in 1.4.1, so
+  // config.build.features can't apply here — only the STEAMBUN_FEATURES env
+  // var reaches feature() in dev, via --feature= CLI args (verified: bun
+  // --hot --feature=X works; a comma-separated single flag does not — one
+  // --feature= per flag).
+  const featureFlags = mergeFeatures(undefined, process.env.STEAMBUN_FEATURES);
+
   const proc = Bun.spawn({
     // `--config <path> <script>` (space-separated) silently no-ops on Bun
     // 1.4.0 — verified empirically. `--config=<path>` is the form that works.
-    cmd: ["bun", "--hot", `--config=${bunfigPath}`, servePath],
+    cmd: [
+      "bun",
+      "--hot",
+      `--config=${bunfigPath}`,
+      ...featureFlags.map((f) => `--feature=${f}`),
+      servePath,
+    ],
     cwd: config.root,
     stdio: ["inherit", "inherit", "inherit"],
     env: { ...process.env, NODE_ENV: "development" },
