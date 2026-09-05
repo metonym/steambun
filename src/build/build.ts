@@ -24,12 +24,14 @@ import {
   createCompiledBuildConfig,
   createHtmlBuildConfig,
   shouldMinifyHtml,
+  toBunMinify,
 } from "./options";
 import { precompressDir } from "./precompress";
 import { generateProdServeSource } from "./prod-server";
 import type { RenameMap } from "./rename";
 import { mergeRenames, renameArtifacts, renameMetafileOutputs } from "./rename";
 import { applySri, buildCspString, collectInlineHashes } from "./security";
+import { extractSharedCss } from "./shared-css";
 
 export interface BuildOptions {
   root?: string;
@@ -175,6 +177,35 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     }
   }
 
+  let sharedCssResult: Awaited<ReturnType<typeof extractSharedCss>> | undefined;
+  if (config.build.sharedCss && !config.build.standalone && result.metafile) {
+    const minSize =
+      typeof config.build.sharedCss === "object"
+        ? (config.build.sharedCss.minSize ?? 2048)
+        : 2048;
+    sharedCssResult = await extractSharedCss({
+      outDir,
+      assetsDir: config.build.assetsDir,
+      base: config.base.endsWith("/") ? config.base : `${config.base}/`,
+      metafile: result.metafile,
+      minSize,
+      minify: toBunMinify(config.build.minify),
+      htmlFiles: result.outputs
+        .filter((a) => a.path.endsWith(".html"))
+        .map((a) => a.path),
+    });
+    renames = mergeRenames(renames, sharedCssResult.renames);
+    const pageCount = Object.keys(sharedCssResult.sharedByPage).length;
+    console.log(
+      `[steambun] shared css: ${sharedCssResult.sharedFiles.length} file${sharedCssResult.sharedFiles.length === 1 ? "" : "s"}, saved ${formatSize(sharedCssResult.savedBytes)} across ${pageCount} page${pageCount === 1 ? "" : "s"}`,
+    );
+    for (const skip of sharedCssResult.skipped) {
+      console.warn(
+        `[steambun] shared css: skipped ${skip.page} (${skip.reason})`,
+      );
+    }
+  }
+
   let metafile = result.metafile;
   if (renames.size > 0 && metafile) {
     metafile = renameMetafileOutputs(metafile, renames);
@@ -249,7 +280,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   }
 
   if (config.build.manifest && !config.build.standalone && metafile) {
-    const manifest = buildManifest(metafile);
+    const manifest = buildManifest(metafile, sharedCssResult?.sharedByPage);
     await writeFile(
       join(outDir, "manifest.json"),
       JSON.stringify(manifest, null, 2),

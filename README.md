@@ -162,9 +162,10 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 | `build.target` | `"browser"` for HTML | `"browser"` / `"bun"` / `"node"` |
 | `build.bytecode` | off | Only applied when `compile: true` |
 | `build.splitting` | off | `Bun.build({ splitting })`. Shared modules and `import()` become hashed chunks under `assetsDir`. Ignored for `standalone` and `compile` |
-| `build.cssChunking` | off | `Bun.build({ cssChunking })`. Only effective with multiple CSS-importing entries |
+| `build.cssChunking` | off | `Bun.build({ cssChunking })`. Bun 1.4.1 applies this to JS entrypoints only; for HTML entrypoints use `build.sharedCss` |
 | `build.minChunkSize` | | `Bun.build({ minChunkSize })`. Requires `build.splitting` |
 | `build.importMap` | `false` | Rewrites chunk-to-chunk imports through a `<script type="importmap">` keyed by content-independent ids, so a shared-module change only re-hashes that one chunk instead of cascading through every importer. Requires `build.splitting`; ignored (with a warning) without it, and for `build.standalone`. Needs import map support in the browser (Chrome 89+, Safari 16.4+, Firefox 108+). `steambun preview` and `dist/server.js` answer the dynamic-import preload helper's `/@chunk/<id>.js` requests (which import maps don't cover) with a redirect to the current file |
+| `build.sharedCss` | `false` | Extracts stylesheets used by two or more pages into `assetsDir/shared-<hash>.css` files, so a shared-CSS change only invalidates that file instead of every page's stylesheet. `{ minSize }` (default `2048`, minified bytes) is the minimum combined size worth extracting. A page whose shared block isn't a clean prefix/suffix of its own CSS (nothing in between) is left unmodified and logged as skipped. Ignored for `build.standalone` |
 | `build.budgets` | | Glob → max size (`"250kb"`, `"1.5mb"`, or a byte count). `steambun build` fails when an output exceeds its budget (checked on raw, uncompressed size) |
 | `build.precompress` | `false` | `false` or a subset of `["gzip", "br", "zstd"]`. Writes `.gz`/`.br`/`.zst` siblings for compressible files (JS, CSS, HTML, SVG, JSON, txt, map, XML, wasm) at least `precompressMinSize` bytes, skipping a variant that doesn't beat the original by 5% |
 | `build.precompressMinSize` | `1024` | Minimum file size, in bytes, to precompress |

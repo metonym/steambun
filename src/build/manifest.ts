@@ -23,9 +23,13 @@ interface MetafileOutput {
 // Bun tags every output derived from an HTML entrypoint — JS chunk, CSS
 // bundle, and the rewritten HTML file — with the same entryPoint, so outputs
 // are grouped per entrypoint first and the JS chunk is picked as the file.
-export function buildManifest(metafile: {
-  outputs: Record<string, MetafileOutput>;
-}): Manifest {
+export function buildManifest(
+  metafile: {
+    outputs: Record<string, MetafileOutput>;
+  },
+  /** entryPoint (e.g. "index.html") → extra CSS files, e.g. build.sharedCss's output. */
+  extraCss?: Record<string, string[]>,
+): Manifest {
   const groups = new Map<
     string,
     Array<{ path: string; output: MetafileOutput }>
@@ -53,7 +57,9 @@ export function buildManifest(metafile: {
       isEntry: true,
     };
     const cssBundle = outputs.find((o) => o.output.cssBundle)?.output.cssBundle;
-    if (cssBundle) chunk.css = [normalizePath(cssBundle)];
+    const css = cssBundle ? [normalizePath(cssBundle)] : [];
+    css.push(...(extraCss?.[entryPoint] ?? []).map(normalizePath));
+    if (css.length > 0) chunk.css = css;
 
     manifest[src] = chunk;
   }
