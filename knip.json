@@ -11,6 +11,17 @@
     "examples/bunfig": {
       "entry": ["index.html", "about.html", "src/main.ts", "src/about.ts"]
     },
+    "examples/multi-page": {
+      "entry": [
+        "index.html",
+        "about.html",
+        "blog.html",
+        "src/index.ts",
+        "src/about.ts",
+        "src/blog.ts",
+        "steambun.config.ts"
+      ]
+    },
     "examples/standalone": {
       "entry": ["src/main.ts", "steambun.config.ts"]
     },

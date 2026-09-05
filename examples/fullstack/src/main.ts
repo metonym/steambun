@@ -1,13 +1,14 @@
 import { api } from "steambun/client";
 import { gitSha } from "./git-sha.ts" with { type: "macro" };
 import greeting from "./greeting.upper";
+import { nav } from "./nav";
 
 const sha = gitSha();
 console.log(`steambun fullstack ${sha}`);
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
-  <nav class="mb-4"><a class="mr-4 text-blue-600 underline" href="/">index</a><a class="text-blue-600 underline" href="/about">about</a></nav>
+  ${nav("index")}
   <h1 class="text-2xl font-bold">steambun fullstack</h1>
   <p class="mb-4 text-slate-600">${import.meta.env.PUBLIC_GREETING} · ${import.meta.env.PUBLIC_TITLE} (mode: ${import.meta.env.MODE}, dev: ${import.meta.env.DEV}, ${sha})</p>
   <p class="mb-4 rounded bg-slate-900 px-3 py-1 text-white">${greeting}</p>
