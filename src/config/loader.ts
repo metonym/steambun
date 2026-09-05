@@ -15,6 +15,7 @@ import type {
   UserConfig,
   UserConfigExport,
 } from "./types";
+import { viteConfigToUserConfig } from "./vite";
 
 const STEAMBUN_CONFIG_NAMES = [
   "steambun.config.ts",
@@ -23,7 +24,14 @@ const STEAMBUN_CONFIG_NAMES = [
   "steambun.config.mjs",
 ];
 
-export type ConfigKind = "steambun" | "bunfig";
+export const VITE_CONFIG_NAMES = [
+  "vite.config.ts",
+  "vite.config.mts",
+  "vite.config.js",
+  "vite.config.mjs",
+];
+
+export type ConfigKind = "steambun" | "bunfig" | "vite";
 
 export interface FindConfigResult {
   path: string;
@@ -34,6 +42,10 @@ export function findConfigFile(root: string): FindConfigResult | null {
   for (const name of STEAMBUN_CONFIG_NAMES) {
     const path = join(root, name);
     if (existsSync(path)) return { path, kind: "steambun" };
+  }
+  for (const name of VITE_CONFIG_NAMES) {
+    const path = join(root, name);
+    if (existsSync(path)) return { path, kind: "vite" };
   }
   const bunfig = projectBunfigPath(root);
   if (existsSync(bunfig)) return { path: bunfig, kind: "bunfig" };
@@ -46,6 +58,27 @@ async function loadConfigExport(path: string): Promise<UserConfigExport> {
   const mod = await import(`${path}?t=${Date.now()}`);
   const exported: UserConfigExport = mod.default ?? {};
   return exported;
+}
+
+// Shared by steambun.config.* and vite.config.* — both export either a
+// plain object or a `(env) => config` function, per each tool's own
+// `defineConfig` convention. Exported for `steambun migrate`, which loads a
+// vite.config.* the same way before converting it.
+export async function loadRawConfigExport(
+  path: string,
+  opts: Pick<LoadConfigOptions, "command" | "mode">,
+): Promise<unknown> {
+  let exported: UserConfigExport;
+  try {
+    exported = await loadConfigExport(path);
+  } catch (err) {
+    throw new Error(
+      `[steambun] Failed to load config at ${path}: ${(err as Error).message}`,
+    );
+  }
+  return typeof exported === "function"
+    ? await exported({ command: opts.command, mode: opts.mode })
+    : exported;
 }
 
 export interface LoadConfigOptions {
@@ -97,20 +130,15 @@ export async function loadConfig(
     }
     userConfig = bunfigToUserConfig(raw);
     userConfig = await resolveBunfigModules(userConfig, raw, root);
+  } else if (found?.kind === "vite") {
+    const resolved = await loadRawConfigExport(found.path, opts);
+    userConfig = viteConfigToUserConfig(
+      (resolved as Record<string, unknown>) ?? {},
+      (msg) => console.warn(msg),
+    );
   } else if (found) {
-    let exported: UserConfigExport;
-    try {
-      exported = await loadConfigExport(found.path);
-    } catch (err) {
-      throw new Error(
-        `[steambun] Failed to load config at ${found.path}: ${(err as Error).message}`,
-      );
-    }
-    const resolved =
-      typeof exported === "function"
-        ? await exported({ command: opts.command, mode: opts.mode })
-        : exported;
-    userConfig = (resolved as UserConfig) ?? {};
+    userConfig =
+      ((await loadRawConfigExport(found.path, opts)) as UserConfig) ?? {};
   }
 
   const config = resolveDefaults(userConfig, {

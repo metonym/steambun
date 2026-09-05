@@ -5,6 +5,7 @@ import { analyzeMetafile, checkBudgets, explainImport } from "./build/analyze";
 import { build } from "./build/build";
 import { preview } from "./build/preview";
 import { loadConfig } from "./config/loader";
+import { migrate } from "./config/migrate";
 import { dev } from "./dev/dev";
 import {
   discoverHtmlEntries,
@@ -23,6 +24,7 @@ Usage:
   steambun preview         Serve the production build locally
   steambun analyze         Report a build size/dependency breakdown from the last build
   steambun routes          Print the route graph without starting a server
+  steambun migrate         Convert a vite.config.* into steambun.config.ts
 
 Flags:
 --port <n>       Port for dev/preview
@@ -165,6 +167,7 @@ export async function main(argv: string[]): Promise<void> {
     "preview",
     "analyze",
     "routes",
+    "migrate",
   ].includes(command ?? "");
   const args = isKnownCommand ? rest : argv;
   const resolvedCommand = isKnownCommand ? command! : "dev";
@@ -215,6 +218,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "routes":
       await runRoutes(root, configFile, values.mode, !!values.json);
+      return;
+    case "migrate":
+      await migrate(root ?? process.cwd());
       return;
     default:
       console.log(USAGE);

@@ -40,6 +40,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `steambun preview` | Serve the last production build |
 | `steambun analyze` | Report outputs, packages, and duplicates from the last build's metafile |
 | `steambun routes` | Print the route graph (HTML, `publicDir`, `api`, `proxy`) without starting a server |
+| `steambun migrate` | Convert a `vite.config.*` into `steambun.config.ts` (never overwrites an existing one) |
 
 | Flag | Meaning |
 | --- | --- |
@@ -127,6 +128,14 @@ outDir = "dist"
 "@" = "./src"
 ```
 
+### Migrating from Vite
+
+If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vite.config.{ts,mts,js,mjs}` and loads it (calling it with `{ command, mode }` if it exports a function), converting a static allowlist of keys: `server.{port,host,open,cors,headers,proxy,https}`, `build.{outDir,assetsDir,sourcemap,minify,manifest,target}`, `resolve.alias` (array or object form), `define`, `envPrefix`, `envDir`, `base`, `publicDir`, `appType` (`"spa"`/`"mpa"` only), and `plugins` (always warned — Vite plugins can't run under Bun's bundler). Every other key prints one `[steambun] Vite config key "..." is not supported and was ignored.` warning.
+
+`steambun migrate` writes the converted config to `steambun.config.ts` once, so you're not running against a re-parsed `vite.config.*` on every command — it never overwrites an existing steambun config.
+
+`resolve.viteSuffixes: true` shims Vite's `?raw` / `?url` / `?inline` import suffixes (`import txt from "./file.txt?raw"`) as a Bun plugin, in both `dev` and `build`.
+
 ## Server and build
 
 | Key | Default | Behavior |
@@ -143,6 +152,7 @@ outDir = "dist"
 | `preview.port` / `host` / `open` | port `4173` | Same shapes as `server.*` |
 | `base` | `"/"` | `import.meta.env.BASE_URL` and Bun `publicPath` |
 | `resolve.alias` | | Bun `onResolve` plugin in `dev` and `build` |
+| `resolve.viteSuffixes` | `false` | Shims Vite's `?raw` / `?url` / `?inline` import suffixes as a Bun plugin, in `dev` and `build` |
 | `build.outDir` | `"dist"` | Build output directory |
 | `build.assetsDir` | `"assets"` | Asset subdirectory |
 | `build.sourcemap` | `false` | `true` / `"inline"` / `"external"` |
