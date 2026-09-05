@@ -26,6 +26,8 @@ import {
 } from "./options";
 import { precompressDir } from "./precompress";
 import { generateProdServeSource } from "./prod-server";
+import type { RenameMap } from "./rename";
+import { renameArtifacts, renameMetafileOutputs } from "./rename";
 import { applySri, buildCspString, collectInlineHashes } from "./security";
 
 export interface BuildOptions {
@@ -39,7 +41,7 @@ const BUILD_FILE_TYPE_RANK: Record<string, number> = { html: 0, css: 1, js: 2 };
 /** html, then css, then js (unrecognized extensions last); ascending by size within each. */
 async function printBuildSummary(
   outDir: string,
-  outputs: Bun.BuildArtifact[],
+  outputs: Array<{ kind: Bun.BuildArtifact["kind"]; path: string }>,
 ): Promise<void> {
   const rows: { name: string; size: number }[] = [];
   for (const artifact of outputs) {
@@ -148,6 +150,18 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     }
   }
 
+  const renames: RenameMap = new Map();
+
+  let metafile = result.metafile;
+  if (renames.size > 0 && metafile) {
+    metafile = renameMetafileOutputs(metafile, renames);
+    await writeFile(
+      join(config.root, ".steambun", "metafile.json"),
+      JSON.stringify(metafile),
+      "utf8",
+    );
+  }
+
   const transformHtmlHooks = hooks.filter((h) => h.transformHtml);
   const compactHtml = shouldMinifyHtml(config.build.minify);
   const cspHashes = { script: new Set<string>(), style: new Set<string>() };
@@ -211,8 +225,8 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     }
   }
 
-  if (config.build.manifest && !config.build.standalone && result.metafile) {
-    const manifest = buildManifest(result.metafile);
+  if (config.build.manifest && !config.build.standalone && metafile) {
+    const manifest = buildManifest(metafile);
     await writeFile(
       join(outDir, "manifest.json"),
       JSON.stringify(manifest, null, 2),
@@ -224,11 +238,16 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     await writeDistServer(config, define, bunPlugins, outDir);
   }
 
+  const summaryOutputs =
+    renames.size > 0
+      ? renameArtifacts(result.outputs, renames, outDir)
+      : result.outputs;
+
   console.log(`[steambun] build complete: ${relative(config.root, outDir)}/`);
-  await printBuildSummary(outDir, result.outputs);
+  await printBuildSummary(outDir, summaryOutputs);
 
   for (const hook of hooks) {
-    if (hook.onBuildEnd) await hook.onBuildEnd(result.outputs);
+    if (hook.onBuildEnd) await hook.onBuildEnd(summaryOutputs);
   }
 
   if (config.compile) {
