@@ -182,6 +182,46 @@ describe("createHtmlBuildConfig", () => {
     expect(splittingOpts.minChunkSize).toBe(5000);
   });
 
+  test("features forwards config.features and merges STEAMBUN_FEATURES", () => {
+    const prevEnv = process.env.STEAMBUN_FEATURES;
+    try {
+      delete process.env.STEAMBUN_FEATURES;
+      const config = resolveDefaults({ features: ["a"] }, ctx("production"));
+      const opts = createHtmlBuildConfig({
+        config,
+        entrypoints: [join(config.root, "index.html")],
+        define: {},
+        plugins: [],
+        outDir: join(config.root, "dist"),
+      });
+      expect(opts.features).toEqual(["a"]);
+
+      process.env.STEAMBUN_FEATURES = "b, c";
+      const merged = createHtmlBuildConfig({
+        config,
+        entrypoints: [join(config.root, "index.html")],
+        define: {},
+        plugins: [],
+        outDir: join(config.root, "dist"),
+      });
+      expect(merged.features).toEqual(["a", "b", "c"]);
+
+      const noFeaturesConfig = resolveDefaults({}, ctx("production"));
+      delete process.env.STEAMBUN_FEATURES;
+      const noFeatures = createHtmlBuildConfig({
+        config: noFeaturesConfig,
+        entrypoints: [join(noFeaturesConfig.root, "index.html")],
+        define: {},
+        plugins: [],
+        outDir: join(noFeaturesConfig.root, "dist"),
+      });
+      expect(noFeatures.features).toBeUndefined();
+    } finally {
+      if (prevEnv === undefined) delete process.env.STEAMBUN_FEATURES;
+      else process.env.STEAMBUN_FEATURES = prevEnv;
+    }
+  });
+
   test("standalone uses compile + browser and skips hashed naming", () => {
     const config = resolveDefaults(
       { build: { standalone: true, minify: "esbuild" } },
@@ -354,5 +394,38 @@ describe("standalone HTML build", () => {
     expect(html).toContain("<style");
     expect(html).not.toContain("\n  <");
     expect(html).toContain("<!doctype html><html>");
+  });
+});
+
+describe("build.features", () => {
+  test("build() eliminates the dead branch for an enabled feature flag", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-features-"));
+    writeFileSync(
+      join(dir, "index.html"),
+      `<!doctype html><html><body><script type="module" src="./main.ts"></script></body></html>\n`,
+    );
+    writeFileSync(
+      join(dir, "main.ts"),
+      `import { feature } from "bun:bundle";
+if (feature("myflag")) {
+  console.log("FLAG_ON_BRANCH");
+} else {
+  console.log("FLAG_OFF_BRANCH");
+}
+`,
+    );
+    writeFileSync(
+      join(dir, "steambun.config.ts"),
+      `export default { features: ["myflag"], build: { server: false } };\n`,
+    );
+
+    await build({ root: dir });
+
+    const jsFile = readdirSync(join(dir, "dist", "assets")).find((f) =>
+      f.endsWith(".js"),
+    );
+    const output = await Bun.file(join(dir, "dist", "assets", jsFile!)).text();
+    expect(output).toContain("FLAG_ON_BRANCH");
+    expect(output).not.toContain("FLAG_OFF_BRANCH");
   });
 });

@@ -6,6 +6,7 @@ import type {
 } from "../config/types";
 import { toBunEnvPattern, toPublicPath } from "../env/loader";
 import { createAliasPlugin } from "../util/alias";
+import { mergeFeatures } from "../util/features";
 
 export type BunMinify = boolean | MinifyObject;
 
@@ -81,6 +82,10 @@ export function createHtmlBuildConfig(
   const standalone = config.build.standalone;
   const publicPath = toPublicPath(config.base);
   const env = toBunEnvPattern(config.envPrefix);
+  const features = mergeFeatures(
+    config.features,
+    process.env.STEAMBUN_FEATURES,
+  );
   return {
     entrypoints,
     outdir: outDir,
@@ -92,6 +97,7 @@ export function createHtmlBuildConfig(
     sourcemap: toBunSourcemap(config.build.sourcemap),
     ...(publicPath ? { publicPath } : {}),
     ...(env ? { env } : {}),
+    ...(features.length > 0 ? { features } : {}),
     ...(standalone
       ? { compile: true }
       : {
@@ -129,6 +135,10 @@ export function createCompiledBuildConfig(
 ): Bun.BuildConfig {
   const { config, prodServePath, define, plugins, outfile, assets } = input;
   const env = toBunEnvPattern(config.envPrefix);
+  const features = mergeFeatures(
+    config.features,
+    process.env.STEAMBUN_FEATURES,
+  );
   return {
     entrypoints: [prodServePath],
     define,
@@ -139,5 +149,6 @@ export function createCompiledBuildConfig(
     compile: { outfile, assets },
     ...(env ? { env } : {}),
     ...(config.build.bytecode ? { bytecode: true } : {}),
+    ...(features.length > 0 ? { features } : {}),
   };
 }
