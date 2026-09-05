@@ -61,7 +61,7 @@ export interface HtmlBuildConfigInput {
   outDir: string;
 }
 
-function withAliasPlugin(
+export function withAliasPlugin(
   config: ResolvedConfig,
   plugins: BunPlugin[],
 ): BunPlugin[] {

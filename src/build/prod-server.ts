@@ -11,9 +11,20 @@ const DEFAULT_PREVIEW_PORT = 4173;
 // The config is statically imported (not loadConfig's dynamic import(path))
 // so --compile can bundle it — a compiled binary can't resolve an external
 // path at runtime.
+export interface ProdServeOptions {
+  /**
+   * The generated file will itself live inside `outDir` (steambun build's
+   * `dist/server.js`), so `import.meta.dir` at runtime already *is* `outDir` —
+   * skip the candidate-guessing used for `.steambun/prod-serve.ts`, which
+   * runs from a different directory in preview/--compile.
+   */
+  embedOutDir?: boolean;
+}
+
 export function generateProdServeSource(
   config: ResolvedConfig,
   outDir: string,
+  opts: ProdServeOptions = {},
 ): string {
   const serveDir = `${config.root}/.steambun`;
   const outDirRelative = relative(serveDir, outDir).split(sep).join("/");
@@ -22,6 +33,13 @@ export function generateProdServeSource(
   // dropped — so try both layouts.
   const outDirBasename = basename(outDir);
   const apiBasename = config.api ? basename(config.api) : null;
+  const outDirBlock = opts.embedOutDir
+    ? `const outDir = import.meta.dir;`
+    : `const outDirCandidates = [
+  join(import.meta.dir, ${JSON.stringify(outDirRelative)}),
+  join(import.meta.dir, ${JSON.stringify(outDirBasename)}),
+];
+const outDir = outDirCandidates.find(existsSync) ?? outDirCandidates[0];`;
 
   const isToml = !!config.configFile && isTomlConfigPath(config.configFile);
   const configImport = config.configFile
@@ -55,11 +73,7 @@ import {
 } from "steambun/runtime";
 ${configImport}
 
-const outDirCandidates = [
-  join(import.meta.dir, ${JSON.stringify(outDirRelative)}),
-  join(import.meta.dir, ${JSON.stringify(outDirBasename)}),
-];
-const outDir = outDirCandidates.find(existsSync) ?? outDirCandidates[0];
+${outDirBlock}
 const port = Number(process.env.PORT ?? ${JSON.stringify(config.preview?.port ?? DEFAULT_PREVIEW_PORT)});
 
 ${rawConfigBlock}

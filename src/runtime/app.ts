@@ -239,24 +239,19 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
     if (!outDir) {
       throw new Error("[steambun] createApp preview mode requires outDir");
     }
-    const assetsDir = config.build.assetsDir;
-    // A compiled binary's embedded $bunfs filesystem can't be opened via the
-    // OS (see prod-server.ts), so the native `{ dir }` route only works
-    // outside --compile.
-    const isCompiled = import.meta.dir.startsWith("/$bunfs/");
-    if (!isCompiled) {
-      const assetsPath = `/${assetsDir}/*`;
-      routes[assetsPath] = { dir: `${outDir}/${assetsDir}` };
-      rows.push({
-        path: assetsPath,
-        kind: "static",
-        methods: ["GET"],
-        source: `${outDir}/${assetsDir}`,
-      });
-    }
+    // A single static handler covers assets, publicDir copies, and the SPA
+    // fallback — including inside a compiled binary's embedded $bunfs
+    // filesystem, which the native `{ dir }` route can't open (see
+    // prod-server.ts). immutablePrefix gives hashed assetsDir files
+    // long-lived caching without a separate route.
     routes["/*"] = withMiddleware(
       middleware,
-      createStaticHandler({ outDir, spa: config.appType === "spa" }),
+      createStaticHandler({
+        outDir,
+        spa: config.appType === "spa",
+        immutablePrefix: `/${config.build.assetsDir}/`,
+        precompressed: config.build.precompress !== false,
+      }),
     );
     rows.push({
       path: "/*",

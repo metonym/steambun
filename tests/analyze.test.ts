@@ -144,7 +144,10 @@ describe("build() with build.budgets", () => {
     );
     writeFileSync(
       join(root, "steambun.config.ts"),
-      `export default { build: { budgets: { "assets/*.js": 1 } } };\n`,
+      // build.server would try to bundle a dist server that statically
+      // imports "steambun", unresolvable from this bare fixture (no
+      // node_modules) — irrelevant to what this test checks.
+      `export default { build: { budgets: { "assets/*.js": 1 }, server: false } };\n`,
     );
 
     await expect(build({ root })).rejects.toThrow(/budget/i);
