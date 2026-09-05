@@ -74,6 +74,14 @@ export interface BuildOptions {
    * `false`.
    */
   importMap?: boolean;
+  /**
+   * Extracts stylesheets used by two or more pages into shared files under
+   * `assetsDir`, so a shared-CSS change only invalidates that file instead
+   * of every page's stylesheet. `minSize` (minified bytes, default `2048`)
+   * is the minimum combined size before a group is worth extracting.
+   * Default `false`.
+   */
+  sharedCss?: boolean | { minSize?: number };
   /** Encodings to precompute for files under `assetsDir` (and `publicDir` copies) larger than `precompressMinSize`. Default `false`. */
   precompress?: false | Array<"gzip" | "br" | "zstd">;
   /** Default `1024`. */
