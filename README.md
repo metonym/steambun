@@ -329,7 +329,8 @@ All use `bun run dev` / `build` / `preview`.
 | [`examples/bunfig`](examples/bunfig) | `bunfig.toml` only, `build.splitting` |
 | [`examples/zero-config`](examples/zero-config) | Same app, no config file |
 | [`examples/standalone`](examples/standalone) | `build.standalone: true` |
-| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a `steambun/client` fetch against the generated route types, a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, a `SteambunHooks` plugin, `build.sri`/`build.csp`, `compile: true` |
+| [`examples/multi-page`](examples/multi-page) | Three pages sharing a JS chunk and a stylesheet, `build.splitting`/`build.importMap`/`build.sharedCss` |
+| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a `steambun/client` fetch against the generated route types, a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, a `SteambunHooks` plugin, `build.sri`/`build.csp`, `build.splitting`/`build.importMap`, `compile: true` |
 
 ## Development
 

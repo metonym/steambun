@@ -83,6 +83,12 @@ export default defineConfig({
     // (both read by dist/server.js and steambun preview).
     sri: true,
     csp: "strict",
+    // splitting turns src/nav.ts (shared by main.ts and about.ts) into its
+    // own chunk; importMap keys chunk-to-chunk imports by a
+    // content-independent id, so editing nav.ts only re-hashes that one
+    // file instead of both pages' entry scripts.
+    splitting: true,
+    importMap: true,
   },
   // build --compile bundles the static assets, api routes, proxy, and
   // middleware above into a single executable (bin/server).
