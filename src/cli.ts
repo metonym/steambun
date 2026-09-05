@@ -6,6 +6,12 @@ import { build } from "./build/build";
 import { preview } from "./build/preview";
 import { loadConfig } from "./config/loader";
 import { dev } from "./dev/dev";
+import {
+  discoverHtmlEntries,
+  discoverSkipDirs,
+  htmlServePath,
+} from "./dev/discover";
+import { createApp } from "./runtime/app";
 
 const USAGE = `steambun — a Bun-native, Vite-class dev & bundle toolkit
 
@@ -14,6 +20,7 @@ Usage:
   steambun build           Build for production
   steambun preview         Serve the production build locally
   steambun analyze         Report output file sizes from the last build
+  steambun routes          Print the route graph without starting a server
 
 Flags:
 --port <n>       Port for dev/preview
@@ -21,6 +28,7 @@ Flags:
   --mode <name>    Set mode (default: development for dev, production for build)
   --config <path>  Explicit config file path
   --root <path>    Project root (default: cwd)
+  --json           Machine-readable output (routes)
 `;
 
 function commonOptions() {
@@ -30,6 +38,7 @@ function commonOptions() {
     mode: { type: "string" as const },
     config: { type: "string" as const },
     root: { type: "string" as const },
+    json: { type: "boolean" as const },
     help: { type: "boolean" as const, short: "h" },
   };
 }
@@ -84,11 +93,43 @@ async function runAnalyze(root: string, configFile?: string) {
   console.log(`  ${formatSize(total).padStart(9)}  total`);
 }
 
+async function runRoutes(
+  root: string | undefined,
+  configFile: string | undefined,
+  mode: string | undefined,
+  json: boolean,
+): Promise<void> {
+  const config = await loadConfig({
+    root,
+    command: "dev",
+    mode: mode ?? "development",
+    configFile,
+  });
+  const htmlEntries = await discoverHtmlEntries(config.root, {
+    skipDirs: discoverSkipDirs(config),
+  });
+  const htmlRoutes: Record<string, unknown> = {};
+  for (const entry of htmlEntries) {
+    htmlRoutes[htmlServePath(entry, config.appType)] = {};
+  }
+  const app = await createApp({ config, mode: "dev", htmlRoutes });
+  const rows = app.routeTable();
+  if (json) {
+    console.log(JSON.stringify(rows, null, 2));
+  } else {
+    console.log(Bun.inspect.table(rows));
+  }
+}
+
 export async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
-  const isKnownCommand = ["dev", "build", "preview", "analyze"].includes(
-    command ?? "",
-  );
+  const isKnownCommand = [
+    "dev",
+    "build",
+    "preview",
+    "analyze",
+    "routes",
+  ].includes(command ?? "");
   const args = isKnownCommand ? rest : argv;
   const resolvedCommand = isKnownCommand ? command! : "dev";
 
@@ -130,6 +171,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "analyze":
       await runAnalyze(root ?? process.cwd(), configFile);
+      return;
+    case "routes":
+      await runRoutes(root, configFile, values.mode, !!values.json);
       return;
     default:
       console.log(USAGE);

@@ -39,6 +39,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `steambun build` | Production build to `build.outDir` (default `dist`) |
 | `steambun preview` | Serve the last production build |
 | `steambun analyze` | Print output file sizes, largest first |
+| `steambun routes` | Print the route graph (HTML, `publicDir`, `api`, `proxy`) without starting a server |
 
 | Flag | Meaning |
 | --- | --- |
@@ -47,6 +48,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `--mode <name>` | Mode. Default `development` for `dev`, `production` for `build` |
 | `--config <path>` | Config file (skips discovery) |
 | `--root <path>` | Project root (default: cwd) |
+| `--json` | Machine-readable output for `routes` |
 
 ## HTML entries
 
