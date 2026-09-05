@@ -176,6 +176,8 @@ import {
   tlsFromHttps,
 } from "steambun/runtime";
 
+const startedAt = performance.now();
+
 const config = await loadConfig({
   root: ${JSON.stringify(config.root)},
   command: "dev",
@@ -199,7 +201,8 @@ const server = Bun.serve({
 });
 
 const displayUrl = displayServerUrl(server.url);
-console.log(\`[steambun] dev server ready at \${displayUrl}\`);
+const elapsed = Math.round(performance.now() - startedAt);
+console.log(\`[steambun] dev server ready at \${displayUrl} in \${elapsed}ms\`);
 const openUrl = resolveOpenUrl(displayUrl, config.server.open);
 if (openUrl) openBrowser(openUrl);
 `;
