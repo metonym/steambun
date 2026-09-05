@@ -1,3 +1,5 @@
+import type { App } from "../runtime/app";
+
 export type Command = "dev" | "build" | "preview";
 export type Mode = string;
 export type AppType = "spa" | "mpa";
@@ -90,11 +92,26 @@ export interface PreviewOptions {
 export type BunPlugin = globalThis.Bun.BunPlugin;
 
 export interface SteambunHooks {
+  name?: string;
+  /** Runs at the end of `loadConfig`, once per hook plugin. */
+  configResolved?: (config: ResolvedConfig) => void | Promise<void>;
+  /** Runs at the end of `createApp`, before `serveOptions` is frozen — add routes/middleware. */
+  configureApp?: (
+    app: App,
+    ctx: { mode: "dev" | "preview" },
+  ) => void | Promise<void>;
+  /** Runs before `Bun.build()` for the HTML entries. */
+  buildStart?: (ctx: {
+    config: ResolvedConfig;
+    entrypoints: string[];
+  }) => void | Promise<void>;
   transformHtml?: (
     html: string,
     ctx: { path: string },
   ) => string | Promise<string>;
   onBuildEnd?: (artifacts: unknown) => void | Promise<void>;
+  /** Runs after `build()` finishes writing `outDir` (after `onBuildEnd`). */
+  closeBundle?: (ctx: { outDir: string }) => void | Promise<void>;
 }
 
 export type Plugin = BunPlugin | SteambunHooks;

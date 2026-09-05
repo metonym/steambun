@@ -1,5 +1,6 @@
 import { relative } from "node:path";
 import type { ResolvedConfig } from "../config/types";
+import { splitPlugins } from "../util/plugins";
 import { loadApiModules } from "./api-routes";
 import { composeServerMiddleware, createErrorHandler } from "./http";
 import type { Middleware, RouteHandler } from "./middleware";
@@ -319,8 +320,30 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
     });
   }
 
-  const serveOptions = {
+  const app: App = {
     routes,
+    middleware,
+    // Placeholder — computed below from app.routes/app.middleware after
+    // configureApp hooks run, so a hook that adds a route sees it served.
+    serveOptions: {} as App["serveOptions"],
+    async fetch(req: Request): Promise<Response> {
+      const pathname = new URL(req.url).pathname;
+      const matched = matchRoute(app.routes, pathname);
+      if (!matched) return new Response("Not Found", { status: 404 });
+      return dispatch(matched.value, req, matched.params);
+    },
+    routeTable(): RouteRow[] {
+      return [...rows].sort((a, b) => a.path.localeCompare(b.path));
+    },
+  };
+
+  const { hooks } = splitPlugins(config.plugins ?? []);
+  for (const hook of hooks) {
+    if (hook.configureApp) await hook.configureApp(app, { mode });
+  }
+
+  app.serveOptions = {
+    routes: app.routes,
     error: createErrorHandler(mode === "dev"),
     idleTimeout: config.server.idleTimeout,
     maxRequestBodySize: config.server.maxRequestBodySize,
@@ -332,18 +355,5 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
       : {}),
   } as unknown as App["serveOptions"];
 
-  return {
-    routes,
-    middleware,
-    serveOptions,
-    async fetch(req: Request): Promise<Response> {
-      const pathname = new URL(req.url).pathname;
-      const matched = matchRoute(routes, pathname);
-      if (!matched) return new Response("Not Found", { status: 404 });
-      return dispatch(matched.value, req, matched.params);
-    },
-    routeTable(): RouteRow[] {
-      return [...rows].sort((a, b) => a.path.localeCompare(b.path));
-    },
-  };
+  return app;
 }

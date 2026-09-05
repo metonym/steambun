@@ -73,10 +73,15 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     ...(config.plugins ?? []),
   ]);
 
+  const entrypoints = htmlEntries.map((e) => e.file);
+  for (const hook of hooks) {
+    if (hook.buildStart) await hook.buildStart({ config, entrypoints });
+  }
+
   const result = await Bun.build(
     createHtmlBuildConfig({
       config,
-      entrypoints: htmlEntries.map((e) => e.file),
+      entrypoints,
       define,
       plugins: bunPlugins,
       outDir,
@@ -170,6 +175,10 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
 
   if (config.compile) {
     await buildCompiled(config, define, bunPlugins, outDir);
+  }
+
+  for (const hook of hooks) {
+    if (hook.closeBundle) await hook.closeBundle({ outDir });
   }
 }
 

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { isSteambunHooks } from "../util/plugins";
 import {
   bunfigToUserConfig,
   isTomlConfigPath,
@@ -112,12 +113,20 @@ export async function loadConfig(
     userConfig = (resolved as UserConfig) ?? {};
   }
 
-  return resolveDefaults(userConfig, {
+  const config = resolveDefaults(userConfig, {
     root,
     command: opts.command,
     mode: opts.mode,
     configFile: found?.path ?? null,
   });
+
+  for (const plugin of config.plugins ?? []) {
+    if (isSteambunHooks(plugin) && plugin.configResolved) {
+      await plugin.configResolved(config);
+    }
+  }
+
+  return config;
 }
 
 function resolveRoot(root: string): string {

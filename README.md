@@ -253,6 +253,19 @@ const link = href("/api/users/:id", { id: "42" }); // "/api/users/42"
 
 Bun `onResolve` / `onLoad` plugins in `plugins` run in `dev` and `build`. Macros (`import { foo } from "./foo.ts" with { type: "macro" }`) run at bundle time. There is no steambun config key for macros.
 
+A `plugins` entry with no `setup` is instead treated as a **steambun hooks** object — a plain `{ name?, ...hooks }` for participating in steambun's own lifecycle rather than Bun's bundler:
+
+| Hook | When | Signature |
+| --- | --- | --- |
+| `configResolved` | End of `loadConfig`, once per hook plugin | `(config: ResolvedConfig) => void \| Promise<void>` |
+| `configureApp` | End of `createApp`, before `serveOptions` is built | `(app: App, ctx: { mode: "dev" \| "preview" }) => void \| Promise<void>` |
+| `buildStart` | Before `Bun.build()` for the HTML entries | `(ctx: { config: ResolvedConfig; entrypoints: string[] }) => void \| Promise<void>` |
+| `transformHtml` | After the build, per output HTML file | `(html: string, ctx: { path: string }) => string \| Promise<string>` |
+| `onBuildEnd` | After outputs are written | `(artifacts: unknown) => void \| Promise<void>` |
+| `closeBundle` | End of `build()`, after `--compile` if enabled | `(ctx: { outDir: string }) => void \| Promise<void>` |
+
+A plugin object matching neither a Bun plugin (`setup`) nor any hook key throws `[steambun] Unrecognized plugin at index N` — catches a typo'd hook name instead of silently no-op'ing.
+
 ## Programmatic API
 
 `dev`, `build`, and `preview` are exported from `"steambun"` alongside `defineConfig` and `loadConfig`, for tooling that wants to drive steambun without the CLI.
