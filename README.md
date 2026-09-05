@@ -136,7 +136,7 @@ outDir = "dist"
 | `server.cors` | `false` | CORS middleware |
 | `server.headers` | | Extra response headers |
 | `server.https` | | `{ key, cert, ca?, passphrase? }` paths, resolved against `root`. Maps to `Bun.serve({ tls })` |
-| `server.idleTimeout` | Bun default (10s) | Seconds of inactivity before Bun closes the connection. For SSE, call `server.timeout(req, 0)` in the handler |
+| `server.idleTimeout` | Bun default (10s) | Seconds of inactivity before Bun closes the connection. `text/event-stream` responses are exempted automatically — see [Server-Sent Events](#server-sent-events) |
 | `server.maxRequestBodySize` | Bun default (128MB) | Max request body in bytes |
 | `preview.port` / `host` / `open` | port `4173` | Same shapes as `server.*` |
 | `base` | `"/"` | `import.meta.env.BASE_URL` and Bun `publicPath` |
@@ -196,6 +196,26 @@ Set `api` to a directory (for example `"./src/api"`). Each file becomes a `Bun.s
 
 Frontend HMR and `bun --hot` reload API modules together.
 
+### WebSocket routes
+
+Export `websocket` alongside (or instead of) the HTTP methods and the route becomes a WebSocket endpoint too:
+
+```ts
+// src/api/chat/[room].ts
+export const websocket = {
+  open(ws) { ws.subscribe(ws.data.params.room); },
+  message(ws, msg) { ws.publish(ws.data.params.room, msg); },
+  close(ws) {},
+};
+export const GET = (req) => Response.json({ room: req.params.room }); // optional
+```
+
+`ws.data.params` carries the route's `:param` values, same as `req.params`. Middleware still runs first — a middleware `Response` (401, etc.) blocks the upgrade. A request without an `Upgrade` header falls through to `GET` if present, else `426`. Bun allows exactly one server-level `websocket` handler; steambun merges file-based WebSocket routes and `server.proxy`'s `ws: true` connections into it automatically.
+
+### Server-Sent Events
+
+A response with `Content-Type: text/event-stream` automatically gets `server.timeout(req, 0)` so Bun's idle timeout doesn't cut the stream — no manual call needed.
+
 ## Middleware
 
 `middleware: [auth()]` is `(req, next) => Response`. It wraps API routes and proxy entries. In `bunfig.toml`, use specifiers: `middleware = ["./src/auth.ts"]`.
@@ -233,7 +253,7 @@ All use `bun run dev` / `build` / `preview`.
 | [`examples/bunfig`](examples/bunfig) | `bunfig.toml` only, `build.splitting` |
 | [`examples/zero-config`](examples/zero-config) | Same app, no config file |
 | [`examples/standalone`](examples/standalone) | `build.standalone: true` |
-| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, `compile: true` |
+| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, `compile: true` |
 
 ## Development
 

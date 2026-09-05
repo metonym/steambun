@@ -17,3 +17,5 @@ export { createProxyRouteHandler, createProxyWebSocketHandlers } from "./proxy";
 export { addPublicDirRoutes } from "./public-dir";
 export type { StaticHandlerOptions } from "./static";
 export { createStaticHandler } from "./static";
+export type { WebSocketRouteHandlers, WsRouteData } from "./ws-routes";
+export { createWsRouter } from "./ws-routes";

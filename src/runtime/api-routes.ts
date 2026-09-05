@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
+import type { WebSocketRouteHandlers } from "./ws-routes";
 
 const HTTP_METHODS = [
   "GET",
@@ -71,6 +72,51 @@ function handlerFromModule(mod: Record<string, unknown>): unknown | null {
   return null;
 }
 
+function isWebSocketRouteHandlers(
+  value: unknown,
+): value is WebSocketRouteHandlers {
+  if (!value || typeof value !== "object") return false;
+  const handlers = value as Record<string, unknown>;
+  return (
+    typeof handlers.open === "function" ||
+    typeof handlers.message === "function" ||
+    typeof handlers.close === "function"
+  );
+}
+
+export interface ApiModules {
+  routes: Record<string, unknown>;
+  websockets: Map<string, WebSocketRouteHandlers>;
+}
+
+/**
+ * Loads every file under `apiDir` into HTTP route handlers and, for files
+ * exporting `websocket`, a map of route path → WebSocket handlers. Backs
+ * both {@link loadApiRoutes} (HTTP only) and `createApp`'s WebSocket wiring.
+ */
+export async function loadApiModules(apiDir: string): Promise<ApiModules> {
+  const files = await collectFiles(apiDir);
+  const routes: Record<string, unknown> = {};
+  const websockets = new Map<string, WebSocketRouteHandlers>();
+
+  for (const file of files) {
+    const rel = relative(apiDir, file).split(sep).join("/");
+    const paths = fileToApiPaths(rel);
+    const mod = (await import(file)) as Record<string, unknown>;
+
+    const handler = handlerFromModule(mod);
+    if (handler) {
+      for (const path of paths) routes[path] = handler;
+    }
+
+    if (isWebSocketRouteHandlers(mod.websocket)) {
+      for (const path of paths) websockets.set(path, mod.websocket);
+    }
+  }
+
+  return { routes, websockets };
+}
+
 /**
  * Named HTTP-method exports (GET/POST/...) map to per-method handlers; a
  * default export handles all methods. `[id]` / `[...slug]` / `[[...slug]]`
@@ -88,17 +134,5 @@ function handlerFromModule(mod: Record<string, unknown>): unknown | null {
 export async function loadApiRoutes(
   apiDir: string,
 ): Promise<Record<string, unknown>> {
-  const files = await collectFiles(apiDir);
-  const routes: Record<string, unknown> = {};
-
-  for (const file of files) {
-    const rel = relative(apiDir, file).split(sep).join("/");
-    const paths = fileToApiPaths(rel);
-    const mod = (await import(file)) as Record<string, unknown>;
-    const handler = handlerFromModule(mod);
-    if (!handler) continue;
-    for (const path of paths) routes[path] = handler;
-  }
-
-  return routes;
+  return (await loadApiModules(apiDir)).routes;
 }
