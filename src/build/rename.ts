@@ -1,7 +1,56 @@
-import { join, relative, sep } from "node:path";
+import { rename, rm } from "node:fs/promises";
+import { join, posix, relative, sep } from "node:path";
 
 /** Old rel path from outDir ("/"-separated) → new rel path. */
 export type RenameMap = Map<string, string>;
+
+/** Strips the `./` prefix Bun's metafile puts on output paths. */
+export function stripDotSlash(path: string): string {
+  return path.startsWith("./") ? path.slice(2) : path;
+}
+
+/** "/"-separated path relative to `outDir` → filesystem path. */
+export function outPath(outDir: string, rel: string): string {
+  return join(outDir, ...rel.split("/"));
+}
+
+/** Filesystem path → "/"-separated path relative to `outDir`. */
+export function outRel(outDir: string, path: string): string {
+  return relative(outDir, path).split(sep).join("/");
+}
+
+/** `rel` as an href from the HTML file's directory, always `./`- or `../`-prefixed. */
+export function relativeHref(htmlDirRel: string, rel: string): string {
+  const fromHtml = posix.relative(htmlDirRel, rel);
+  return fromHtml.startsWith(".") ? fromHtml : `./${fromHtml}`;
+}
+
+/** New hash for rewritten content; renames `-<old>.<ext>` → `-<new>.<ext>`. */
+export function rehashedName(rel: string, text: string | Uint8Array): string {
+  const newHash = Bun.hash(text).toString(36).slice(0, 8);
+  return rel.replace(/-[a-z0-9]+(\.[^./]+)$/, `-${newHash}$1`);
+}
+
+/**
+ * Writes `content` to `newRel`. When the name changed, removes the old file
+ * and moves its `.map` sidecar (if any) alongside the new one.
+ */
+export async function writeRenamed(
+  outDir: string,
+  rel: string,
+  newRel: string,
+  content: string,
+): Promise<void> {
+  const newPath = outPath(outDir, newRel);
+  await Bun.write(newPath, content);
+  if (newRel === rel) return;
+
+  const oldPath = outPath(outDir, rel);
+  await rm(oldPath);
+  await rename(`${oldPath}.map`, `${newPath}.map`).catch((err) => {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  });
+}
 
 /** Composes two rename passes: apply `a` then `b` (`b`'s keys are `a`'s values). */
 export function mergeRenames(a: RenameMap, b: RenameMap): RenameMap {
@@ -19,10 +68,6 @@ export function mergeRenames(a: RenameMap, b: RenameMap): RenameMap {
   }
 
   return merged;
-}
-
-function stripDotSlash(path: string): string {
-  return path.startsWith("./") ? path.slice(2) : path;
 }
 
 function renameRef(path: string, renames: RenameMap): string {
@@ -81,11 +126,10 @@ export function renameArtifacts(
   outDir: string,
 ): Array<{ kind: Bun.BuildArtifact["kind"]; path: string }> {
   return outputs.map((artifact) => {
-    const rel = relative(outDir, artifact.path).split(sep).join("/");
-    const renamed = renames.get(rel);
+    const renamed = renames.get(outRel(outDir, artifact.path));
     return {
       kind: artifact.kind,
-      path: renamed ? join(outDir, renamed) : artifact.path,
+      path: renamed ? outPath(outDir, renamed) : artifact.path,
     };
   });
 }

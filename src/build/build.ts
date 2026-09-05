@@ -154,6 +154,10 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   }
 
   let renames: RenameMap = new Map();
+  const base = config.base.endsWith("/") ? config.base : `${config.base}/`;
+  const htmlFiles = result.outputs
+    .filter((a) => a.path.endsWith(".html"))
+    .map((a) => a.path);
 
   if (config.build.importMap && !config.build.standalone && result.metafile) {
     if (!config.build.splitting) {
@@ -161,14 +165,11 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
         "[steambun] build.importMap requires build.splitting; skipping.",
       );
     } else {
-      const base = config.base.endsWith("/") ? config.base : `${config.base}/`;
       const r = await applyImportMap({
         outDir,
         base,
         metafile: result.metafile,
-        htmlFiles: result.outputs
-          .filter((a) => a.path.endsWith(".html"))
-          .map((a) => a.path),
+        htmlFiles,
       });
       renames = mergeRenames(renames, r.renames);
       console.log(
@@ -186,13 +187,11 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     sharedCssResult = await extractSharedCss({
       outDir,
       assetsDir: config.build.assetsDir,
-      base: config.base.endsWith("/") ? config.base : `${config.base}/`,
+      base,
       metafile: result.metafile,
       minSize,
       minify: toBunMinify(config.build.minify),
-      htmlFiles: result.outputs
-        .filter((a) => a.path.endsWith(".html"))
-        .map((a) => a.path),
+      htmlFiles,
     });
     renames = mergeRenames(renames, sharedCssResult.renames);
     const pageCount = Object.keys(sharedCssResult.sharedByPage).length;

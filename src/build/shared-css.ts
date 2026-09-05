@@ -1,9 +1,14 @@
-import { existsSync } from "node:fs";
-import { rename, rm } from "node:fs/promises";
-import { dirname, join, posix, relative, sep } from "node:path";
-import { rehashedName } from "./import-map";
+import { dirname } from "node:path";
 import type { BunMinify } from "./options";
 import type { RenameMap } from "./rename";
+import {
+  outPath,
+  outRel,
+  rehashedName,
+  relativeHref,
+  stripDotSlash,
+  writeRenamed,
+} from "./rename";
 
 export interface CssGroup {
   /** Sorted page list, joined. */
@@ -15,10 +20,6 @@ export interface CssGroup {
 }
 
 export type LinkPosition = "before" | "after";
-
-function stripDotSlash(path: string): string {
-  return path.startsWith("./") ? path.slice(2) : path;
-}
 
 /** Groups CSS source inputs by the exact set of pages that include them; drops single-page groups. */
 export function groupSharedCssInputs(metafile: Bun.BuildMetafile): CssGroup[] {
@@ -85,7 +86,7 @@ function sharedLinkTag(href: string): string {
  * `<link>` for each shared file before/after it, preserving `shared`'s
  * order. Pure.
  */
-export async function insertSharedLinks(
+async function insertSharedLinks(
   html: string,
   opts: {
     pageCssHref: string;
@@ -112,9 +113,7 @@ export async function insertSharedLinks(
 }
 
 function toHref(htmlDirRel: string, rel: string, base: string): string {
-  if (base !== "/") return base + rel;
-  const fromHtml = posix.relative(htmlDirRel, rel);
-  return fromHtml.startsWith(".") ? fromHtml : `./${fromHtml}`;
+  return base === "/" ? relativeHref(htmlDirRel, rel) : base + rel;
 }
 
 async function buildSharedText(
@@ -215,20 +214,22 @@ export async function extractSharedCss(opts: {
     }
   }
 
+  const texts = await Promise.all(
+    groups.map((group) => buildSharedText(group.inputs, minify)),
+  );
   const resolved: ResolvedGroup[] = [];
-  for (const group of groups) {
-    const text = await buildSharedText(group.inputs, minify);
+  for (const [i, group] of groups.entries()) {
+    const text = texts[i]!;
     if (Buffer.byteLength(text) < minSize) continue;
     const hash = Bun.hash(text).toString(36).slice(0, 8);
     const rel = `${assetsDir}/shared-${hash}.css`;
-    await Bun.write(join(outDir, ...rel.split("/")), text);
+    await Bun.write(outPath(outDir, rel), text);
     sharedFiles.push(rel);
     resolved.push({ group, text, rel });
   }
 
   for (const htmlPath of htmlFiles) {
-    const outputRel = relative(outDir, htmlPath).split(sep).join("/");
-    const page = entryPointByHtmlOutput.get(outputRel);
+    const page = entryPointByHtmlOutput.get(outRel(outDir, htmlPath));
     if (!page) continue;
     const cssRel = cssRelByPage.get(page);
     if (!cssRel) continue;
@@ -236,8 +237,7 @@ export async function extractSharedCss(opts: {
     const applicable = resolved.filter((rg) => rg.group.pages.includes(page));
     if (applicable.length === 0) continue;
 
-    const absCssPath = join(outDir, ...cssRel.split("/"));
-    const original = await Bun.file(absCssPath).text();
+    const original = await Bun.file(outPath(outDir, cssRel)).text();
 
     let rest = original;
     const cuts: Array<{ rel: string; text: string; position: LinkPosition }> =
@@ -269,18 +269,9 @@ export async function extractSharedCss(opts: {
 
     const newCssRel = rehashedName(cssRel, rest);
     renames.set(cssRel, newCssRel);
-    if (newCssRel !== cssRel) {
-      await Bun.write(join(outDir, ...newCssRel.split("/")), rest);
-      await rm(absCssPath);
-      const mapPath = `${absCssPath}.map`;
-      if (existsSync(mapPath)) {
-        await rename(mapPath, `${join(outDir, ...newCssRel.split("/"))}.map`);
-      }
-    } else {
-      await Bun.write(absCssPath, rest);
-    }
+    await writeRenamed(outDir, cssRel, newCssRel, rest);
 
-    const htmlDirRel = relative(outDir, dirname(htmlPath)).split(sep).join("/");
+    const htmlDirRel = outRel(outDir, dirname(htmlPath));
     const html = await Bun.file(htmlPath).text();
     const updated = await insertSharedLinks(html, {
       pageCssHref: toHref(htmlDirRel, cssRel, base),
