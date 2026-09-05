@@ -84,6 +84,22 @@ function isWebSocketRouteHandlers(
   );
 }
 
+export interface ApiFileEntry {
+  file: string;
+  paths: string[];
+}
+
+/** Every route file under `apiDir` with the paths it maps to, without importing it. */
+export async function listApiFileEntries(
+  apiDir: string,
+): Promise<ApiFileEntry[]> {
+  const files = await collectFiles(apiDir);
+  return files.map((file) => {
+    const rel = relative(apiDir, file).split(sep).join("/");
+    return { file, paths: fileToApiPaths(rel) };
+  });
+}
+
 export interface ApiModules {
   routes: Record<string, unknown>;
   websockets: Map<string, WebSocketRouteHandlers>;
@@ -95,13 +111,11 @@ export interface ApiModules {
  * both {@link loadApiRoutes} (HTTP only) and `createApp`'s WebSocket wiring.
  */
 export async function loadApiModules(apiDir: string): Promise<ApiModules> {
-  const files = await collectFiles(apiDir);
+  const entries = await listApiFileEntries(apiDir);
   const routes: Record<string, unknown> = {};
   const websockets = new Map<string, WebSocketRouteHandlers>();
 
-  for (const file of files) {
-    const rel = relative(apiDir, file).split(sep).join("/");
-    const paths = fileToApiPaths(rel);
+  for (const { file, paths } of entries) {
     const mod = (await import(file)) as Record<string, unknown>;
 
     const handler = handlerFromModule(mod);

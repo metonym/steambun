@@ -11,6 +11,7 @@ import {
   discoverSkipDirs,
   htmlServePath,
 } from "./dev/discover";
+import { writeRoutesDts } from "./routes-dts";
 import { createApp } from "./runtime/app";
 import { formatSize } from "./util/format";
 
@@ -146,6 +147,7 @@ async function runRoutes(
   for (const entry of htmlEntries) {
     htmlRoutes[htmlServePath(entry, config.appType)] = {};
   }
+  await writeRoutesDts(config.root, config.api, htmlEntries, config.appType);
   const app = await createApp({ config, mode: "dev", htmlRoutes });
   const rows = app.routeTable();
   if (json) {

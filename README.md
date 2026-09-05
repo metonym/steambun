@@ -216,6 +216,31 @@ export const GET = (req) => Response.json({ room: req.params.room }); // optiona
 
 A response with `Content-Type: text/event-stream` automatically gets `server.timeout(req, 0)` so Bun's idle timeout doesn't cut the stream — no manual call needed.
 
+### Typed API client
+
+`dev` and `build` (and `steambun routes`) write `.steambun/routes.d.ts`: every API route path with its `:param` names and a `typeof import(...)` reference to its module, plus every page path. It augments ambient types in `"steambun/client"` — no manual wiring needed, just make sure `.steambun/` is reachable by `tsc` (it is by default).
+
+Wrap a handler in `route()` (from `"steambun/runtime"`) so its return value becomes `Response.json(...)` and its real type flows through to the client:
+
+```ts
+// src/api/users/[id].ts
+import { route } from "steambun/runtime";
+
+export const GET = route(({ params }) => ({ id: params.id }));
+```
+
+```ts
+// anywhere on the client
+import { api, href } from "steambun/client";
+
+const user = await api("get", "/api/users/:id", { params: { id: "42" } });
+//    ^? { id: string } — inferred from the route() handler above
+
+const link = href("/api/users/:id", { id: "42" }); // "/api/users/42"
+```
+
+`api(method, path, { params?, query?, body?, init? })` substitutes `:param` segments, JSON-encodes `body`, prefixes `import.meta.env.BASE_URL`, and throws a `SteambunApiError` (`status`, `body`) on a non-2xx response. Without `route()`, a handler returning a bare `Response` types as `unknown` — parse it yourself.
+
 ## Middleware
 
 `middleware: [auth()]` is `(req, next) => Response`. It wraps API routes and proxy entries. In `bunfig.toml`, use specifiers: `middleware = ["./src/auth.ts"]`.
@@ -253,7 +278,7 @@ All use `bun run dev` / `build` / `preview`.
 | [`examples/bunfig`](examples/bunfig) | `bunfig.toml` only, `build.splitting` |
 | [`examples/zero-config`](examples/zero-config) | Same app, no config file |
 | [`examples/standalone`](examples/standalone) | `build.standalone: true` |
-| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, `compile: true` |
+| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a typed `route()` handler + `steambun/client`, a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, `compile: true` |
 
 ## Development
 

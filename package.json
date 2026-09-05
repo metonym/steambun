@@ -13,7 +13,8 @@
     ".": "./src/index.ts",
     "./runtime": "./src/runtime/index.ts",
     "./client": {
-      "types": "./src/client.d.ts"
+      "types": "./src/client.d.ts",
+      "default": "./src/client.ts"
     }
   },
   "files": [
