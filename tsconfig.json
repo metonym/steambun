@@ -19,6 +19,7 @@
     "**/node_modules/**",
     "**/.steambun/serve.ts",
     "**/.steambun/prod-serve.ts",
+    "**/.steambun/dist-serve.ts",
     "**/.steambun/alias-plugin.ts",
     "**/.steambun/plugin-*.ts"
   ]

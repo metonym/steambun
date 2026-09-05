@@ -1,12 +1,13 @@
 import { relative } from "node:path";
 import type { ResolvedConfig } from "../config/types";
-import { loadApiRoutes } from "./api-routes";
+import { loadApiModules } from "./api-routes";
 import { composeServerMiddleware, createErrorHandler } from "./http";
 import type { Middleware, RouteHandler } from "./middleware";
 import { withMiddleware } from "./middleware";
-import { createProxyRouteHandler, createProxyWebSocketHandlers } from "./proxy";
+import { createProxyRouteHandler } from "./proxy";
 import { addPublicDirRoutes } from "./public-dir";
 import { createStaticHandler } from "./static";
+import { createWsRouter } from "./ws-routes";
 
 const HTTP_METHODS = new Set([
   "GET",
@@ -147,6 +148,21 @@ async function dispatch(
   });
 }
 
+interface TimeoutServer {
+  timeout?: (req: Request, seconds: number) => void;
+}
+
+/** SSE responses should never hit Bun's idle timeout — disable it per-request. */
+function withSseTimeout(handler: RouteHandler): RouteHandler {
+  return async (req, server) => {
+    const res = await handler(req, server);
+    if (res?.headers.get("content-type")?.includes("text/event-stream")) {
+      (server as TimeoutServer | undefined)?.timeout?.(req, 0);
+    }
+    return res;
+  };
+}
+
 const ROUTE_TABLE_INLINE_LIMIT = 40;
 
 /** Prints `app.routeTable()` inline, or a count above `ROUTE_TABLE_INLINE_LIMIT`. */
@@ -212,12 +228,51 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
   }
 
   const apiDir = opts.apiDir ?? config.api;
-  if (apiDir) {
-    const apiRoutes = await loadApiRoutes(apiDir);
+  const apiModules = apiDir ? await loadApiModules(apiDir) : undefined;
+  const websockets = apiModules?.websockets ?? new Map();
+  const wsRouter = createWsRouter(websockets);
+
+  if (apiDir && apiModules) {
+    const apiRoutes = apiModules.routes;
     const source = relative(config.root, apiDir);
-    for (const [path, handler] of Object.entries(apiRoutes)) {
+    const paths = new Set([...Object.keys(apiRoutes), ...websockets.keys()]);
+
+    for (const path of paths) {
+      const handler = apiRoutes[path];
+      const upgrade = websockets.has(path)
+        ? wsRouter.upgradeHandler(path)
+        : undefined;
+
+      if (upgrade) {
+        const fallback: RouteHandler =
+          typeof handler === "function"
+            ? withSseTimeout(handler as RouteHandler)
+            : handler
+              ? withSseTimeout((req, server) => {
+                  const fn = (handler as Record<string, unknown>)[req.method];
+                  return typeof fn === "function"
+                    ? (fn as RouteHandler)(req, server)
+                    : new Response("Method Not Allowed", { status: 405 });
+                })
+              : () => new Response("Upgrade Required", { status: 426 });
+        const combined: RouteHandler = (req, server) => {
+          if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+            return upgrade(req, server);
+          }
+          return fallback(req, server);
+        };
+        routes[path] = withMiddleware(middleware, combined);
+        const methods =
+          handler && typeof handler === "object" ? Object.keys(handler) : ["*"];
+        rows.push({ path, kind: "ws", methods, source });
+        continue;
+      }
+
       if (typeof handler === "function") {
-        routes[path] = withMiddleware(middleware, handler as RouteHandler);
+        routes[path] = withMiddleware(
+          middleware,
+          withSseTimeout(handler as RouteHandler),
+        );
         rows.push({ path, kind: "api", methods: ["*"], source });
       } else {
         const wrapped: Record<string, unknown> = {};
@@ -225,7 +280,10 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
         for (const [method, fn] of Object.entries(
           handler as Record<string, unknown>,
         )) {
-          wrapped[method] = withMiddleware(middleware, fn as RouteHandler);
+          wrapped[method] = withMiddleware(
+            middleware,
+            withSseTimeout(fn as RouteHandler),
+          );
           methods.push(method);
         }
         routes[path] = wrapped;
@@ -266,7 +324,9 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
     error: createErrorHandler(mode === "dev"),
     idleTimeout: config.server.idleTimeout,
     maxRequestBodySize: config.server.maxRequestBodySize,
-    ...(hasWsProxy ? { websocket: createProxyWebSocketHandlers() } : {}),
+    ...(hasWsProxy || websockets.size > 0
+      ? { websocket: wsRouter.websocket }
+      : {}),
     ...(mode === "dev"
       ? { development: { hmr: true, console: true }, id: "steambun-dev" }
       : {}),

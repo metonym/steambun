@@ -4,7 +4,7 @@ interface BunServerLike {
   upgrade: (req: Request, opts?: { data?: unknown }) => boolean;
 }
 
-interface ProxyWebSocketData {
+export interface ProxyWebSocketData {
   proxyTarget: string;
   upstream?: WebSocket;
   // Buffers messages that arrive before the upstream connection finishes
