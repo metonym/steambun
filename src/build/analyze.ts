@@ -50,7 +50,7 @@ function packageInfo(inputPath: string): { name: string; dir: string } | null {
     : segments.slice(0, 1);
   const name = nameSegments.join("/");
   if (!name) return null;
-  return { name, dir: inputPath.slice(0, idx) + "node_modules/" + name };
+  return { name, dir: `${inputPath.slice(0, idx)}node_modules/${name}` };
 }
 
 // Metafile paths are relative to the cwd Bun.build() ran in (verified via

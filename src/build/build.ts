@@ -15,6 +15,7 @@ import { writeEnvDts } from "../env/types";
 import { formatSize } from "../util/format";
 import { splitPlugins } from "../util/plugins";
 import { analyzeMetafile, checkBudgets } from "./analyze";
+import { writeDistServer } from "./dist-server";
 import { minifyHtml } from "./html-minify";
 import { buildManifest } from "./manifest";
 import {
@@ -22,6 +23,7 @@ import {
   createHtmlBuildConfig,
   shouldMinifyHtml,
 } from "./options";
+import { precompressDir } from "./precompress";
 import { generateProdServeSource } from "./prod-server";
 
 export interface BuildOptions {
@@ -93,6 +95,19 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     );
   }
 
+  if (config.build.budgets && result.metafile) {
+    const { outputs } = analyzeMetafile(result.metafile);
+    const violations = checkBudgets(outputs, config.build.budgets);
+    if (violations.length > 0) {
+      for (const v of violations) {
+        console.error(
+          `[steambun] ${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
+        );
+      }
+      throw new Error("[steambun] Size budget exceeded.");
+    }
+  }
+
   const transformHtmlHooks = hooks.filter((h) => h.transformHtml);
   const compactHtml = shouldMinifyHtml(config.build.minify);
   if (transformHtmlHooks.length > 0 || compactHtml) {
@@ -112,6 +127,20 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     await cp(config.publicDir, outDir, { recursive: true });
   }
 
+  if (config.build.precompress) {
+    const precompressed = await precompressDir(
+      outDir,
+      config.build.precompress,
+      config.build.precompressMinSize,
+    );
+    if (precompressed.length > 0) {
+      const encodings = [...new Set(precompressed.map((p) => p.encoding))];
+      console.log(
+        `[steambun] precompressed ${precompressed.length} file${precompressed.length === 1 ? "" : "s"} (${encodings.join(", ")})`,
+      );
+    }
+  }
+
   if (config.build.manifest && !config.build.standalone && result.metafile) {
     const manifest = buildManifest(result.metafile);
     await writeFile(
@@ -121,24 +150,15 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     );
   }
 
+  if (config.build.server && !config.build.standalone) {
+    await writeDistServer(config, define, bunPlugins, outDir);
+  }
+
   console.log(`[steambun] build complete: ${relative(config.root, outDir)}/`);
   for (const artifact of result.outputs) {
     if (artifact.kind === "sourcemap") continue;
     const { size } = await stat(artifact.path);
     console.log(`  ${relative(outDir, artifact.path)}  ${formatSize(size)}`);
-  }
-
-  if (config.build.budgets && result.metafile) {
-    const { outputs } = analyzeMetafile(result.metafile);
-    const violations = checkBudgets(outputs, config.build.budgets);
-    if (violations.length > 0) {
-      for (const v of violations) {
-        console.error(
-          `[steambun] ${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
-        );
-      }
-      throw new Error("[steambun] Size budget exceeded.");
-    }
   }
 
   for (const hook of hooks) {

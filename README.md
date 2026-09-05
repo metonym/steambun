@@ -153,10 +153,15 @@ outDir = "dist"
 | `build.cssChunking` | off | `Bun.build({ cssChunking })`. Only effective with multiple CSS-importing entries |
 | `build.minChunkSize` | | `Bun.build({ minChunkSize })`. Requires `build.splitting` |
 | `build.budgets` | | Glob → max size (`"250kb"`, `"1.5mb"`, or a byte count). `steambun build` fails when an output exceeds its budget (checked on raw, uncompressed size) |
+| `build.precompress` | `false` | `false` or a subset of `["gzip", "br", "zstd"]`. Writes `.gz`/`.br`/`.zst` siblings for compressible files (JS, CSS, HTML, SVG, JSON, txt, map, XML, wasm) at least `precompressMinSize` bytes, skipping a variant that doesn't beat the original by 5% |
+| `build.precompressMinSize` | `1024` | Minimum file size, in bytes, to precompress |
+| `build.server` | `true` | Write `dist/server.js`, a bundled, dependency-free copy of the preview server. Run it with `bun dist/server.js`; `PORT` and `HOST` env vars work as in `steambun preview`. Skipped for `build.standalone` |
 
 After JS/CSS minify, steambun collapses tag whitespace in the HTML output.
 
 `steambun build` writes `.steambun/metafile.json` (Bun's build metafile) so `steambun analyze` can report on it after the fact, without a full rebuild.
+
+`steambun preview` and `dist/server.js` serve assets under `assetsDir` with `Cache-Control: public, max-age=31536000, immutable` (they're content-hashed) and everything else with a weak `ETag` and `Cache-Control: no-cache` (304 on a matching `If-None-Match`); HTML always gets `no-cache`. When `build.precompress` produced a `.gz`/`.br`/`.zst` sibling, a matching `Accept-Encoding` serves it with `Content-Encoding` set and the original file's `Content-Type`.
 
 ## publicDir
 

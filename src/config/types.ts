@@ -65,6 +65,12 @@ export interface BuildOptions {
   cssChunking?: boolean;
   /** Maps to `Bun.build({ minChunkSize })`. Requires `splitting`. */
   minChunkSize?: number;
+  /** Encodings to precompute for files under `assetsDir` (and `publicDir` copies) larger than `precompressMinSize`. Default `false`. */
+  precompress?: false | Array<"gzip" | "br" | "zstd">;
+  /** Default `1024`. */
+  precompressMinSize?: number;
+  /** Write `dist/server.js`, a self-contained preview server. Default `true`. */
+  server?: boolean;
 }
 
 export interface ResolveOptions {
@@ -162,6 +168,9 @@ export interface ResolvedConfig extends UserConfig {
       | "manifest"
       | "drop"
       | "standalone"
+      | "precompress"
+      | "precompressMinSize"
+      | "server"
     >
   > &
     BuildOptions;

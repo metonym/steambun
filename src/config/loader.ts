@@ -173,6 +173,9 @@ export function resolveDefaults(
       minify: true,
       manifest: false,
       standalone: false,
+      precompress: false,
+      precompressMinSize: 1024,
+      server: true,
       ...userConfig.build,
       drop:
         userConfig.build?.drop ??
