@@ -116,6 +116,28 @@ export interface SteambunHooks {
 
 export type Plugin = BunPlugin | SteambunHooks;
 
+export interface CompileWindowsOptions {
+  icon?: string;
+  hideConsole?: boolean;
+  title?: string;
+  publisher?: string;
+  version?: string;
+  description?: string;
+  copyright?: string;
+}
+
+export interface CompileOptions {
+  /** Cross-compile targets, e.g. `["bun-linux-x64", "bun-darwin-arm64"]`. Default: host only. */
+  targets?: string[];
+  /** Default `"bin"`. */
+  outDir?: string;
+  windows?: CompileWindowsOptions;
+  /** Whether the binary loads `.env` files at runtime. Bun defaults this to `true`; steambun defaults to `false` — a compiled server should get its config from real env vars, not files that may not ship with it. */
+  autoloadDotenv?: boolean;
+  /** Whether the binary loads `bunfig.toml` at runtime. Default `true` (Bun's default). */
+  autoloadBunfig?: boolean;
+}
+
 export interface UserConfig {
   root?: string;
   base?: string;
@@ -138,7 +160,7 @@ export interface UserConfig {
   api?: string;
   /** (req, next) => Response | Promise<Response>. */
   middleware?: unknown[];
-  compile?: boolean;
+  compile?: boolean | CompileOptions;
   /**
    * Bun `--feature` flags for `bun:bundle` dead-code elimination. Merges
    * with the `STEAMBUN_FEATURES` env var (comma-separated) in `dev` and
@@ -198,4 +220,6 @@ export interface ResolvedConfig extends UserConfig {
   > &
     BuildOptions;
   envPrefix: string[];
+  /** Normalized from `boolean | CompileOptions`: `true` becomes `{}`. */
+  compile?: false | CompileOptions;
 }

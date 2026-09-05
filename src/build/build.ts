@@ -200,30 +200,39 @@ async function buildCompiled(
   const assets = [outDir];
   if (config.api) assets.push(config.api);
 
-  const binaryName = process.platform === "win32" ? "server.exe" : "server";
-  const outfile = join(
-    config.root,
-    config.build.outDir,
-    "..",
-    "bin",
-    binaryName,
-  );
+  const compileOptions = config.compile || {};
+  const targets = compileOptions.targets ?? [undefined];
+  const binOutDir = join(config.root, compileOptions.outDir ?? "bin");
 
-  const result = await Bun.build(
-    createCompiledBuildConfig({
-      config,
-      prodServePath,
-      define,
-      plugins,
-      outfile,
-      assets,
-    }),
-  );
+  for (const target of targets) {
+    const isWindows = target
+      ? target.startsWith("bun-windows-")
+      : process.platform === "win32";
+    const suffix = isWindows ? ".exe" : "";
+    const name = target ? `server-${target}${suffix}` : `server${suffix}`;
+    const outfile = join(binOutDir, name);
 
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error("[steambun] Compiled build failed.");
+    const result = await Bun.build(
+      createCompiledBuildConfig({
+        config,
+        prodServePath,
+        define,
+        plugins,
+        outfile,
+        assets,
+        compileTarget: target,
+      }),
+    );
+
+    if (!result.success) {
+      for (const log of result.logs) console.error(log);
+      throw new Error(
+        `[steambun] Compiled build failed${target ? ` for ${target}` : ""}.`,
+      );
+    }
+
+    console.log(
+      `[steambun] compiled binary: ${relative(config.root, outfile)}`,
+    );
   }
-
-  console.log(`[steambun] compiled binary: ${relative(config.root, outfile)}`);
 }

@@ -295,6 +295,7 @@ describe("createCompiledBuildConfig", () => {
     expect(opts.compile).toEqual({
       outfile: "/tmp/bin/server",
       assets: ["/tmp/dist"],
+      autoloadDotenv: false,
     });
     expect(opts.bytecode).toBeUndefined();
     expect(opts.splitting).toBeUndefined();
@@ -314,6 +315,50 @@ describe("createCompiledBuildConfig", () => {
       assets: ["/tmp/dist"],
     });
     expect(opts.bytecode).toBe(true);
+  });
+
+  test("compileTarget sets compile.target; windows and autoloadBunfig forward", () => {
+    const config = resolveDefaults(
+      {
+        compile: {
+          targets: ["bun-linux-x64"],
+          autoloadBunfig: false,
+          windows: { title: "My App", hideConsole: true },
+        },
+      },
+      ctx("production"),
+    );
+    const opts = createCompiledBuildConfig({
+      config,
+      prodServePath: "/tmp/prod-serve.ts",
+      define: {},
+      plugins: [],
+      outfile: "/tmp/bin/server-bun-linux-x64",
+      assets: ["/tmp/dist"],
+      compileTarget: "bun-linux-x64",
+    });
+    const compile = opts.compile as Record<string, unknown>;
+    expect(compile.target).toBe("bun-linux-x64");
+    expect(compile.autoloadBunfig).toBe(false);
+    expect(compile.windows).toEqual({ title: "My App", hideConsole: true });
+  });
+});
+
+describe("compile option normalization", () => {
+  test("true becomes {}, an object stays as-is, false and undefined pass through", () => {
+    expect(
+      resolveDefaults({ compile: true }, ctx("production")).compile,
+    ).toEqual({});
+    expect(
+      resolveDefaults(
+        { compile: { targets: ["bun-linux-x64"] } },
+        ctx("production"),
+      ).compile,
+    ).toEqual({ targets: ["bun-linux-x64"] });
+    expect(resolveDefaults({ compile: false }, ctx("production")).compile).toBe(
+      false,
+    );
+    expect(resolveDefaults({}, ctx("production")).compile).toBeUndefined();
   });
 });
 

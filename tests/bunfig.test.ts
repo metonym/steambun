@@ -97,6 +97,36 @@ port = 5173
         .envPrefix,
     ).toBeUndefined();
   });
+
+  test("[steambun.compile] table maps to a CompileOptions object", () => {
+    const config = bunfigToUserConfig(
+      parseBunfigToml(`
+[steambun.compile]
+targets = ["bun-linux-x64", "bun-darwin-arm64"]
+outDir = "out"
+autoloadDotenv = true
+autoloadBunfig = false
+
+[steambun.compile.windows]
+title = "My App"
+hideConsole = true
+`),
+    );
+    expect(config.compile).toEqual({
+      targets: ["bun-linux-x64", "bun-darwin-arm64"],
+      outDir: "out",
+      autoloadDotenv: true,
+      autoloadBunfig: false,
+      windows: { title: "My App", hideConsole: true },
+    });
+  });
+
+  test("[steambun] features = [...] maps to config.features", () => {
+    const config = bunfigToUserConfig(
+      parseBunfigToml(`[steambun]\nfeatures = ["a", "b"]\n`),
+    );
+    expect(config.features).toEqual(["a", "b"]);
+  });
 });
 
 describe("serializeMergedBunfig", () => {

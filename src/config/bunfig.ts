@@ -5,6 +5,8 @@ import { isBunPlugin, isSteambunHooks } from "../util/plugins";
 import { toImportSpecifier } from "../util/specifier";
 import type {
   BuildOptions,
+  CompileOptions,
+  CompileWindowsOptions,
   HttpsOptions,
   Plugin,
   PreviewOptions,
@@ -231,6 +233,8 @@ function mapSteambunTable(raw: Record<string, unknown>): UserConfig {
   }
   if (typeof raw.api === "string") config.api = raw.api;
   if (typeof raw.compile === "boolean") config.compile = raw.compile;
+  const compile = mapCompile(asRecord(raw.compile));
+  if (compile) config.compile = compile;
   const features = asStringArray(raw.features);
   if (features) config.features = features;
   if (typeof raw.envDir === "string") config.envDir = raw.envDir;
@@ -343,6 +347,42 @@ function mapBuild(
   const drop = asStringArray(raw.drop);
   if (drop) build.drop = drop;
   return Object.keys(build).length > 0 ? build : undefined;
+}
+
+function mapCompileWindows(
+  raw: Record<string, unknown> | undefined,
+): CompileWindowsOptions | undefined {
+  if (!raw) return undefined;
+  const windows: CompileWindowsOptions = {};
+  if (typeof raw.icon === "string") windows.icon = raw.icon;
+  if (typeof raw.hideConsole === "boolean")
+    windows.hideConsole = raw.hideConsole;
+  if (typeof raw.title === "string") windows.title = raw.title;
+  if (typeof raw.publisher === "string") windows.publisher = raw.publisher;
+  if (typeof raw.version === "string") windows.version = raw.version;
+  if (typeof raw.description === "string")
+    windows.description = raw.description;
+  if (typeof raw.copyright === "string") windows.copyright = raw.copyright;
+  return Object.keys(windows).length > 0 ? windows : undefined;
+}
+
+function mapCompile(
+  raw: Record<string, unknown> | undefined,
+): CompileOptions | undefined {
+  if (!raw) return undefined;
+  const compile: CompileOptions = {};
+  const targets = asStringArray(raw.targets);
+  if (targets) compile.targets = targets;
+  if (typeof raw.outDir === "string") compile.outDir = raw.outDir;
+  if (typeof raw.autoloadDotenv === "boolean") {
+    compile.autoloadDotenv = raw.autoloadDotenv;
+  }
+  if (typeof raw.autoloadBunfig === "boolean") {
+    compile.autoloadBunfig = raw.autoloadBunfig;
+  }
+  const windows = mapCompileWindows(asRecord(raw.windows));
+  if (windows) compile.windows = windows;
+  return Object.keys(compile).length > 0 ? compile : undefined;
 }
 
 function mapPreview(
