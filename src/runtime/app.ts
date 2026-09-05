@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { join, relative } from "node:path";
 import type { ResolvedConfig } from "../config/types";
 import { splitPlugins } from "../util/plugins";
 import { loadApiModules } from "./api-routes";
@@ -310,6 +310,7 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
         spa: config.appType === "spa",
         immutablePrefix: `/${config.build.assetsDir}/`,
         precompressed: config.build.precompress !== false,
+        headersFile: join(outDir, "_headers.json"),
       }),
     );
     rows.push({

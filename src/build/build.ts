@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { loadBunfigPlugins } from "../config/bunfig";
 import { loadConfig } from "../config/loader";
 import type { BunPlugin, ResolvedConfig } from "../config/types";
@@ -26,6 +26,7 @@ import {
 } from "./options";
 import { precompressDir } from "./precompress";
 import { generateProdServeSource } from "./prod-server";
+import { applySri, buildCspString, collectInlineHashes } from "./security";
 
 export interface BuildOptions {
   root?: string;
@@ -118,7 +119,13 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
 
   const transformHtmlHooks = hooks.filter((h) => h.transformHtml);
   const compactHtml = shouldMinifyHtml(config.build.minify);
-  if (transformHtmlHooks.length > 0 || compactHtml) {
+  const cspHashes = { script: new Set<string>(), style: new Set<string>() };
+  if (
+    transformHtmlHooks.length > 0 ||
+    compactHtml ||
+    config.build.sri ||
+    config.build.csp
+  ) {
     for (const artifact of result.outputs) {
       if (!artifact.path.endsWith(".html")) continue;
       let html = await readFile(artifact.path, "utf8");
@@ -127,8 +134,32 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
         html = await hook.transformHtml(html, { path: artifact.path });
       }
       if (compactHtml) html = minifyHtml(html);
+      if (config.build.sri) {
+        html = await applySri(html, outDir, dirname(artifact.path));
+      }
+      if (config.build.csp) {
+        const hashes = await collectInlineHashes(html);
+        for (const h of hashes.script) cspHashes.script.add(h);
+        for (const h of hashes.style) cspHashes.style.add(h);
+      }
       await writeFile(artifact.path, html, "utf8");
     }
+  }
+
+  if (config.build.csp) {
+    const cspString = buildCspString(config.build.csp, {
+      script: [...cspHashes.script],
+      style: [...cspHashes.style],
+    });
+    await writeFile(
+      join(outDir, "_headers.json"),
+      JSON.stringify(
+        { "/*.html": { "Content-Security-Policy": cspString } },
+        null,
+        2,
+      ),
+      "utf8",
+    );
   }
 
   if (config.publicDir && existsSync(config.publicDir)) {
