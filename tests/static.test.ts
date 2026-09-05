@@ -223,3 +223,46 @@ describe("build() + createApp preview — precompress round trip", () => {
     expect(new TextDecoder().decode(decompressed)).toContain("hello");
   });
 });
+
+describe("createStaticHandler — headersFile", () => {
+  test("applies a matching glob's headers from _headers.json", async () => {
+    const outDir = fixtureDir();
+    writeFileSync(
+      join(outDir, "_headers.json"),
+      JSON.stringify({
+        "/*.html": {
+          "Content-Security-Policy": "default-src 'self'",
+          "x-custom": "html",
+        },
+        "/foo.txt": { "x-custom": "txt" },
+      }),
+    );
+
+    const handler = createStaticHandler({
+      outDir,
+      spa: false,
+      headersFile: join(outDir, "_headers.json"),
+    });
+
+    const htmlRes = await handler(new Request("http://localhost/about"));
+    expect(htmlRes.headers.get("content-security-policy")).toBe(
+      "default-src 'self'",
+    );
+    expect(htmlRes.headers.get("x-custom")).toBe("html");
+
+    const txtRes = await handler(new Request("http://localhost/foo.txt"));
+    expect(txtRes.headers.get("x-custom")).toBe("txt");
+    expect(txtRes.headers.get("content-security-policy")).toBeNull();
+  });
+
+  test("a missing headersFile is a no-op", async () => {
+    const outDir = fixtureDir();
+    const handler = createStaticHandler({
+      outDir,
+      spa: false,
+      headersFile: join(outDir, "no-such-file.json"),
+    });
+    const res = await handler(new Request("http://localhost/foo.txt"));
+    expect(res.status).toBe(200);
+  });
+});

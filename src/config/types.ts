@@ -73,6 +73,16 @@ export interface BuildOptions {
   precompressMinSize?: number;
   /** Write `dist/server.js`, a self-contained preview server. Default `true`. */
   server?: boolean;
+  /** Adds `integrity`/`crossorigin` to local `<script src>` and `<link rel="stylesheet">` tags. Default `false`. */
+  sri?: boolean;
+  /**
+   * Writes `outDir/_headers.json` with a `Content-Security-Policy` for
+   * `"*.html"`, built from hashes of every inline `<script>`/`<style>`.
+   * `"strict"` is `default-src 'self'; script-src 'self' <hashes>;
+   * style-src 'self' <hashes>; object-src 'none'; base-uri 'self'`. An
+   * object's directives are merged with the computed hashes. Default `false`.
+   */
+  csp?: false | "strict" | Record<string, string[]>;
 }
 
 export interface ResolveOptions {

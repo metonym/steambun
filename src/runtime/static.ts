@@ -1,5 +1,5 @@
-import { statSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 
 export interface StaticHandlerOptions {
   outDir: string;
@@ -8,6 +8,33 @@ export interface StaticHandlerOptions {
   immutablePrefix?: string;
   /** Serve .br/.zst/.gz siblings when Accept-Encoding allows. Default true. */
   precompressed?: boolean;
+  /**
+   * Path to a `_headers.json` (glob, relative to `outDir` with a leading
+   * `/` — e.g. `"/*.html"` — → extra headers). Read once at startup;
+   * matched against the resolved file's path, merged into the response.
+   */
+  headersFile?: string;
+}
+
+interface HeadersRule {
+  matcher: InstanceType<typeof Bun.Glob>;
+  headers: Record<string, string>;
+}
+
+function loadHeadersRules(headersFile: string | undefined): HeadersRule[] {
+  if (!headersFile) return [];
+  try {
+    const raw = JSON.parse(readFileSync(headersFile, "utf8")) as Record<
+      string,
+      Record<string, string>
+    >;
+    return Object.entries(raw).map(([glob, headers]) => ({
+      matcher: new Bun.Glob(glob),
+      headers,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 const ENCODING_PREFERENCE: Array<{ name: string; ext: string }> = [
@@ -73,7 +100,12 @@ async function buildResponse(
   filePath: string,
   pathname: string,
   req: Request,
-  opts: { immutablePrefix?: string; precompressed: boolean },
+  opts: {
+    outDir: string;
+    immutablePrefix?: string;
+    precompressed: boolean;
+    headersRules: HeadersRule[];
+  },
 ): Promise<Response> {
   const isHtml = filePath.endsWith(".html");
   const immutable =
@@ -112,6 +144,16 @@ async function buildResponse(
     }
   }
 
+  if (opts.headersRules.length > 0) {
+    const matchPath = `/${relative(opts.outDir, filePath).split(sep).join("/")}`;
+    for (const rule of opts.headersRules) {
+      if (!rule.matcher.match(matchPath)) continue;
+      for (const [key, value] of Object.entries(rule.headers)) {
+        headers.set(key, value);
+      }
+    }
+  }
+
   if (req.method === "HEAD") body = null;
 
   return new Response(body, { status, headers });
@@ -137,6 +179,7 @@ export function createStaticHandler(
   opts: StaticHandlerOptions,
 ): (req: Request) => Response | Promise<Response> {
   const { outDir, spa, immutablePrefix, precompressed = true } = opts;
+  const headersRules = loadHeadersRules(opts.headersFile);
 
   return async (req: Request) => {
     const pathname = new URL(req.url).pathname;
@@ -147,8 +190,10 @@ export function createStaticHandler(
       });
     }
     return buildResponse(filePath, pathname, req, {
+      outDir,
       immutablePrefix,
       precompressed,
+      headersRules,
     });
   };
 }
