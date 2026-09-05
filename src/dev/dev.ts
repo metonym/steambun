@@ -6,6 +6,7 @@ import {
   withProcessEnv,
 } from "../env/loader";
 import { writeEnvDts } from "../env/types";
+import { writeRoutesDts } from "../routes-dts";
 import { discoverHtmlEntries, discoverSkipDirs } from "./discover";
 import { synthesizeDevServer } from "./synth";
 
@@ -37,6 +38,8 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       `[steambun] No HTML entrypoints found in ${config.root}. Expected an index.html at the project root.`,
     );
   }
+
+  await writeRoutesDts(config.root, config.api, htmlEntries, config.appType);
 
   const envDir = config.envDir ?? config.root;
   const fileEnv = await loadEnvFiles(mode, envDir);

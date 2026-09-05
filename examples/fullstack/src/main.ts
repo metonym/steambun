@@ -1,3 +1,4 @@
+import { api } from "steambun/client";
 import { gitSha } from "./git-sha.ts" with { type: "macro" };
 import greeting from "./greeting.upper";
 
@@ -19,6 +20,11 @@ app.innerHTML = `
   <section class="mb-4 rounded-lg border border-slate-300 p-4">
     <h2 class="mb-2 text-sm font-semibold text-slate-500">native api route (default export, all methods) — POST /api/echo</h2>
     <pre id="echo" class="overflow-x-auto rounded bg-slate-100 p-2">loading…</pre>
+  </section>
+
+  <section class="mb-4 rounded-lg border border-slate-300 p-4">
+    <h2 class="mb-2 text-sm font-semibold text-slate-500">typed client (steambun/client) — GET /api/users/:id via route()</h2>
+    <pre id="user" class="overflow-x-auto rounded bg-slate-100 p-2">loading…</pre>
   </section>
 
   <section class="mb-4 rounded-lg border border-slate-300 p-4">
@@ -46,6 +52,12 @@ fetch("/api/echo", { method: "POST", body: JSON.stringify({ hi: 1 }) })
   .then((res) => res.json())
   .then((data) => set("echo", data))
   .catch((err) => set("echo", String(err)));
+
+// `user` is typed as `{ id: string }`, inferred from route()'s handler via
+// .steambun/routes.d.ts — no manual response typing needed.
+api("get", "/api/users/:id", { params: { id: "42" } })
+  .then((user) => set("user", user))
+  .catch((err) => set("user", String(err)));
 
 fetch("/legacy/status")
   .then((res) => res.json())
