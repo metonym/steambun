@@ -242,6 +242,8 @@ const link = href("/api/users/:id", { id: "42" }); // "/api/users/42"
 
 `api(method, path, { params?, query?, body?, init? })` substitutes `:param` segments, JSON-encodes `body`, prefixes `import.meta.env.BASE_URL`, and throws a `SteambunApiError` (`status`, `body`) on a non-2xx response. Without `route()`, a handler returning a bare `Response` types as `unknown` — parse it yourself.
 
+`route()` imports from `"steambun/runtime"`, which a `compile: true` binary can't resolve inside an api route file — `--compile` dynamically imports api routes from its embedded assets, which can only reach Bun/Node builtins. Keep compiled-binary api routes on bare handlers.
+
 ## Middleware
 
 `middleware: [auth()]` is `(req, next) => Response`. It wraps API routes and proxy entries. In `bunfig.toml`, use specifiers: `middleware = ["./src/auth.ts"]`.
@@ -282,6 +284,25 @@ Two different Bun compile modes:
 | `build.standalone: true` | `--compile --target=browser` | One `.html` per entry, with JS, CSS, and relative assets inlined |
 | `compile: true` | `--compile` | A single binary. Steambun embeds static assets, API routes, proxy, and middleware |
 
+`compile` also accepts an options object instead of `true`:
+
+| Key | Default | Behavior |
+| --- | --- | --- |
+| `compile.targets` | host only | Cross-compile targets, e.g. `["bun-linux-x64", "bun-darwin-arm64"]`. One binary per target, named `bin/server-<target>` (`.exe` for `bun-windows-*`). Downloads the target's runtime; not exercised in CI |
+| `compile.outDir` | `"bin"` | Output directory for compiled binaries |
+| `compile.windows` | | `{ icon?, hideConsole?, title?, publisher?, version?, description?, copyright? }` |
+| `compile.autoloadDotenv` | `false` | Whether the binary loads `.env` files at runtime. Bun defaults this `true`; steambun defaults it `false` — a compiled server should get its config from real env vars, not files that may not ship with the binary |
+| `compile.autoloadBunfig` | `true` (Bun's default) | Whether the binary loads `bunfig.toml` at runtime |
+
+```toml
+[steambun.compile]
+targets = ["bun-linux-x64", "bun-darwin-arm64"]
+outDir = "bin"
+
+[steambun.compile.windows]
+title = "My App"
+```
+
 ## Examples
 
 All use `bun run dev` / `build` / `preview`.
@@ -292,7 +313,7 @@ All use `bun run dev` / `build` / `preview`.
 | [`examples/bunfig`](examples/bunfig) | `bunfig.toml` only, `build.splitting` |
 | [`examples/zero-config`](examples/zero-config) | Same app, no config file |
 | [`examples/standalone`](examples/standalone) | `build.standalone: true` |
-| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a typed `route()` handler + `steambun/client`, a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, `compile: true` |
+| [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a `steambun/client` fetch against the generated route types, a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, `compile: true` |
 
 ## Development
 

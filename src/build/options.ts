@@ -128,17 +128,28 @@ export interface CompiledBuildConfigInput {
   plugins: BunPlugin[];
   outfile: string;
   assets: string[];
+  /** One of `Bun.Build.CompileTarget`, e.g. `"bun-linux-x64"`. Omit for the host platform. */
+  compileTarget?: string;
 }
 
 export function createCompiledBuildConfig(
   input: CompiledBuildConfigInput,
 ): Bun.BuildConfig {
-  const { config, prodServePath, define, plugins, outfile, assets } = input;
+  const {
+    config,
+    prodServePath,
+    define,
+    plugins,
+    outfile,
+    assets,
+    compileTarget,
+  } = input;
   const env = toBunEnvPattern(config.envPrefix);
   const features = mergeFeatures(
     config.features,
     process.env.STEAMBUN_FEATURES,
   );
+  const compileOptions = config.compile || {};
   return {
     entrypoints: [prodServePath],
     define,
@@ -146,7 +157,20 @@ export function createCompiledBuildConfig(
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,
     target: "bun",
-    compile: { outfile, assets },
+    compile: {
+      outfile,
+      assets,
+      // A compiled server should get its config from real env vars, not
+      // files that may not ship with the binary — Bun defaults this true.
+      autoloadDotenv: compileOptions.autoloadDotenv ?? false,
+      ...(compileOptions.autoloadBunfig !== undefined
+        ? { autoloadBunfig: compileOptions.autoloadBunfig }
+        : {}),
+      ...(compileOptions.windows ? { windows: compileOptions.windows } : {}),
+      ...(compileTarget
+        ? { target: compileTarget as Bun.Build.CompileTarget }
+        : {}),
+    },
     ...(env ? { env } : {}),
     ...(config.build.bytecode ? { bytecode: true } : {}),
     ...(features.length > 0 ? { features } : {}),

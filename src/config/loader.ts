@@ -190,5 +190,11 @@ export function resolveDefaults(
         userConfig.build?.drop ??
         (ctx.mode === "production" ? ["debugger"] : []),
     },
+    compile:
+      userConfig.compile === true
+        ? {}
+        : userConfig.compile === false
+          ? false
+          : userConfig.compile,
   };
 }

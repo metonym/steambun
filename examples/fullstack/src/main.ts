@@ -23,7 +23,7 @@ app.innerHTML = `
   </section>
 
   <section class="mb-4 rounded-lg border border-slate-300 p-4">
-    <h2 class="mb-2 text-sm font-semibold text-slate-500">typed client (steambun/client) — GET /api/users/:id via route()</h2>
+    <h2 class="mb-2 text-sm font-semibold text-slate-500">typed client (steambun/client) — GET /api/users/:id</h2>
     <pre id="user" class="overflow-x-auto rounded bg-slate-100 p-2">loading…</pre>
   </section>
 
@@ -53,8 +53,10 @@ fetch("/api/echo", { method: "POST", body: JSON.stringify({ hi: 1 }) })
   .then((data) => set("echo", data))
   .catch((err) => set("echo", String(err)));
 
-// `user` is typed as `{ id: string }`, inferred from route()'s handler via
-// .steambun/routes.d.ts — no manual response typing needed.
+// `path` and `params` are checked against the generated .steambun/routes.d.ts
+// (try a typo in "id" below). The GET handler here returns a bare Response,
+// so `user` types as `unknown` — wrap a handler in route() (see
+// tests/fixtures/typed/users-id.ts) for the value type to flow through too.
 api("get", "/api/users/:id", { params: { id: "42" } })
   .then((user) => set("user", user))
   .catch((err) => set("user", String(err)));
