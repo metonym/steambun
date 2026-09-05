@@ -152,6 +152,36 @@ describe("createHtmlBuildConfig", () => {
     expect(opts.target).toBe("bun");
   });
 
+  test("cssChunking passes through; minChunkSize only applies with splitting", () => {
+    const config = resolveDefaults(
+      { build: { cssChunking: true, minChunkSize: 5000 } },
+      ctx("production"),
+    );
+    const opts = createHtmlBuildConfig({
+      config,
+      entrypoints: [join(config.root, "index.html")],
+      define: {},
+      plugins: [],
+      outDir: join(config.root, "dist"),
+    });
+    expect(opts.cssChunking).toBe(true);
+    expect(opts.minChunkSize).toBeUndefined();
+
+    const splittingConfig = resolveDefaults(
+      { build: { splitting: true, minChunkSize: 5000 } },
+      ctx("production"),
+    );
+    const splittingOpts = createHtmlBuildConfig({
+      config: splittingConfig,
+      entrypoints: [join(splittingConfig.root, "index.html")],
+      define: {},
+      plugins: [],
+      outDir: join(splittingConfig.root, "dist"),
+    });
+    expect(splittingOpts.splitting).toBe(true);
+    expect(splittingOpts.minChunkSize).toBe(5000);
+  });
+
   test("standalone uses compile + browser and skips hashed naming", () => {
     const config = resolveDefaults(
       { build: { standalone: true, minify: "esbuild" } },

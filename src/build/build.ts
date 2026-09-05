@@ -12,7 +12,9 @@ import {
   withProcessEnv,
 } from "../env/loader";
 import { writeEnvDts } from "../env/types";
+import { formatSize } from "../util/format";
 import { splitPlugins } from "../util/plugins";
+import { analyzeMetafile, checkBudgets } from "./analyze";
 import { minifyHtml } from "./html-minify";
 import { buildManifest } from "./manifest";
 import {
@@ -26,11 +28,6 @@ export interface BuildOptions {
   root?: string;
   mode?: string;
   configFile?: string;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
 export async function build(opts: BuildOptions = {}): Promise<void> {
@@ -86,6 +83,16 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     throw new Error("[steambun] Build failed.");
   }
 
+  if (result.metafile) {
+    const serveDir = join(config.root, ".steambun");
+    await mkdir(serveDir, { recursive: true });
+    await writeFile(
+      join(serveDir, "metafile.json"),
+      JSON.stringify(result.metafile),
+      "utf8",
+    );
+  }
+
   const transformHtmlHooks = hooks.filter((h) => h.transformHtml);
   const compactHtml = shouldMinifyHtml(config.build.minify);
   if (transformHtmlHooks.length > 0 || compactHtml) {
@@ -119,6 +126,19 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     if (artifact.kind === "sourcemap") continue;
     const { size } = await stat(artifact.path);
     console.log(`  ${relative(outDir, artifact.path)}  ${formatSize(size)}`);
+  }
+
+  if (config.build.budgets && result.metafile) {
+    const { outputs } = analyzeMetafile(result.metafile);
+    const violations = checkBudgets(outputs, config.build.budgets);
+    if (violations.length > 0) {
+      for (const v of violations) {
+        console.error(
+          `[steambun] ${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
+        );
+      }
+      throw new Error("[steambun] Size budget exceeded.");
+    }
   }
 
   for (const hook of hooks) {

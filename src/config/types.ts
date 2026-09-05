@@ -59,6 +59,12 @@ export interface BuildOptions {
   bytecode?: boolean;
   /** Maps to `Bun.build({ splitting })`. Default off. Ignored for `standalone` and `compile`. */
   splitting?: boolean;
+  /** Glob → max size ("250kb", "1.5mb", or bytes). Build fails when exceeded. Checked on raw (uncompressed) sizes. */
+  budgets?: Record<string, string | number>;
+  /** Maps to `Bun.build({ cssChunking })`. Only effective with multiple CSS-importing entries. */
+  cssChunking?: boolean;
+  /** Maps to `Bun.build({ minChunkSize })`. Requires `splitting`. */
+  minChunkSize?: number;
 }
 
 export interface ResolveOptions {

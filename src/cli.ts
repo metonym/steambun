@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { analyzeMetafile, checkBudgets, explainImport } from "./build/analyze";
 import { build } from "./build/build";
 import { preview } from "./build/preview";
 import { loadConfig } from "./config/loader";
@@ -12,6 +12,7 @@ import {
   htmlServePath,
 } from "./dev/discover";
 import { createApp } from "./runtime/app";
+import { formatSize } from "./util/format";
 
 const USAGE = `steambun — a Bun-native, Vite-class dev & bundle toolkit
 
@@ -19,7 +20,7 @@ Usage:
   steambun [dev]           Start the dev server (default command)
   steambun build           Build for production
   steambun preview         Serve the production build locally
-  steambun analyze         Report output file sizes from the last build
+  steambun analyze         Report a build size/dependency breakdown from the last build
   steambun routes          Print the route graph without starting a server
 
 Flags:
@@ -28,7 +29,8 @@ Flags:
   --mode <name>    Set mode (default: development for dev, production for build)
   --config <path>  Explicit config file path
   --root <path>    Project root (default: cwd)
-  --json           Machine-readable output (routes)
+  --json           Machine-readable output (analyze, routes)
+  --why <text>     Print import chains to an output/input path containing <text> (analyze)
 `;
 
 function commonOptions() {
@@ -39,58 +41,90 @@ function commonOptions() {
     config: { type: "string" as const },
     root: { type: "string" as const },
     json: { type: "boolean" as const },
+    why: { type: "string" as const },
     help: { type: "boolean" as const, short: "h" },
   };
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KB`;
-}
-
-async function collectFileSizes(
-  dir: string,
-  base = dir,
-): Promise<Array<{ path: string; size: number }>> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const results: Array<{ path: string; size: number }> = [];
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...(await collectFileSizes(full, base)));
-    } else {
-      const { size } = await stat(full);
-      results.push({ path: relative(base, full), size });
-    }
-  }
-  return results;
-}
-
-async function runAnalyze(root: string, configFile?: string) {
+async function runAnalyze(
+  root: string,
+  configFile: string | undefined,
+  json: boolean,
+  why: string | undefined,
+): Promise<void> {
   const config = await loadConfig({
     root,
     command: "build",
     mode: "production",
     configFile,
   });
-  const outDirName = config.build.outDir;
-  const outDir = join(config.root, outDirName);
-  if (!existsSync(outDir)) {
+  const metafilePath = join(config.root, ".steambun", "metafile.json");
+  if (!existsSync(metafilePath)) {
     console.error(
-      `[steambun] ${outDirName}/ not found. Run \`steambun build\` first.`,
+      "[steambun] No build metafile found. Run `steambun build` first.",
     );
     process.exitCode = 1;
     return;
   }
-  const files = (await collectFileSizes(outDir)).sort(
-    (a, b) => b.size - a.size,
-  );
-  console.log(`[steambun] ${outDirName}/ size report (largest first):`);
-  for (const file of files) {
-    console.log(`  ${formatSize(file.size).padStart(9)}  ${file.path}`);
+  const metafile = JSON.parse(
+    await Bun.file(metafilePath).text(),
+  ) as Bun.BuildMetafile;
+
+  if (why) {
+    const chains = explainImport(metafile, why);
+    if (chains.length === 0) {
+      console.log(`[steambun] No import chain found to "${why}".`);
+      return;
+    }
+    for (const chain of chains) console.log(chain.join(" -> "));
+    return;
   }
-  const total = files.reduce((sum, f) => sum + f.size, 0);
-  console.log(`  ${formatSize(total).padStart(9)}  total`);
+
+  const report = analyzeMetafile(metafile);
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log("[steambun] outputs (largest first):");
+  for (const output of report.outputs) {
+    console.log(`  ${formatSize(output.bytes).padStart(9)}  ${output.path}`);
+    for (const input of output.inputs.slice(0, 5)) {
+      console.log(
+        `      ${formatSize(input.bytes).padStart(9)}  ${input.path}`,
+      );
+    }
+  }
+  console.log(`  ${formatSize(report.total).padStart(9)}  total`);
+
+  if (report.packages.length > 0) {
+    console.log("\n[steambun] packages (largest first):");
+    for (const pkg of report.packages.slice(0, 15)) {
+      const files = pkg.files === 1 ? "1 file" : `${pkg.files} files`;
+      console.log(
+        `  ${formatSize(pkg.bytes).padStart(9)}  ${pkg.name}@${pkg.versions.join(",")} (${files})`,
+      );
+    }
+  }
+
+  if (report.duplicates.length > 0) {
+    console.log("\n[steambun] duplicate packages:");
+    for (const dup of report.duplicates) {
+      console.log(`  ${dup.name}: ${dup.versions.join(", ")}`);
+    }
+  }
+
+  if (config.build.budgets) {
+    const violations = checkBudgets(report.outputs, config.build.budgets);
+    if (violations.length > 0) {
+      console.log("\n[steambun] budget violations:");
+      for (const v of violations) {
+        console.log(
+          `  ${v.path}  ${formatSize(v.bytes)} > ${formatSize(v.limit)} ("${v.glob}")`,
+        );
+      }
+    }
+  }
 }
 
 async function runRoutes(
@@ -170,7 +204,12 @@ export async function main(argv: string[]): Promise<void> {
       });
       return;
     case "analyze":
-      await runAnalyze(root ?? process.cwd(), configFile);
+      await runAnalyze(
+        root ?? process.cwd(),
+        configFile,
+        !!values.json,
+        values.why,
+      );
       return;
     case "routes":
       await runRoutes(root, configFile, values.mode, !!values.json);

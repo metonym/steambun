@@ -70,9 +70,13 @@ function withAliasPlugin(
   return [createAliasPlugin(alias, config.root), ...plugins];
 }
 
+// bun-types 1.4.1 doesn't declare `cssChunking` on BuildConfig yet, though
+// Bun.build() accepts it at runtime (verified with a probe build).
+type HtmlBuildConfig = Bun.BuildConfig & { cssChunking?: boolean };
+
 export function createHtmlBuildConfig(
   input: HtmlBuildConfigInput,
-): Bun.BuildConfig {
+): HtmlBuildConfig {
   const { config, entrypoints, define, plugins, outDir } = input;
   const standalone = config.build.standalone;
   const publicPath = toPublicPath(config.base);
@@ -99,6 +103,12 @@ export function createHtmlBuildConfig(
             asset: `${config.build.assetsDir}/[name]-[hash].[ext]`,
           },
           ...(config.build.splitting ? { splitting: true } : {}),
+          ...(config.build.splitting && config.build.minChunkSize !== undefined
+            ? { minChunkSize: config.build.minChunkSize }
+            : {}),
+          ...(config.build.cssChunking !== undefined
+            ? { cssChunking: config.build.cssChunking }
+            : {}),
         }),
     metafile: !standalone,
     target: config.build.target ?? "browser",
