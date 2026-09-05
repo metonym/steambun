@@ -22,7 +22,6 @@ export function generateProdServeSource(
   // dropped — so try both layouts.
   const outDirBasename = basename(outDir);
   const apiBasename = config.api ? basename(config.api) : null;
-  const assetsDir = config.build.assetsDir;
 
   const isToml = !!config.configFile && isTomlConfigPath(config.configFile);
   const configImport = config.configFile
@@ -47,18 +46,12 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 ${steambunImports}
 import {
-  composeServerMiddleware,
-  createErrorHandler,
-  createProxyRouteHandler,
-  createProxyWebSocketHandlers,
-  createStaticHandler,
+  createApp,
   displayServerUrl,
   hostnameFromHost,
-  loadApiRoutes,
   openBrowser,
   resolveOpenUrl,
   tlsFromHttps,
-  withMiddleware,
 } from "steambun/runtime";
 ${configImport}
 
@@ -78,60 +71,19 @@ const config = resolveDefaults(rawConfig ?? {}, {
   configFile: ${JSON.stringify(config.configFile)},
 });
 
-const middleware = composeServerMiddleware(config.server ?? {}, config.middleware);
-const routes = {};
+const apiDirCandidates = config.api
+  ? [config.api, join(import.meta.dir, ${JSON.stringify(apiBasename ?? "")})]
+  : [];
+const apiDir = apiDirCandidates.find(existsSync) ?? config.api;
 
-let hasWsProxy = false;
-for (const [prefix, entry] of Object.entries(config.server?.proxy ?? {})) {
-  const handler = withMiddleware(middleware, createProxyRouteHandler(prefix, entry));
-  routes[prefix] = handler;
-  routes[prefix.endsWith("/") ? \`\${prefix}*\` : \`\${prefix}/*\`] = handler;
-  if (typeof entry === "object" && entry.ws) hasWsProxy = true;
-}
-
-if (config.api) {
-  const apiDirCandidates = [config.api, join(import.meta.dir, ${JSON.stringify(apiBasename ?? "")})];
-  const apiDir = apiDirCandidates.find(existsSync) ?? config.api;
-  const apiRoutes = await loadApiRoutes(apiDir);
-  for (const [path, handler] of Object.entries(apiRoutes)) {
-    if (typeof handler === "function") {
-      routes[path] = withMiddleware(middleware, handler);
-    } else {
-      const wrapped = {};
-      for (const [method, fn] of Object.entries(handler)) wrapped[method] = withMiddleware(middleware, fn);
-      routes[path] = wrapped;
-    }
-  }
-}
-
-// Free Content-Type/ETag/Last-Modified/Range for the hashed asset files.
-// Only used outside --compile: it opens the directory via the OS (openat2
-// on Linux), which can't see into a compiled binary's embedded $bunfs
-// filesystem (ENOENT, though readdirSync/Bun.file() read it fine) —
-// createStaticHandler covers that case instead.
-const isCompiled = import.meta.dir.startsWith("/$bunfs/");
-if (!isCompiled) {
-  routes[${JSON.stringify(`/${assetsDir}/*`)}] = { dir: join(outDir, ${JSON.stringify(assetsDir)}) };
-}
-
-// The directory route above 404s on a miss instead of falling through, so
-// this covers everything else (root-level files, SPA fallback) — and is the
-// sole asset-serving path when compiled.
-routes["/*"] = withMiddleware(middleware, createStaticHandler({
-  outDir,
-  spa: config.appType === "spa",
-}));
+const app = await createApp({ config, mode: "preview", outDir, apiDir });
 
 const previewHost = process.env.HOST ?? config.preview?.host ?? config.server.host;
 const server = Bun.serve({
   port,
   hostname: hostnameFromHost(previewHost === "" ? true : previewHost),
-  idleTimeout: config.server.idleTimeout,
-  maxRequestBodySize: config.server.maxRequestBodySize,
   tls: tlsFromHttps(config.server.https, config.root),
-  error: createErrorHandler(false),
-  routes,
-  ...(hasWsProxy ? { websocket: createProxyWebSocketHandlers() } : {}),
+  ...app.serveOptions,
 });
 
 const displayUrl = displayServerUrl(server.url);

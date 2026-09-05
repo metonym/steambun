@@ -248,6 +248,9 @@ describe("generateProdServeSource", () => {
     expect(source).toContain("bunfigToUserConfig");
     expect(source).toContain("resolveBunfigModules");
     expect(source).toContain("bunfig.toml");
-    expect(source).toContain('spa: config.appType === "spa"');
+    expect(source).toContain('mode: "preview"');
+    expect(source).toContain(
+      'createApp({ config, mode: "preview", outDir, apiDir })',
+    );
   });
 });
