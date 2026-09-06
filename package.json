@@ -29,6 +29,7 @@
     "typecheck": "tsc",
     "lint": "biome check .",
     "lint:fix": "biome check --write . --unsafe",
+    "lint:fix:changed": "biome check --write --unsafe --changed --no-errors-on-unmatched .",
     "knip": "knip-bun",
     "build:package": "bun scripts/build-package.ts",
     "bench": "ostia bench bench/*.bench.ts"
