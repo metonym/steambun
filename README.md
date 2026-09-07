@@ -386,6 +386,7 @@ All use `bun run dev` / `build` / `preview`.
 | [`examples/standalone`](examples/standalone) | `build.standalone: true` |
 | [`examples/multi-page`](examples/multi-page) | Three pages sharing a JS chunk and a stylesheet, `build.splitting`/`build.importMap`/`build.sharedCss` |
 | [`examples/fullstack`](examples/fullstack) | API routes (`[id]`), a `steambun/client` fetch against the generated route types, a file-based WebSocket chat route, middleware, WebSocket proxy, `.env`, a macro, a second HTML entry, Bun plugins, a `SteambunHooks` plugin, `build.sri`/`build.csp`, `build.splitting`/`build.importMap`, `compile: true` |
+| [examples/testing](examples/testing) | `createApp({ mode: "preview" }).fetch()` inside `bun test` — no browser needed |
 
 ## Development
 
