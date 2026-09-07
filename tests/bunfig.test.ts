@@ -418,6 +418,7 @@ describe("generateProdServeSource", () => {
         root: "/project",
         base: "/",
         publicDir: "/project/public",
+        envDir: "/project",
         mode: "production",
         command: "preview",
         configFile: "/project/bunfig.toml",
