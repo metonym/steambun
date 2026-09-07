@@ -98,7 +98,7 @@ export default defineConfig(({ mode }) => ({
 
 ### bunfig.toml
 
-Native Bun keys apply as steambun config: `[serve] port`, `[define]`, `[serve.static]`. All other steambun keys go under `[steambun]`. Plugin and middleware values in TOML are module specifiers, not inline functions.
+Native Bun keys apply as steambun config: `[serve] port`, `[define]`, `[serve.static]`. All other steambun keys go under `[steambun]`, including the full `build` option set (`sri`, `csp`, `budgets`, `precompress`, `sharedCss`, `importMap`, ...). Plugin and middleware values in TOML are module specifiers, not inline functions. Unknown or wrong-typed `[steambun.*]` keys print a `[steambun] Unknown bunfig key ...` (or `... expected X, got Y`) warning and are ignored, rather than failing silently.
 
 ```toml
 [serve]
@@ -123,6 +123,8 @@ host = true
 
 [steambun.build]
 outDir = "dist"
+sri = true
+precompress = ["gzip", "br"]
 
 [steambun.resolve.alias]
 "@" = "./src"
