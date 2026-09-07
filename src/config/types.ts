@@ -109,6 +109,15 @@ export interface BuildOptions {
    * Default none.
    */
   headers?: Record<string, Record<string, string>>;
+  /**
+   * Emits deploy-target config files derived from `build.headers`/`build.csp`
+   * and `appType`, alongside the existing `_headers.json` (always written
+   * regardless of this setting). `"netlify"`/`"cloudflare-pages"` (same file
+   * convention) write `_headers` + `_redirects`; `"vercel"` writes
+   * `vercel.json`; `"static"` writes `_headers` + `_redirects` (the most
+   * portable pair). Default `false`.
+   */
+  deploy?: false | "netlify" | "cloudflare-pages" | "vercel" | "static";
 }
 
 export interface ResolveOptions {

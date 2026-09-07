@@ -16,7 +16,13 @@ import { writeRoutesDts } from "../routes-dts";
 import { buildFileType, formatSize } from "../util/format";
 import { splitPlugins } from "../util/plugins";
 import { analyzeMetafile, checkBudgets } from "./analyze";
-import { type HeaderRules, mergeHeaderRules } from "./deploy";
+import {
+  type HeaderRules,
+  mergeHeaderRules,
+  toNetlifyHeaders,
+  toRedirects,
+  toVercelJson,
+} from "./deploy";
 import { writeDistServer } from "./dist-server";
 import { minifyHtml } from "./html-minify";
 import { applyImportMap } from "./import-map";
@@ -276,6 +282,37 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
       JSON.stringify(headerRules, null, 2),
       "utf8",
     );
+  }
+
+  if (config.build.deploy) {
+    const assetsRule: HeaderRules = {
+      [`/${config.build.assetsDir}/*`]: {
+        "Cache-Control": "public, max-age=31536000, immutable",
+      },
+    };
+    const deployRules = mergeHeaderRules(assetsRule, headerRules);
+    if (
+      config.build.deploy === "netlify" ||
+      config.build.deploy === "cloudflare-pages" ||
+      config.build.deploy === "static"
+    ) {
+      await writeFile(
+        join(outDir, "_headers"),
+        toNetlifyHeaders(deployRules),
+        "utf8",
+      );
+      const redirects = toRedirects(config.appType);
+      if (redirects.length > 0) {
+        await writeFile(join(outDir, "_redirects"), redirects, "utf8");
+      }
+    } else if (config.build.deploy === "vercel") {
+      await writeFile(
+        join(outDir, "vercel.json"),
+        JSON.stringify(toVercelJson(deployRules, config.appType), null, 2),
+        "utf8",
+      );
+    }
+    console.log(`[steambun] deploy target: ${config.build.deploy}`);
   }
 
   if (config.publicDir && existsSync(config.publicDir)) {
