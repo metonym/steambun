@@ -153,3 +153,109 @@ describe("import.meta.env.BASE_URL prefixing", () => {
     expect(calls[0]?.[0]).toBe("/app/api/health");
   });
 });
+
+interface FakeWebSocketInstance {
+  url: string;
+  protocols?: string | string[];
+  onopen: ((ev: Event) => void) | null;
+  onmessage: ((ev: Event) => void) | null;
+  onclose: ((ev: Event) => void) | null;
+  onerror: ((ev: Event) => void) | null;
+  send(data: unknown): void;
+  close(code?: number, reason?: string): void;
+  fireOpen(): void;
+  fireClose(): void;
+  fireMessage(): void;
+}
+
+function stubWebSocket(): {
+  instances: FakeWebSocketInstance[];
+  restore: () => void;
+} {
+  const instances: FakeWebSocketInstance[] = [];
+  class FakeWebSocket implements FakeWebSocketInstance {
+    url: string;
+    protocols?: string | string[];
+    onopen: ((ev: Event) => void) | null = null;
+    onmessage: ((ev: Event) => void) | null = null;
+    onclose: ((ev: Event) => void) | null = null;
+    onerror: ((ev: Event) => void) | null = null;
+    constructor(url: string, protocols?: string | string[]) {
+      this.url = url;
+      this.protocols = protocols;
+      instances.push(this);
+    }
+    send(_data: unknown) {}
+    close(_code?: number, _reason?: string) {}
+    fireOpen() {
+      this.onopen?.(new Event("open"));
+    }
+    fireClose() {
+      this.onclose?.(new Event("close"));
+    }
+    fireMessage() {
+      this.onmessage?.(new Event("message"));
+    }
+  }
+  const originalWebSocket = globalThis.WebSocket;
+  // @ts-expect-error test stub, not a real WebSocket constructor
+  globalThis.WebSocket = FakeWebSocket;
+
+  const originalLocation = globalThis.location;
+  // @ts-expect-error stubbing a browser global not present under bun test
+  globalThis.location = { href: "http://example.test/" };
+  const restore = () => {
+    globalThis.WebSocket = originalWebSocket;
+    globalThis.location = originalLocation;
+  };
+
+  return { instances, restore };
+}
+
+describe("ws()", () => {
+  test("substitutes params and query, and uses ws:// for an http: base", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      ws("/api/chat/:room", { params: { room: "42" }, query: { a: "1" } });
+      expect(instances[0]?.url).toBe(
+        "ws://example.test/api/chat/42?a=1",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  test("flips https: to wss: for an absolute path", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      ws("https://example.test/api/chat/general");
+      expect(instances[0]?.url).toBe("wss://example.test/api/chat/general");
+    } finally {
+      restore();
+    }
+  });
+
+  test("reconnects after close when reconnect is set, but not after wrapper close()", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      const socket = ws("/api/chat/:room", {
+        params: { room: "42" },
+        reconnect: { maxAttempts: 1, baseDelayMs: 1 },
+      });
+      expect(instances).toHaveLength(1);
+      instances[0]?.fireClose();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(instances).toHaveLength(2);
+
+      socket.close();
+      instances[1]?.fireClose();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(instances).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+});
