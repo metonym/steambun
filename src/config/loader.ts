@@ -205,6 +205,7 @@ export function resolveDefaults(
     },
     build: {
       outDir: "dist",
+      emptyOutDir: true,
       assetsDir: "assets",
       sourcemap: false,
       minify: true,

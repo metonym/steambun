@@ -47,6 +47,8 @@ export type MinifyOption = boolean | "esbuild" | "terser" | MinifyObject;
 
 export interface BuildOptions {
   outDir?: string;
+  /** Empty `outDir` before building when it is inside `root`. Default `true`. */
+  emptyOutDir?: boolean;
   assetsDir?: string;
   sourcemap?: boolean | "inline" | "external";
   minify?: MinifyOption;
@@ -234,6 +236,7 @@ export interface ResolvedConfig extends UserConfig {
     Pick<
       BuildOptions,
       | "outDir"
+      | "emptyOutDir"
       | "assetsDir"
       | "sourcemap"
       | "minify"

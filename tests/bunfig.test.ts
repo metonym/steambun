@@ -412,6 +412,7 @@ describe("generateProdServeSource", () => {
         server: { port: 4173, host: false, cors: false },
         build: {
           outDir: "dist",
+          emptyOutDir: true,
           assetsDir: "assets",
           sourcemap: false,
           minify: true,
