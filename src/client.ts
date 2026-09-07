@@ -103,3 +103,85 @@ export function href(
   }
   return withBase(resolved);
 }
+
+export interface WsOptions {
+  params?: Record<string, string>;
+  query?: Record<string, string>;
+  protocols?: string | string[];
+  reconnect?: boolean | { maxAttempts?: number; baseDelayMs?: number };
+}
+
+export interface SteambunSocket {
+  readonly socket: WebSocket;
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+  close(code?: number, reason?: string): void;
+  on(event: "open" | "message" | "close" | "error", fn: (ev: Event) => void): void;
+}
+
+function toWsUrl(path: string): string {
+  const absolute = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(path)
+    ? path
+    : new URL(path, location.href).href;
+  const url = new URL(absolute);
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  return url.toString();
+}
+
+/**
+ * Typed WebSocket client against a file-based `export const websocket`
+ * route — see `steambun/client`'s ambient types for the generic signature
+ * checked against `.steambun/routes.d.ts`. Reconnect uses capped
+ * exponential backoff (`baseDelayMs * 2 ** attempts`, capped at 30s);
+ * calling the returned `close()` sets a flag so a subsequent `close` event
+ * never reconnects.
+ */
+export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
+  let resolved = substituteParams(path, opts.params);
+  if (opts.query) {
+    const qs = new URLSearchParams(opts.query).toString();
+    if (qs) resolved += `${resolved.includes("?") ? "&" : "?"}${qs}`;
+  }
+  const url = toWsUrl(withBase(resolved));
+  const reconnect = opts.reconnect;
+  const maxAttempts = (typeof reconnect === "object" && reconnect.maxAttempts) || 10;
+  const baseDelayMs = (typeof reconnect === "object" && reconnect.baseDelayMs) || 250;
+  const listeners: Record<string, Array<(ev: Event) => void>> = {};
+  let socket: WebSocket;
+  let attempts = 0;
+  let userClosed = false;
+  const connect = (): WebSocket => {
+    const s = new WebSocket(url, opts.protocols);
+    s.onopen = (ev) => {
+      attempts = 0;
+      listeners.open?.forEach((fn) => fn(ev));
+    };
+    s.onmessage = (ev) => listeners.message?.forEach((fn) => fn(ev));
+    s.onerror = (ev) => listeners.error?.forEach((fn) => fn(ev));
+    s.onclose = (ev) => {
+      listeners.close?.forEach((fn) => fn(ev));
+      if (userClosed || !reconnect || attempts >= maxAttempts) return;
+      setTimeout(
+        () => {
+          socket = connect();
+        },
+        Math.min(baseDelayMs * 2 ** attempts++, 30_000),
+      );
+    };
+    return s;
+  };
+  socket = connect();
+  return {
+    get socket() {
+      return socket;
+    },
+    send: (data) => socket.send(data as never),
+    close: (code, reason) => {
+      userClosed = true;
+      socket.close(code, reason);
+    },
+    on: (event, fn) => {
+      (listeners[event] ??= []).push(fn);
+    },
+  };
+}

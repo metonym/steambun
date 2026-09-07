@@ -95,3 +95,33 @@ export function href<P extends keyof SteambunPages | keyof SteambunRoutes>(
       : [params?: undefined, query?: Record<string, string>]
     : [params?: undefined, query?: Record<string, string>]
 ): string;
+
+export interface WsOptions<P> {
+  params?: P;
+  query?: Record<string, string>;
+  protocols?: string | string[];
+  reconnect?: boolean | { maxAttempts?: number; baseDelayMs?: number };
+}
+
+export interface SteambunSocket {
+  readonly socket: WebSocket;
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+  close(code?: number, reason?: string): void;
+  on(event: "open" | "message" | "close" | "error", fn: (ev: Event) => void): void;
+}
+
+type WebSocketRoutes = {
+  [P in keyof SteambunRoutes]: SteambunRoutes[P] extends { websocket: true }
+    ? P
+    : never;
+}[keyof SteambunRoutes];
+
+/**
+ * Typed WebSocket client against a file-based `export const websocket`
+ * route. `path` is checked against the generated `.steambun/routes.d.ts`
+ * and must belong to a route that exports `websocket`.
+ */
+export function ws<P extends WebSocketRoutes>(
+  path: P,
+  opts?: WsOptions<ParamsOf<P>>,
+): SteambunSocket;
