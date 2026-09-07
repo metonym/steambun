@@ -144,6 +144,7 @@ function mergeDirective(
 export function buildCspString(
   csp: "strict" | Record<string, string[]>,
   hashes: InlineHashes,
+  warn: (message: string) => void = console.warn,
 ): string {
   const directives: Record<string, string[]> = {
     ...(csp === "strict" ? STRICT_DIRECTIVES : csp),
@@ -158,6 +159,18 @@ export function buildCspString(
   );
 
   return Object.entries(directives)
+    .filter(([key, values]) => {
+      if (values.length > 0) return true;
+      // script-src/style-src are auto-seeded above; ending up empty just
+      // means "no inline content", not a mistake, so drop them quietly and
+      // let default-src govern instead.
+      if (key !== "script-src" && key !== "style-src") {
+        warn(
+          `[steambun] csp: directive "${key}" has no sources and was dropped`,
+        );
+      }
+      return false;
+    })
     .map(([key, values]) => `${key} ${values.join(" ")}`)
     .join("; ");
 }

@@ -126,6 +126,41 @@ describe("collectInlineHashes / buildCspString", () => {
     expect(csp).toContain("img-src 'self' https:");
     expect(csp).toContain("script-src 'sha256-abc'");
   });
+
+  test("omits script-src/style-src entirely when there is nothing to put in them", () => {
+    const csp = buildCspString(
+      { "default-src": ["'self'"] },
+      { script: [], style: [] },
+    );
+    expect(csp).toBe("default-src 'self'");
+  });
+
+  test("emits only the hashes when script-src is omitted but there are inline scripts", () => {
+    const csp = buildCspString(
+      { "default-src": ["'self'"] },
+      { script: ["sha256-abc"], style: [] },
+    );
+    expect(csp).toBe("default-src 'self'; script-src 'sha256-abc'");
+  });
+
+  test("strict output is unchanged", () => {
+    const csp = buildCspString("strict", { script: [], style: [] });
+    expect(csp).toBe(
+      "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'self'",
+    );
+  });
+
+  test("warns and drops a user-supplied directive with no sources", () => {
+    const warnings: string[] = [];
+    const csp = buildCspString(
+      { "default-src": ["'self'"], "img-src": [] },
+      { script: [], style: [] },
+      (m) => warnings.push(m),
+    );
+    expect(csp).toBe("default-src 'self'");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("img-src");
+  });
 });
 
 describe("build() with build.csp", () => {
