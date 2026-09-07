@@ -52,7 +52,7 @@ export interface ApiOptions<P> {
 export class SteambunApiError extends Error {
   status: number;
   body: unknown;
-  constructor(status: number, body: unknown);
+  constructor(method: string, path: string, status: number, body: unknown);
 }
 
 /**
