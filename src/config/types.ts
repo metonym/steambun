@@ -33,6 +33,8 @@ export interface ServerOptions {
   idleTimeout?: number;
   /** Max request body size in bytes. Bun default is 128MB. */
   maxRequestBodySize?: number;
+  /** Fail instead of trying the next port when `port` is taken. Default `false`. */
+  strictPort?: boolean;
 }
 
 export interface MinifyObject {
@@ -112,6 +114,8 @@ export interface PreviewOptions {
   port?: number;
   host?: string | boolean;
   open?: boolean | string;
+  /** Fail instead of trying the next port when `port` is taken. Default `false`. */
+  strictPort?: boolean;
 }
 
 // Aliases Bun's own ambient type rather than redeclaring `setup`'s `build`

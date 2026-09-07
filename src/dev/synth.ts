@@ -173,6 +173,7 @@ import {
   hostnameFromHost,
   openBrowser,
   resolveOpenUrl,
+  serveWithPortRetry,
   tlsFromHttps,
 } from "steambun/runtime";
 
@@ -193,12 +194,15 @@ ${htmlRouteEntries}
   },
 });
 
-const server = Bun.serve({
-  port: config.server.port,
-  hostname: hostnameFromHost(config.server.host),
-  tls: tlsFromHttps(config.server.https, config.root),
-  ...app.serveOptions,
-});
+const server = serveWithPortRetry(
+  {
+    port: config.server.port,
+    hostname: hostnameFromHost(config.server.host),
+    tls: tlsFromHttps(config.server.https, config.root),
+    ...app.serveOptions,
+  },
+  { strictPort: config.server.strictPort, label: "dev" },
+);
 
 const displayUrl = displayServerUrl(server.url);
 const elapsed = Math.round(performance.now() - startedAt);

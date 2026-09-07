@@ -29,6 +29,7 @@ Usage:
 Flags:
 --port <n>       Port for dev/preview
 --host [addr]    Expose on network (dev/preview)
+--strictPort     Fail instead of trying the next port (dev, preview)
   --mode <name>    Set mode (default: development for dev, production for build)
   --config <path>  Explicit config file path
   --root <path>    Project root (default: cwd)
@@ -40,6 +41,7 @@ function commonOptions() {
   return {
     port: { type: "string" as const },
     host: { type: "string" as const },
+    strictPort: { type: "boolean" as const },
     mode: { type: "string" as const },
     config: { type: "string" as const },
     root: { type: "string" as const },
@@ -201,6 +203,7 @@ export async function main(argv: string[]): Promise<void> {
         mode: values.mode,
         port: values.port ? Number(values.port) : undefined,
         host: values.host !== undefined ? values.host || true : undefined,
+        strictPort: values.strictPort,
       });
       return;
     case "build":
@@ -213,6 +216,7 @@ export async function main(argv: string[]): Promise<void> {
         mode: values.mode,
         port: values.port ? Number(values.port) : undefined,
         host: values.host !== undefined ? values.host || true : undefined,
+        strictPort: values.strictPort,
       });
       return;
     case "analyze":
