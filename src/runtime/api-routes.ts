@@ -86,49 +86,124 @@ function isWebSocketRouteHandlers(
 
 export interface ApiFileEntry {
   file: string;
+  /** apiDir-relative path with forward slashes, e.g. "users/[id].ts" */
+  rel: string;
   paths: string[];
 }
 
-/** Every route file under `apiDir` with the paths it maps to, without importing it. */
+/** Every route file under `apiDir` with the paths it maps to, without importing it. Sorted by `rel`. */
 export async function listApiFileEntries(
   apiDir: string,
 ): Promise<ApiFileEntry[]> {
   const files = await collectFiles(apiDir);
-  return files.map((file) => {
+  const entries = files.map((file) => {
     const rel = relative(apiDir, file).split(sep).join("/");
-    return { file, paths: fileToApiPaths(rel) };
+    return { file, rel, paths: fileToApiPaths(rel) };
   });
+  entries.sort((a, b) => a.rel.localeCompare(b.rel, "en"));
+  return entries;
+}
+
+/**
+ * Lower is more specific: a literal segment scores 0, a `[param]` segment 1,
+ * and a `[...catchAll]` / `[[...optionalCatchAll]]` segment 2 — so
+ * `index.ts` (0) beats `[[...slug]].ts` (2) for `/api`, and a `:param`
+ * beats a `*`.
+ */
+export function routeSpecificity(rel: string): number {
+  const withoutExt = rel.replace(/\.[^/.]+$/, "");
+  const withoutIndex = withoutExt.replace(/(^|\/)index$/, "");
+  const segments = withoutIndex.split("/").filter(Boolean);
+
+  let score = 0;
+  for (const segment of segments) {
+    if (/^\[\[\.\.\.(.+)\]\]$/.test(segment)) score += 2;
+    else if (/^\[\.\.\.(.+)\]$/.test(segment)) score += 2;
+    else if (/^\[(.+)\]$/.test(segment)) score += 1;
+  }
+  return score;
+}
+
+export interface ApiRouteCollision {
+  path: string;
+  /** apiDir-relative path of the file that served the route */
+  winner: string;
+  /** apiDir-relative path of the file that was shadowed */
+  loser: string;
 }
 
 export interface ApiModules {
   routes: Record<string, unknown>;
   websockets: Map<string, WebSocketRouteHandlers>;
+  collisions: ApiRouteCollision[];
+}
+
+interface RouteOwner {
+  rel: string;
+  score: number;
+}
+
+/** Registers `rel`/`score` as the owner of `path` if it wins by specificity; records a collision either way. */
+function resolveCollision(
+  owners: Map<string, RouteOwner>,
+  collisions: ApiRouteCollision[],
+  path: string,
+  rel: string,
+  score: number,
+): boolean {
+  const current = owners.get(path);
+  if (!current) {
+    owners.set(path, { rel, score });
+    return true;
+  }
+  if (score < current.score) {
+    collisions.push({ path, winner: rel, loser: current.rel });
+    owners.set(path, { rel, score });
+    return true;
+  }
+  collisions.push({ path, winner: current.rel, loser: rel });
+  return false;
 }
 
 /**
  * Loads every file under `apiDir` into HTTP route handlers and, for files
  * exporting `websocket`, a map of route path → WebSocket handlers. Backs
  * both {@link loadApiRoutes} (HTTP only) and `createApp`'s WebSocket wiring.
+ * Files load in sorted order; when two files map to the same path the more
+ * specific one wins (see {@link routeSpecificity}), ties go to the
+ * lexically-first file (processed first since entries are sorted).
  */
 export async function loadApiModules(apiDir: string): Promise<ApiModules> {
   const entries = await listApiFileEntries(apiDir);
   const routes: Record<string, unknown> = {};
   const websockets = new Map<string, WebSocketRouteHandlers>();
+  const collisions: ApiRouteCollision[] = [];
+  const routeOwners = new Map<string, RouteOwner>();
+  const wsOwners = new Map<string, RouteOwner>();
 
-  for (const { file, paths } of entries) {
+  for (const { file, rel, paths } of entries) {
     const mod = (await import(file)) as Record<string, unknown>;
+    const score = routeSpecificity(rel);
 
     const handler = handlerFromModule(mod);
     if (handler) {
-      for (const path of paths) routes[path] = handler;
+      for (const path of paths) {
+        if (resolveCollision(routeOwners, collisions, path, rel, score)) {
+          routes[path] = handler;
+        }
+      }
     }
 
     if (isWebSocketRouteHandlers(mod.websocket)) {
-      for (const path of paths) websockets.set(path, mod.websocket);
+      for (const path of paths) {
+        if (resolveCollision(wsOwners, collisions, path, rel, score)) {
+          websockets.set(path, mod.websocket);
+        }
+      }
     }
   }
 
-  return { routes, websockets };
+  return { routes, websockets, collisions };
 }
 
 /**
