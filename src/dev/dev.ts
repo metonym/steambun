@@ -42,14 +42,25 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
   const mode = opts.mode ?? "development";
 
   let shuttingDown = false;
-  let restarting = false;
+  let killedForRestart = false;
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let watcher: { close(): void } | undefined;
+  let resumeAfterCrash: (() => void) | null = null;
+
+  function waitForNextChange(): Promise<void> {
+    return new Promise((resolve) => {
+      resumeAfterCrash = () => {
+        resumeAfterCrash = null;
+        resolve();
+      };
+    });
+  }
 
   const shutdown = () => {
     shuttingDown = true;
     watcher?.close();
     proc?.kill();
+    resumeAfterCrash?.();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -144,19 +155,31 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       envDir,
       configFileName: config.configFile ? basename(config.configFile) : null,
       onRestart: (filename) => {
-        if (shuttingDown || restarting) return;
-        restarting = true;
+        if (shuttingDown || killedForRestart) return;
+        killedForRestart = true;
         console.log(
           `[steambun] ${filename ?? "a watched file"} changed, restarting`,
         );
         proc?.kill();
+        resumeAfterCrash?.();
       },
     });
 
     const exitCode = await proc.exited;
 
-    if (restarting && !shuttingDown) {
-      restarting = false;
+    if (shuttingDown) return exitCode;
+
+    if (killedForRestart) {
+      killedForRestart = false;
+      return startOnce();
+    }
+
+    if (exitCode !== 0) {
+      console.log(
+        `[steambun] dev server exited (code ${exitCode}) — waiting for a change to restart`,
+      );
+      await waitForNextChange();
+      if (shuttingDown) return 0;
       return startOnce();
     }
 
