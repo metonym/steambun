@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 
 async function collectFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
+    if (entry.isDirectory() && entry.name.startsWith(".")) continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...(await collectFiles(path)));
@@ -40,6 +41,20 @@ export async function addPublicDirRoutes(
   if (!existsSync(publicDir)) return;
   const files = await collectFiles(publicDir);
   for (const file of files) {
+    const rel = relative(publicDir, file);
+    const base = basename(file);
+    if (base.endsWith(".html")) {
+      console.warn(
+        `[steambun] publicDir contains ${rel} — HTML under publicDir is not an app entry`,
+      );
+    }
+    if (/^\.env(\..+)?$/.test(base)) {
+      console.warn(
+        `[steambun] publicDir contains ${rel} — .env files should not be published`,
+      );
+    }
+    if (base.startsWith(".")) continue;
+
     const urlPath = urlPathFor(publicDir, file);
     if (urlPath in routes) continue;
     routes[urlPath] = Bun.file(file);
