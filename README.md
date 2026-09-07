@@ -46,6 +46,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | --- | --- |
 | `--port <n>` | Port for `dev` and `preview` |
 | `--host [addr]` | Bind address. Omit the value, or set `server.host: true`, to bind `0.0.0.0` |
+| `--strictPort` | Fail instead of trying the next port (`dev`, `preview`) |
 | `--mode <name>` | Mode. Default `development` for `dev`, `production` for `build` |
 | `--config <path>` | Config file (skips discovery) |
 | `--root <path>` | Project root (default: cwd) |
@@ -145,13 +146,15 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 | `appType` | `"spa"` | `"spa"` or `"mpa"`. After file lookup, unmatched paths get `index.html` (`spa`) or 404 (`mpa`). Applies to `dev`, `preview`, and `compile` |
 | `server.port` | `5173` | Listen port |
 | `server.host` | `false` (`127.0.0.1`) | `true` binds `0.0.0.0` |
-| `server.open` | off | Open a browser after listen. `true` opens `/`. A string is a path |
+| `server.open` | off | Open a browser after listen. `true` opens `/`. A string is a path. If no browser opener is available, a warning is printed and startup continues |
 | `server.cors` | `false` | CORS middleware |
 | `server.headers` | | Extra response headers |
 | `server.https` | | `{ key, cert, ca?, passphrase? }` paths, resolved against `root`. Maps to `Bun.serve({ tls })` |
 | `server.idleTimeout` | Bun default (10s) | Seconds of inactivity before Bun closes the connection. `text/event-stream` responses are exempted automatically — see [Server-Sent Events](#server-sent-events) |
 | `server.maxRequestBodySize` | Bun default (128MB) | Max request body in bytes |
+| `server.strictPort` | `false` | When `port` is taken, `dev` and `preview` try the next port (up to 10) and print a notice; `true` fails instead. `dist/server.js` always fails on a taken port |
 | `preview.port` / `host` / `open` | port `4173` | Same shapes as `server.*` |
+| `preview.strictPort` | `false` | Same as `server.strictPort`, for `steambun preview` |
 | `base` | `"/"` | `import.meta.env.BASE_URL` and Bun `publicPath` |
 | `resolve.alias` | | Bun `onResolve` plugin in `dev` and `build` |
 | `resolve.viteSuffixes` | `false` | Shims Vite's `?raw` / `?url` / `?inline` import suffixes as a Bun plugin, in `dev` and `build` |
