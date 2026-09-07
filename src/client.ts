@@ -2,8 +2,8 @@ export class SteambunApiError extends Error {
   status: number;
   body: unknown;
 
-  constructor(status: number, body: unknown) {
-    super(`steambun api error: ${status}`);
+  constructor(method: string, path: string, status: number, body: unknown) {
+    super(`steambun api error: ${method} ${path} → ${status}`);
     this.name = "SteambunApiError";
     this.status = status;
     this.body = body;
@@ -74,7 +74,12 @@ export async function api(
     } catch {
       errorBody = await res.text().catch(() => undefined);
     }
-    throw new SteambunApiError(res.status, errorBody);
+    throw new SteambunApiError(
+      method.toUpperCase(),
+      resolved,
+      res.status,
+      errorBody,
+    );
   }
 
   if (res.status === 204 || res.status === 205) return undefined;

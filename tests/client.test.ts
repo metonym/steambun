@@ -108,6 +108,7 @@ describe("api()", () => {
     expect(error).toBeDefined();
     expect(error?.status).toBe(500);
     expect(error?.body).toEqual({ error: "nope" });
+    expect(error?.message).toContain("GET /api/broken");
   });
 });
 
