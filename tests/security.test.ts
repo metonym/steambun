@@ -49,6 +49,57 @@ describe("applySri", () => {
     const result = await applySri(html, outDir, outDir);
     expect(result).not.toContain("integrity=");
   });
+
+  test("warns and leaves the tag untouched when a local file is missing", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "steambun-sri-missing-"));
+    const html = '<script src="./missing.js"></script>';
+    const warnings: string[] = [];
+
+    const result = await applySri(html, outDir, outDir, "/", (m) =>
+      warnings.push(m),
+    );
+
+    expect(result).toBe(html);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("./missing.js");
+  });
+
+  test("resolves absolute sources against base, not htmlDir", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "steambun-sri-base-"));
+    mkdirSync(join(outDir, "assets"));
+    const jsContent = "console.log('base')";
+    const cssContent = "body{color:blue}";
+    writeFileSync(join(outDir, "assets", "app.js"), jsContent);
+    writeFileSync(join(outDir, "assets", "app.css"), cssContent);
+
+    const html =
+      '<script src="/mybase/assets/app.js"></script>' +
+      '<link rel="stylesheet" href="/mybase/assets/app.css">';
+
+    const result = await applySri(html, outDir, outDir, "/mybase/");
+
+    expect(result).toContain(`integrity="${sha384(jsContent)}"`);
+    expect(result).toContain(`integrity="${sha384(cssContent)}"`);
+    expect(result).toContain('crossorigin="anonymous"');
+  });
+
+  test("default base still resolves relative and absolute sources", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "steambun-sri-default-"));
+    mkdirSync(join(outDir, "assets"));
+    const relContent = "console.log('rel')";
+    const absContent = "console.log('abs')";
+    writeFileSync(join(outDir, "assets", "rel.js"), relContent);
+    writeFileSync(join(outDir, "assets", "abs.js"), absContent);
+
+    const html =
+      '<script src="./assets/rel.js"></script>' +
+      '<script src="/assets/abs.js"></script>';
+
+    const result = await applySri(html, outDir, outDir);
+
+    expect(result).toContain(`integrity="${sha384(relContent)}"`);
+    expect(result).toContain(`integrity="${sha384(absContent)}"`);
+  });
 });
 
 describe("collectInlineHashes / buildCspString", () => {

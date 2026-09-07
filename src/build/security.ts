@@ -1,20 +1,39 @@
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 function isExternalSrc(src: string): boolean {
   return /^([a-z][a-z0-9+.-]*:)?\/\//i.test(src) || src.startsWith("data:");
 }
 
+// Absolute `src` values (e.g. `/mybase/assets/x.js`) are rooted at `base`,
+// not at the HTML file's own directory, so they resolve against `outDir`
+// after stripping the `base` prefix. Relative `src` values resolve against
+// `htmlDir`, matching how a browser would.
 async function sriHashFor(
   outDir: string,
   htmlDir: string,
   src: string,
+  base: string,
 ): Promise<string | null> {
-  if (isExternalSrc(src)) return null;
   const cleanSrc = src.split("?")[0]!.split("#")[0]!;
-  const filePath = join(htmlDir, cleanSrc);
-  if (!filePath.startsWith(outDir)) return null;
+  const filePath = cleanSrc.startsWith("/")
+    ? join(
+        outDir,
+        cleanSrc.startsWith(base)
+          ? cleanSrc.slice(base.length)
+          : cleanSrc.replace(/^\/+/, ""),
+      )
+    : join(htmlDir, cleanSrc);
 
-  const file = Bun.file(filePath);
+  const resolvedOutDir = resolve(outDir);
+  const resolvedFilePath = resolve(filePath);
+  if (
+    resolvedFilePath !== resolvedOutDir &&
+    !resolvedFilePath.startsWith(resolvedOutDir + sep)
+  ) {
+    return null;
+  }
+
+  const file = Bun.file(resolvedFilePath);
   if (!(await file.exists())) return null;
 
   const hasher = new Bun.CryptoHasher("sha384");
@@ -26,19 +45,28 @@ async function sriHashFor(
  * Adds `integrity`/`crossorigin="anonymous"` to every local `<script src>`
  * and `<link rel="stylesheet" href>` in `html` (an external URL, or one
  * outside `outDir`, is left untouched). `htmlDir` is the directory the HTML
- * output file lives in — `src`/`href` are resolved relative to it, matching
- * how the browser would.
+ * output file lives in — relative `src`/`href` are resolved against it,
+ * absolute ones against `outDir` (after stripping `base`), matching how a
+ * browser would.
  */
 export async function applySri(
   html: string,
   outDir: string,
   htmlDir: string,
+  base = "/",
+  warn: (message: string) => void = console.warn,
 ): Promise<string> {
   async function addIntegrity(el: HTMLRewriterTypes.Element, attr: string) {
     const src = el.getAttribute(attr);
     if (!src) return;
-    const hash = await sriHashFor(outDir, htmlDir, src);
-    if (!hash) return;
+    if (isExternalSrc(src)) return;
+    const hash = await sriHashFor(outDir, htmlDir, src, base);
+    if (!hash) {
+      warn(
+        `[steambun] sri: could not find ${src} for ${htmlDir} — no integrity added`,
+      );
+      return;
+    }
     el.setAttribute("integrity", hash);
     if (!el.hasAttribute("crossorigin")) {
       el.setAttribute("crossorigin", "anonymous");
