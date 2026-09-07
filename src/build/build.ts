@@ -16,6 +16,7 @@ import { writeRoutesDts } from "../routes-dts";
 import { buildFileType, formatSize } from "../util/format";
 import { splitPlugins } from "../util/plugins";
 import { analyzeMetafile, checkBudgets } from "./analyze";
+import { type HeaderRules, mergeHeaderRules } from "./deploy";
 import { writeDistServer } from "./dist-server";
 import { minifyHtml } from "./html-minify";
 import { applyImportMap } from "./import-map";
@@ -258,18 +259,21 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     }
   }
 
-  if (config.build.csp) {
-    const cspString = buildCspString(config.build.csp, {
-      script: [...cspHashes.script],
-      style: [...cspHashes.style],
-    });
+  const cspRules: HeaderRules = config.build.csp
+    ? {
+        "/**/*.html": {
+          "Content-Security-Policy": buildCspString(config.build.csp, {
+            script: [...cspHashes.script],
+            style: [...cspHashes.style],
+          }),
+        },
+      }
+    : {};
+  const headerRules = mergeHeaderRules(cspRules, config.build.headers ?? {});
+  if (Object.keys(headerRules).length > 0) {
     await writeFile(
       join(outDir, "_headers.json"),
-      JSON.stringify(
-        { "/**/*.html": { "Content-Security-Policy": cspString } },
-        null,
-        2,
-      ),
+      JSON.stringify(headerRules, null, 2),
       "utf8",
     );
   }

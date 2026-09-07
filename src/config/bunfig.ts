@@ -491,6 +491,7 @@ const BUILD_TABLE: KeyTable<BuildOptions> = {
   server: bool,
   sri: bool,
   csp: union(oneOf<false | "strict">(false, "strict"), record(strArray)),
+  headers: record(strRecord),
 };
 
 const COMPILE_WINDOWS_TABLE: KeyTable<CompileWindowsOptions> = {
