@@ -211,6 +211,11 @@ Set `api` to a directory (for example `"./src/api"`). Each file becomes a `Bun.s
 - `[...slug].ts` → `*` wildcard
 - `[[...slug]].ts` → the parent path and a wildcard
 
+Files load in sorted order. When two files map to the same path, the more specific one wins
+(`index.ts` over `[[...slug]].ts`, a literal segment over `:param` over `*`), and ties go to the
+lexically-first file. Every collision is printed by `dev`, `preview` (and the compiled binary), and
+`steambun routes`.
+
 Frontend HMR and `bun --hot` reload API modules together.
 
 ### WebSocket routes
