@@ -28,6 +28,11 @@ describe("generateRoutesDts", () => {
           file: "/project/src/api/opt/[[...slug]].ts",
           paths: ["/api/opt", "/api/opt/*"],
         },
+        {
+          file: "/project/src/api/chat/[room].ts",
+          paths: ["/api/chat/:room"],
+          hasWebsocket: true,
+        },
       ],
       htmlEntries,
       appType: "spa",
@@ -43,21 +48,29 @@ describe("generateRoutesDts", () => {
     expect(source).toContain(
       'import type * as R3 from "../src/api/opt/[[...slug]]";',
     );
+    expect(source).toContain(
+      'import type * as R4 from "../src/api/chat/[room]";',
+    );
 
     expect(source).toContain(
-      '"/api/health": { params: {}; module: typeof R0 };',
+      '"/api/health": { params: {}; module: typeof R0; websocket: false };',
     );
     expect(source).toContain(
-      '"/api/users/:id": { params: { "id": string }; module: typeof R1 };',
+      '"/api/users/:id": { params: { "id": string }; module: typeof R1; websocket: false };',
     );
     // A wildcard segment carries no named param, matching real Bun.serve
     // (req.params is empty for a `/*` match).
     expect(source).toContain(
-      '"/api/docs/*": { params: {}; module: typeof R2 };',
+      '"/api/docs/*": { params: {}; module: typeof R2; websocket: false };',
     );
-    expect(source).toContain('"/api/opt": { params: {}; module: typeof R3 };');
     expect(source).toContain(
-      '"/api/opt/*": { params: {}; module: typeof R3 };',
+      '"/api/opt": { params: {}; module: typeof R3; websocket: false };',
+    );
+    expect(source).toContain(
+      '"/api/opt/*": { params: {}; module: typeof R3; websocket: false };',
+    );
+    expect(source).toContain(
+      '"/api/chat/:room": { params: { "room": string }; module: typeof R4; websocket: true };',
     );
 
     // Root index.html in SPA mode is "/*" — stripped to "/" for the page key.
@@ -89,5 +102,28 @@ describe("writeRoutesDts", () => {
 
     expect(content).toContain('"/api/users/:id"');
     expect(content).toContain('"/": {};');
+  });
+
+  test("marks a route with a real `export const websocket` as websocket: true", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-routes-dts-"));
+    mkdirSync(join(root, "api", "chat"), { recursive: true });
+    writeFileSync(
+      join(root, "api", "chat", "[room].ts"),
+      "export const websocket = { open() {} };\n",
+    );
+    writeFileSync(
+      join(root, "api", "health.ts"),
+      "export const GET = () => Response.json({});\n",
+    );
+
+    const path = await writeRoutesDts(root, join(root, "api"), [], "mpa");
+    const content = readFileSync(path, "utf8");
+
+    expect(content).toContain(
+      '"/api/chat/:room": { params: { "room": string }; module: typeof R0; websocket: true };',
+    );
+    expect(content).toContain(
+      '"/api/health": { params: {}; module: typeof R1; websocket: false };',
+    );
   });
 });

@@ -91,6 +91,17 @@ export interface ApiFileEntry {
   paths: string[];
 }
 
+const WEBSOCKET_EXPORT_RE = /\bexport\s+const\s+websocket\b/;
+
+/** Whether `file` textually contains `export const websocket` — cheap and import-free, like {@link listApiFileEntries}. */
+export async function hasWebsocketExport(file: string): Promise<boolean> {
+  try {
+    return WEBSOCKET_EXPORT_RE.test(await Bun.file(file).text());
+  } catch {
+    return false;
+  }
+}
+
 /** Every route file under `apiDir` with the paths it maps to, without importing it. Sorted by `rel`. */
 export async function listApiFileEntries(
   apiDir: string,
