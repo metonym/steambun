@@ -188,6 +188,20 @@ sri = true
     );
     expect(config.build?.csp).toBe("strict");
   });
+
+  test("[steambun.server] and [steambun.preview] strictPort decode", () => {
+    const config = bunfigToUserConfig(
+      parseBunfigToml(`
+[steambun.server]
+strictPort = true
+
+[steambun.preview]
+strictPort = true
+`),
+    );
+    expect(config.server?.strictPort).toBe(true);
+    expect(config.preview?.strictPort).toBe(true);
+  });
 });
 
 describe("bunfigToUserConfig warnings", () => {

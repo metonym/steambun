@@ -81,15 +81,16 @@ describe("createErrorHandler", () => {
 describe("serveWithPortRetry", () => {
   test("retries the next port when the first is taken", () => {
     const occupied = Bun.serve({ port: 0, fetch: () => new Response("ok") });
-    const servers: Bun.Server[] = [occupied];
+    const occupiedPort = occupied.port as number;
+    const servers: Bun.Server<undefined>[] = [occupied];
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const server = serveWithPortRetry(
-        { port: occupied.port, fetch: () => new Response("ok") },
+        { port: occupiedPort, fetch: () => new Response("ok") },
         { label: "dev" },
       );
       servers.push(server);
-      expect(server.port).toBeGreaterThan(occupied.port);
+      expect(server.port).toBeGreaterThan(occupiedPort);
       expect(warnSpy).toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
@@ -99,14 +100,15 @@ describe("serveWithPortRetry", () => {
 
   test("strictPort rethrows instead of retrying", () => {
     const occupied = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    const occupiedPort = occupied.port as number;
     try {
       expect(() =>
         serveWithPortRetry(
-          { port: occupied.port, fetch: () => new Response("ok") },
+          { port: occupiedPort, fetch: () => new Response("ok") },
           { strictPort: true },
         ),
       ).toThrow(
-        `[steambun] port ${occupied.port} is already in use (strictPort)`,
+        `[steambun] port ${occupiedPort} is already in use (strictPort)`,
       );
     } finally {
       occupied.stop(true);

@@ -19,6 +19,7 @@ export interface DevOptions {
   configFile?: string;
   port?: number;
   host?: string | boolean;
+  strictPort?: boolean;
 }
 
 export async function dev(opts: DevOptions = {}): Promise<void> {
@@ -49,6 +50,8 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
 
     if (opts.port) config.server.port = opts.port;
     if (opts.host !== undefined) config.server.host = opts.host;
+    if (opts.strictPort !== undefined)
+      config.server.strictPort = opts.strictPort;
 
     const htmlEntries = await discoverHtmlEntries(config.root, {
       skipDirs: discoverSkipDirs(config),

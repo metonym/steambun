@@ -10,6 +10,7 @@ export interface PreviewOptions {
   configFile?: string;
   port?: number;
   host?: string | boolean;
+  strictPort?: boolean;
 }
 
 export async function preview(opts: PreviewOptions = {}): Promise<void> {
@@ -50,6 +51,9 @@ export async function preview(opts: PreviewOptions = {}): Promise<void> {
         : typeof host === "string"
           ? { HOST: host }
           : {}),
+      ...((opts.strictPort ?? config.preview?.strictPort)
+        ? { STRICT_PORT: "1" }
+        : {}),
     },
   });
 

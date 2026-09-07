@@ -414,12 +414,14 @@ const SERVER_TABLE: KeyTable<ServerOptions> = {
   https: httpsEntry,
   idleTimeout: num,
   maxRequestBodySize: num,
+  strictPort: bool,
 };
 
 const PREVIEW_TABLE: KeyTable<PreviewOptions> = {
   port: num,
   host: union(bool, str),
   open: union(bool, str),
+  strictPort: bool,
 };
 
 const RESOLVE_TABLE: KeyTable<ResolveOptions> = {

@@ -69,6 +69,7 @@ import {
   hostnameFromHost,
   openBrowser,
   resolveOpenUrl,
+  serveWithPortRetry,
   tlsFromHttps,
 } from "steambun/runtime";
 ${configImport}
@@ -93,12 +94,22 @@ const apiDir = apiDirCandidates.find(existsSync) ?? config.api;
 const app = await createApp({ config, mode: "preview", outDir, apiDir });
 
 const previewHost = process.env.HOST ?? config.preview?.host ?? config.server.host;
-const server = Bun.serve({
-  port,
-  hostname: hostnameFromHost(previewHost === "" ? true : previewHost),
-  tls: tlsFromHttps(config.server.https, config.root),
-  ...app.serveOptions,
-});
+const server = serveWithPortRetry(
+  {
+    port,
+    hostname: hostnameFromHost(previewHost === "" ? true : previewHost),
+    tls: tlsFromHttps(config.server.https, config.root),
+    ...app.serveOptions,
+  },
+  {
+    strictPort: ${
+      opts.embedOutDir
+        ? "true"
+        : `process.env.STRICT_PORT === "1" || config.preview?.strictPort`
+    },
+    label: "preview",
+  },
+);
 
 const displayUrl = displayServerUrl(server.url);
 console.log(\`[steambun] preview server ready at \${displayUrl}\`);
