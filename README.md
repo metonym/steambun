@@ -205,6 +205,8 @@ Files, later overriding earlier: `.env`, `.env.local`, `.env.[mode]`, `.env.[mod
 
 `envPrefix` defaults to `["VITE_", "PUBLIC_"]`. Matching keys are available as `import.meta.env.*` and inlined as `process.env.PREFIX_*`. `define` applies in `dev` and `build`.
 
+Both modes are token-aware, so a `define` key can't corrupt a string literal, a comment, or an unrelated longer identifier. `build` uses `Bun.build({ define })` directly. `dev` has no equivalent — Bun's dev bundler exposes no JS-level `define` hook — so substitution runs through a generated boundary- and comment/string-aware scanner instead.
+
 Builtins: `MODE`, `DEV`, `PROD`, `BASE_URL`, `SSR`. `dev` and `build` write `.steambun/env.d.ts` from public keys. Reference the builtins with:
 
 ```ts
