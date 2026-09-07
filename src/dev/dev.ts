@@ -22,6 +22,22 @@ export interface DevOptions {
   strictPort?: boolean;
 }
 
+export function devChildEnv(
+  opts: Pick<DevOptions, "port" | "host" | "strictPort">,
+): Record<string, string> {
+  return {
+    ...(opts.port ? { PORT: String(opts.port) } : {}),
+    ...(opts.host === true
+      ? { HOST: "" }
+      : typeof opts.host === "string"
+        ? { HOST: opts.host }
+        : {}),
+    ...(opts.strictPort !== undefined
+      ? { STRICT_PORT: opts.strictPort ? "1" : "0" }
+      : {}),
+  };
+}
+
 export async function dev(opts: DevOptions = {}): Promise<void> {
   const mode = opts.mode ?? "development";
 
@@ -113,7 +129,11 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       ],
       cwd: config.root,
       stdio: ["inherit", "inherit", "inherit"],
-      env: { ...process.env, NODE_ENV: "development" },
+      env: {
+        ...process.env,
+        NODE_ENV: "development",
+        ...devChildEnv(opts),
+      },
     });
 
     watcher?.close();
