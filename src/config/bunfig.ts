@@ -492,6 +492,13 @@ const BUILD_TABLE: KeyTable<BuildOptions> = {
   sri: bool,
   csp: union(oneOf<false | "strict">(false, "strict"), record(strArray)),
   headers: record(strRecord),
+  deploy: oneOf<false | "netlify" | "cloudflare-pages" | "vercel" | "static">(
+    false,
+    "netlify",
+    "cloudflare-pages",
+    "vercel",
+    "static",
+  ),
 };
 
 const COMPILE_WINDOWS_TABLE: KeyTable<CompileWindowsOptions> = {
