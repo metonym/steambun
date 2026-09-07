@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,22 @@ describe("resolveDefaults drop / standalone", () => {
     expect(resolveDefaults({ appType: "mpa" }, ctx("production")).appType).toBe(
       "mpa",
     );
+  });
+
+  test("invalid appType warns and falls back to spa", () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = resolveDefaults(
+        { appType: "custom" as never },
+        ctx("production"),
+      );
+      expect(config.appType).toBe("spa");
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).includes("custom")),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test("envDir defaults to root and resolves relative to root", () => {

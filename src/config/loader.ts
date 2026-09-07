@@ -184,6 +184,18 @@ export function resolveDefaults(
     ? join(ctx.root, userConfig.envDir)
     : ctx.root;
 
+  let appType: "spa" | "mpa";
+  if (userConfig.appType === undefined || userConfig.appType === "spa") {
+    appType = "spa";
+  } else if (userConfig.appType === "mpa") {
+    appType = "mpa";
+  } else {
+    console.warn(
+      `[steambun] appType "${userConfig.appType}" is not "spa" or "mpa" — using "spa".`,
+    );
+    appType = "spa";
+  }
+
   const envPrefix = userConfig.envPrefix
     ? Array.isArray(userConfig.envPrefix)
       ? userConfig.envPrefix
@@ -197,7 +209,7 @@ export function resolveDefaults(
     publicDir,
     api,
     envDir,
-    appType: userConfig.appType === "mpa" ? "mpa" : "spa",
+    appType,
     mode: ctx.mode,
     command: ctx.command,
     configFile: ctx.configFile,
