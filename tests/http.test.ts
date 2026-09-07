@@ -156,6 +156,54 @@ describe("addPublicDirRoutes", () => {
     await addPublicDirRoutes(routes, dir);
     expect(routes["/my%20file.png"]).toBeInstanceOf(Blob);
   });
+
+  test("dotfiles and nested dotfile directories are excluded from routes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
+    writeFileSync(join(dir, ".DS_Store"), "junk");
+    mkdirSync(join(dir, ".git"));
+    writeFileSync(join(dir, ".git", "config"), "junk");
+    const routes: Record<string, unknown> = {};
+    await addPublicDirRoutes(routes, dir);
+    expect(routes).toEqual({});
+  });
+
+  test("a stray .html file is still routed but warns", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
+    writeFileSync(join(dir, "stray.html"), "<h1>stray</h1>");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const routes: Record<string, unknown> = {};
+      await addPublicDirRoutes(routes, dir);
+      expect(routes["/stray.html"]).toBeInstanceOf(Blob);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("HTML under publicDir is not an app entry"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test(".env and .env.local are excluded from routes and each warns", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
+    writeFileSync(join(dir, ".env"), "SECRET=1");
+    writeFileSync(join(dir, ".env.local"), "SECRET=2");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const routes: Record<string, unknown> = {};
+      await addPublicDirRoutes(routes, dir);
+      expect(routes).toEqual({});
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(".env — .env files should not be published"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          ".env.local — .env files should not be published",
+        ),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe("createAliasPlugin", () => {
