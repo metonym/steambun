@@ -53,17 +53,30 @@ export interface BuildOptions {
 }
 
 const BUILD_FILE_TYPE_RANK: Record<string, number> = { html: 0, css: 1, js: 2 };
+const GZIP_EXTENSIONS = new Set([".js", ".css", ".html", ".svg", ".json"]);
+const GZIP_MIN_SIZE = 1024;
+
+function shouldGzip(name: string, size: number): boolean {
+  return (
+    size >= GZIP_MIN_SIZE &&
+    GZIP_EXTENSIONS.has(name.slice(name.lastIndexOf(".")))
+  );
+}
 
 /** html, then css, then js (unrecognized extensions last); ascending by size within each. */
 async function printBuildSummary(
   outDir: string,
   outputs: Array<{ kind: Bun.BuildArtifact["kind"]; path: string }>,
 ): Promise<void> {
-  const rows: { name: string; size: number }[] = [];
+  const rows: { name: string; size: number; gzip?: number }[] = [];
   for (const artifact of outputs) {
     if (artifact.kind === "sourcemap") continue;
     const { size } = await stat(artifact.path);
-    rows.push({ name: relative(outDir, artifact.path), size });
+    const name = relative(outDir, artifact.path);
+    const gzip = shouldGzip(name, size)
+      ? Bun.gzipSync(await readFile(artifact.path), { level: 6 }).byteLength
+      : undefined;
+    rows.push({ name, size, gzip });
   }
   rows.sort((a, b) => {
     const rankA = BUILD_FILE_TYPE_RANK[buildFileType(a.name) ?? ""] ?? 3;
@@ -73,13 +86,22 @@ async function printBuildSummary(
 
   const nameWidth = Math.max(0, ...rows.map((row) => row.name.length));
   const sizes = rows.map((row) => formatSize(row.size));
+  const gzipLabels = rows.map((row) =>
+    row.gzip === undefined ? "" : `gzip: ${formatSize(row.gzip)}`,
+  );
   const sizeWidth = Math.max(0, ...sizes.map((s) => s.length));
+  const gzipWidth = Math.max(0, ...gzipLabels.map((s) => s.length));
 
   rows.forEach((row, i) => {
-    const name = row.name.padEnd(nameWidth);
-    const size = sizes[i]!.padStart(sizeWidth);
-    console.log(`  ${name}  ${size}`);
+    const line = `  ${row.name.padEnd(nameWidth)}  ${sizes[i]!.padStart(sizeWidth)}  ${gzipLabels[i]!.padEnd(gzipWidth)}`;
+    console.log(line.trimEnd());
   });
+
+  const totalSize = rows.reduce((sum, row) => sum + row.size, 0);
+  const totalGzip = rows.reduce((sum, row) => sum + (row.gzip ?? 0), 0);
+  const totalLabel = totalGzip > 0 ? `gzip: ${formatSize(totalGzip)}` : "";
+  const total = `  ${"total".padEnd(nameWidth)}  ${formatSize(totalSize).padStart(sizeWidth)}  ${totalLabel}`;
+  console.log(total.trimEnd());
 }
 
 export async function build(opts: BuildOptions = {}): Promise<void> {
