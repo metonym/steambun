@@ -74,7 +74,7 @@ Discovery order:
 
 `--config` overrides discovery. If both a TypeScript config and `bunfig.toml` exist, the TypeScript file is the steambun config. `steambun dev` still merges the project `bunfig.toml` into `.steambun/bunfig.toml` so Bun still sees `[install]`, `[define]`, `preload`, and `[serve.static]` plugins.
 
-`steambun dev` restarts the whole dev server (not just `--hot`'s in-process reload) when the config file or `bunfig.toml` changes, an `.env*` file changes, or a top-level `*.html` file is added or removed — debounced 100ms. Only `root`'s immediate children are watched, so a new HTML file inside a subdirectory isn't picked up.
+`steambun dev` restarts the whole dev server (not just `--hot`'s in-process reload) when the config file or `bunfig.toml` changes, an `.env*` file changes, or a `*.html` file is added or removed — debounced 100ms. `root` is watched recursively for `.html` add/remove at any depth; `envDir`'s `.env*` files are watched at their top level only; each restart logs which file triggered it; if the dev server crashes on its own it prints `dev server exited (code N) — waiting for a change to restart` and keeps watching instead of exiting; on Linux, a directory created after the dev server started may not be included in the recursive watch until the next restart (see oven-sh/bun#15939) — macOS and Windows don't have this gap.
 
 Functions cannot live in TOML: middleware factories, plugin `setup`, `defineConfig(({ mode }) => ...)`, and `proxy.rewrite`. Those require a TypeScript config.
 
