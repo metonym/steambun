@@ -184,6 +184,10 @@ After JS/CSS minify, steambun collapses tag whitespace in the HTML output.
 
 `steambun build` writes `.steambun/metafile.json` (Bun's build metafile) so `steambun analyze` can report on it after the fact, without a full rebuild. Sizes reflect the files as written after `build.importMap`/`build.sharedCss` rewrote and renamed them; `build.budgets` is checked against those final, on-disk sizes.
 
+The terminal summary printed after every build shows a `gzip:` size (level 6, never brotli — too slow to run on every build) next to each `.js`/`.css`/`.html`/`.svg`/`.json` output of at least 1KB, plus a total row for both raw and gzip size.
+
+Under `GITHUB_ACTIONS=true` or `STEAMBUN_CI=1`, a size-budget violation and a `build.outDir`-outside-`root` warning also print a `::error`/`::warning` GitHub Actions workflow command, so they're inlined on a PR's Files Changed view instead of only the raw log.
+
 `steambun preview` and `dist/server.js` serve assets under `assetsDir` with `Cache-Control: public, max-age=31536000, immutable` (they're content-hashed) and everything else with a weak `ETag` and `Cache-Control: no-cache` (304 on a matching `If-None-Match`); HTML always gets `no-cache`. When `build.precompress` produced a `.gz`/`.br`/`.zst` sibling, a matching `Accept-Encoding` serves it with `Content-Encoding` set and the original file's `Content-Type`. When `build.csp` wrote `_headers.json`, both also apply its headers to any response whose resolved file path matches one of its globs, so the CSP header applies to every HTML file at any depth. With `build.importMap`, a shared-module change invalidates only that chunk instead of every page that imports it. `_headers.json` and `.steambun-chunks.json` are server-side build inputs and are never served; `manifest.json` is (it's a documented artifact). Request paths are percent-decoded before resolving (a malformed encoding is a `400`; a decoded `..` segment or a NUL byte is a `404`). `HEAD` reports the same `Content-Length` a `GET` would.
 
 ## publicDir
