@@ -69,8 +69,10 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
     if (opts.strictPort !== undefined)
       config.server.strictPort = opts.strictPort;
 
+    const { skipDirs, skipPaths } = discoverSkipDirs(config);
     const htmlEntries = await discoverHtmlEntries(config.root, {
-      skipDirs: discoverSkipDirs(config),
+      skipDirs,
+      skipPaths,
     });
     if (htmlEntries.length === 0) {
       throw new Error(

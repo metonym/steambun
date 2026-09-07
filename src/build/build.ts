@@ -84,8 +84,10 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     configFile: opts.configFile,
   });
 
+  const { skipDirs, skipPaths } = discoverSkipDirs(config);
   const htmlEntries = await discoverHtmlEntries(config.root, {
-    skipDirs: discoverSkipDirs(config),
+    skipDirs,
+    skipPaths,
   });
   if (htmlEntries.length === 0) {
     throw new Error(
