@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
 
 export type Encoding = "gzip" | "br" | "zstd";
@@ -26,6 +26,8 @@ export const COMPRESSIBLE = new Set([
 // A variant only pays off if it beats the original by a meaningful margin —
 // otherwise it's wasted disk and a wasted branch in the static handler.
 const MIN_SAVINGS_RATIO = 0.95;
+
+const DEPLOY_METADATA_FILES = new Set(["_headers", "_redirects", "vercel.json"]);
 
 function compress(
   encoding: Encoding,
@@ -77,6 +79,7 @@ export async function precompressDir(
     if (file.endsWith(".gz") || file.endsWith(".br") || file.endsWith(".zst")) {
       continue;
     }
+    if (DEPLOY_METADATA_FILES.has(basename(file))) continue;
     if (!COMPRESSIBLE.has(extname(file))) continue;
 
     const source = Bun.file(file);
