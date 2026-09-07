@@ -1,11 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findConfigFile } from "../src/config/loader";
 import { migrate } from "../src/config/migrate";
 import { viteConfigToUserConfig } from "../src/config/vite";
 import { createViteSuffixPlugin } from "../src/util/vite-suffix-plugin";
+
+// Importing a generated config's `steambun` import resolves via Node/Bun's
+// package self-reference, which only works for importers inside this
+// package's own directory tree — not from the system tmpdir other tests use.
+function tmpMigrateRootWithSelfReference(prefix: string): string {
+  const base = join(process.cwd(), ".steambun", "test-tmp");
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(join(base, prefix));
+}
 
 describe("viteConfigToUserConfig", () => {
   test("converts the supported keys and warns on everything else", () => {
@@ -86,8 +95,8 @@ describe("migrate", () => {
 
     const written = readFileSync(join(root, "steambun.config.ts"), "utf8");
     expect(written).toContain('import { defineConfig } from "steambun"');
-    expect(written).toContain('"port": 4000');
-    expect(written).toContain('"outDir": "out"');
+    expect(written).toContain("port: 4000");
+    expect(written).toContain('outDir: "out"');
 
     // Re-running finds the newly-written steambun config, not vite's.
     expect(findConfigFile(root)?.kind).toBe("steambun");
@@ -107,6 +116,37 @@ describe("migrate", () => {
   test("throws when there is no vite.config.* to migrate", async () => {
     const root = mkdtempSync(join(tmpdir(), "steambun-migrate-none-"));
     await expect(migrate(root)).rejects.toThrow(/No vite.config/);
+  });
+
+  test("inlines a proxy.rewrite function instead of dropping it", async () => {
+    const root = tmpMigrateRootWithSelfReference("steambun-migrate-rewrite-");
+    writeFileSync(
+      join(root, "vite.config.ts"),
+      `export default {
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://localhost:8080",
+        rewrite: (p) => p.replace(/^\\/api/, ""),
+      },
+    },
+  },
+};
+`,
+    );
+
+    await migrate(root);
+
+    const outPath = join(root, "steambun.config.ts");
+    const written = readFileSync(outPath, "utf8");
+    expect(written).toContain("rewrite: (p) => p.replace(");
+
+    const mod = (await import(outPath)) as {
+      default: {
+        server: { proxy: Record<string, { rewrite: (p: string) => string }> };
+      };
+    };
+    expect(mod.default.server.proxy["/api"]!.rewrite("/api/x")).toBe("/x");
   });
 });
 
