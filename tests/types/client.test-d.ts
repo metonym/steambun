@@ -14,6 +14,8 @@ async function check() {
 
   href("/");
   href("/api/users/:id", { id: "1" });
+  href("/about", undefined, { tab: "info" });
+  href("/api/users/:id", { id: "1" }, { debug: "1" });
 }
 
 void check;

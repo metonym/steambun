@@ -84,14 +84,14 @@ export function api<
   opts?: ApiOptions<ParamsOf<P>>,
 ): Promise<ApiReturn<P, Uppercase<K>>>;
 
-/** Typed link builder for a page or API route path, substituting any `:param` segments. */
+/** Typed link builder for a page or API route path, substituting any `:param` segments and appending an optional query string. */
 export function href<P extends keyof SteambunPages | keyof SteambunRoutes>(
   path: P,
   ...args: P extends keyof SteambunRoutes
     ? SteambunRoutes[P] extends { params: infer Params }
       ? keyof Params extends never
-        ? []
-        : [params: Params]
-      : []
-    : []
+        ? [params?: undefined, query?: Record<string, string>]
+        : [params: Params, query?: Record<string, string>]
+      : [params?: undefined, query?: Record<string, string>]
+    : [params?: undefined, query?: Record<string, string>]
 ): string;

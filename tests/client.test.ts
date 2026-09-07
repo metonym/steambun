@@ -132,6 +132,14 @@ describe("href()", () => {
     expect(href("/api/users/:id", { id: "7" })).toBe("/api/users/7");
     expect(href("/about")).toBe("/about");
   });
+
+  test("appends a query string", async () => {
+    const { href } = await loadClient();
+    expect(href("/about", undefined, { tab: "info" })).toBe("/about?tab=info");
+    expect(href("/api/users/:id", { id: "7" }, { debug: "1" })).toBe(
+      "/api/users/7?debug=1",
+    );
+  });
 });
 
 describe("import.meta.env.BASE_URL prefixing", () => {
