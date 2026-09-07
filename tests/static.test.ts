@@ -288,6 +288,35 @@ describe("createStaticHandler — headersFile", () => {
   });
 });
 
+describe("createStaticHandler — denied build metadata", () => {
+  test("_headers.json is 404", async () => {
+    const outDir = fixtureDir();
+    writeFileSync(join(outDir, "_headers.json"), "{}");
+    const handler = createStaticHandler({ outDir, spa: false });
+    const res = await handler(new Request("http://localhost/_headers.json"));
+    expect(res.status).toBe(404);
+  });
+
+  test(".steambun-chunks.json is 404", async () => {
+    const outDir = fixtureDir();
+    writeFileSync(join(outDir, ".steambun-chunks.json"), "{}");
+    const handler = createStaticHandler({ outDir, spa: false });
+    const res = await handler(
+      new Request("http://localhost/.steambun-chunks.json"),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("manifest.json is served", async () => {
+    const outDir = fixtureDir();
+    writeFileSync(join(outDir, "manifest.json"), '{"ok":true}');
+    const handler = createStaticHandler({ outDir, spa: false });
+    const res = await handler(new Request("http://localhost/manifest.json"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('{"ok":true}');
+  });
+});
+
 describe("/**/*.html glob (Bun.Glob pin)", () => {
   test("matches root and nested HTML at any depth", () => {
     const glob = new Bun.Glob("/**/*.html");

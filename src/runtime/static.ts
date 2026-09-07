@@ -77,12 +77,19 @@ async function resolvePrecompressed(
   return null;
 }
 
+/** Server-side build inputs, never served even though they live in outDir. */
+const DENIED_METADATA_FILES = new Set([
+  "_headers.json",
+  ".steambun-chunks.json",
+]);
+
 async function resolvePath(
   outDir: string,
   pathname: string,
   spa: boolean,
 ): Promise<string | null> {
   const safePath = pathname.replace(/^\/+|\/+$/g, "");
+  if (DENIED_METADATA_FILES.has(safePath)) return null;
   const filePath = join(outDir, safePath || "index.html");
 
   if (await Bun.file(filePath).exists()) return filePath;
