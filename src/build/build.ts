@@ -13,6 +13,7 @@ import {
 } from "../env/loader";
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
+import { ciAnnotation } from "../util/annotations";
 import { buildFileType, formatSize } from "../util/format";
 import { splitPlugins } from "../util/plugins";
 import { analyzeMetafile, checkBudgets } from "./analyze";
@@ -125,9 +126,9 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     if (insideRoot) {
       await rm(outDir, { recursive: true, force: true });
     } else {
-      console.warn(
-        `[steambun] build.outDir "${rel}" is outside root — not emptying it (set build.emptyOutDir: false to silence)`,
-      );
+      const message = `[steambun] build.outDir "${rel}" is outside root — not emptying it (set build.emptyOutDir: false to silence)`;
+      console.warn(message);
+      ciAnnotation("warning", message);
     }
   }
 
@@ -223,6 +224,11 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
         for (const v of violations) {
           console.error(
             `[steambun] ${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
+          );
+          ciAnnotation(
+            "error",
+            `${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
+            { file: v.path },
           );
         }
         throw new Error("[steambun] Size budget exceeded.");

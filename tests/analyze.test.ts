@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,7 +150,18 @@ describe("build() with build.budgets", () => {
       `export default { build: { budgets: { "assets/*.js": 1 }, server: false } };\n`,
     );
 
-    await expect(build({ root })).rejects.toThrow(/budget/i);
+    process.env.STEAMBUN_CI = "1";
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await expect(build({ root })).rejects.toThrow(/budget/i);
+      const annotation = log.mock.calls
+        .map((call) => call[0])
+        .find((line) => typeof line === "string" && line.startsWith("::error"));
+      expect(annotation).toMatch(/^::error file=assets\/index.*::.*budget/i);
+    } finally {
+      log.mockRestore();
+      delete process.env.STEAMBUN_CI;
+    }
   });
 
   test("passes on the post-extraction size and reports it in metafile.json", async () => {

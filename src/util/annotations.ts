@@ -5,7 +5,9 @@ export interface CiAnnotationOptions {
 }
 
 function ciEnabled(): boolean {
-  return process.env.GITHUB_ACTIONS === "true" || process.env.STEAMBUN_CI === "1";
+  return (
+    process.env.GITHUB_ACTIONS === "true" || process.env.STEAMBUN_CI === "1"
+  );
 }
 
 // GitHub's workflow-command escaping rules (docs.github.com/actions/using-workflows/workflow-commands-for-github-actions)
