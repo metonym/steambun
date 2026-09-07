@@ -89,6 +89,28 @@ describe("createRestartTrigger", () => {
     await sleep(30);
     expect(calls).toBe(0);
   });
+
+  test("notify(filename) fires onRestart with that filename", async () => {
+    let received: string | null | undefined;
+    const trigger = createRestartTrigger((filename) => {
+      received = filename;
+    }, 10);
+    trigger.notify("about.html");
+    await sleep(30);
+    expect(received).toBe("about.html");
+  });
+
+  test("a burst of notifies fires onRestart once with the last filename", async () => {
+    const received: Array<string | null> = [];
+    const trigger = createRestartTrigger((filename) => {
+      received.push(filename);
+    }, 20);
+    trigger.notify("a");
+    trigger.notify("b");
+    trigger.notify("c");
+    await sleep(40);
+    expect(received).toEqual(["c"]);
+  });
 });
 
 describe("setupDevWatchers", () => {
@@ -124,6 +146,34 @@ describe("setupDevWatchers", () => {
 
     controller.close();
     expect(closed).toBe(1);
+  });
+
+  test("passes the triggering filename to onRestart", async () => {
+    const listeners: Array<{
+      dir: string;
+      cb: (eventType: string, filename: string | null) => void;
+    }> = [];
+    let receivedFilename: string | null | undefined;
+
+    const controller = setupDevWatchers({
+      root: "/project",
+      envDir: "/project",
+      configFileName: "steambun.config.ts",
+      debounceMs: 10,
+      onRestart: (filename) => {
+        receivedFilename = filename;
+      },
+      watchDir: (dir, cb) => {
+        listeners.push({ dir, cb });
+        return { close: () => {} };
+      },
+    });
+
+    listeners[0]!.cb("change", "steambun.config.ts");
+    await sleep(30);
+    expect(receivedFilename).toBe("steambun.config.ts");
+
+    controller.close();
   });
 
   test("watches root and envDir separately when they differ", () => {
