@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { AppType } from "./config/types";
 import type { HtmlEntry } from "./dev/discover";
 import { htmlServePath } from "./dev/discover";
-import { listApiFileEntries } from "./runtime/api-routes";
+import { hasWebsocketExport, listApiFileEntries } from "./runtime/api-routes";
 import { toImportSpecifier } from "./util/specifier";
 
 function paramsTypeFor(path: string): string {
@@ -26,7 +26,7 @@ function withoutExt(specifier: string): string {
 
 export interface GenerateRoutesDtsInput {
   dtsDir: string;
-  apiEntries: Array<{ file: string; paths: string[] }>;
+  apiEntries: Array<{ file: string; paths: string[]; hasWebsocket?: boolean }>;
   htmlEntries: HtmlEntry[];
   appType: AppType;
 }
@@ -42,7 +42,7 @@ export function generateRoutesDts(input: GenerateRoutesDtsInput): string {
     imports.push(`import type * as R${i} from "${specifier}";`);
     for (const path of entry.paths) {
       routeLines.push(
-        `    ${JSON.stringify(path)}: { params: ${paramsTypeFor(path)}; module: typeof R${i} };`,
+        `    ${JSON.stringify(path)}: { params: ${paramsTypeFor(path)}; module: typeof R${i}; websocket: ${entry.hasWebsocket ? "true" : "false"} };`,
       );
     }
   });
@@ -77,7 +77,13 @@ export async function writeRoutesDts(
 ): Promise<string> {
   const dtsDir = join(root, ".steambun");
   await mkdir(dtsDir, { recursive: true });
-  const apiEntries = apiDir ? await listApiFileEntries(apiDir) : [];
+  const fileEntries = apiDir ? await listApiFileEntries(apiDir) : [];
+  const apiEntries = await Promise.all(
+    fileEntries.map(async (entry) => ({
+      ...entry,
+      hasWebsocket: await hasWebsocketExport(entry.file),
+    })),
+  );
   const source = generateRoutesDts({
     dtsDir,
     apiEntries,
