@@ -27,7 +27,11 @@ export const COMPRESSIBLE = new Set([
 // otherwise it's wasted disk and a wasted branch in the static handler.
 const MIN_SAVINGS_RATIO = 0.95;
 
-const DEPLOY_METADATA_FILES = new Set(["_headers", "_redirects", "vercel.json"]);
+const DEPLOY_METADATA_FILES = new Set([
+  "_headers",
+  "_redirects",
+  "vercel.json",
+]);
 
 function compress(
   encoding: Encoding,
