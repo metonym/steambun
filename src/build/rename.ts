@@ -1,4 +1,4 @@
-import { rename, rm } from "node:fs/promises";
+import { rename, rm, stat } from "node:fs/promises";
 import { join, posix, relative, sep } from "node:path";
 
 /** Old rel path from outDir ("/"-separated) → new rel path. */
@@ -116,6 +116,26 @@ export function renameMetafileOutputs(
     };
   }
 
+  return { ...metafile, outputs };
+}
+
+/**
+ * Replaces each `outputs[key].bytes` with the file's on-disk size under
+ * `outDir` (a key with no file on disk keeps its metafile value).
+ * `inputs[*].bytesInOutput` is left as-is: per-input attribution after CSS
+ * extraction is only approximate, and not worth recomputing here.
+ */
+export async function refreshOutputSizes(
+  metafile: Bun.BuildMetafile,
+  outDir: string,
+): Promise<Bun.BuildMetafile> {
+  const outputs: Bun.BuildMetafile["outputs"] = {};
+  for (const [path, output] of Object.entries(metafile.outputs)) {
+    const bytes = await stat(outPath(outDir, stripDotSlash(path)))
+      .then((s) => s.size)
+      .catch(() => output.bytes);
+    outputs[path] = bytes === output.bytes ? output : { ...output, bytes };
+  }
   return { ...metafile, outputs };
 }
 

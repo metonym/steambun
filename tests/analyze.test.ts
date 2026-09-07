@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -151,5 +151,55 @@ describe("build() with build.budgets", () => {
     );
 
     await expect(build({ root })).rejects.toThrow(/budget/i);
+  });
+
+  test("passes on the post-extraction size and reports it in metafile.json", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-sharedcss-"));
+    mkdirSync(join(root, "src"));
+    for (const page of ["index", "about"]) {
+      writeFileSync(
+        join(root, `${page}.html`),
+        `<!doctype html><html><head><link rel="stylesheet" href="./src/${page}.css"></head><body><script type="module" src="./src/${page}.ts"></script></body></html>\n`,
+      );
+    }
+    writeFileSync(
+      join(root, "src/shared.css"),
+      `.shared-a{color:red}\n.shared-b{color:blue}\n.shared-c{color:green}\n.shared-d{color:yellow}\n.shared-e{color:purple}\n`,
+    );
+    writeFileSync(
+      join(root, "src/index.css"),
+      `@import "./shared.css";\nbody { --p: index; }\n`,
+    );
+    writeFileSync(join(root, "src/about.css"), `body { --p: about; }\n`);
+    writeFileSync(join(root, "src/index.ts"), `console.log("index");\n`);
+    writeFileSync(
+      join(root, "src/about.ts"),
+      `import "./about.css";\nimport "./shared.css";\nconsole.log("about");\n`,
+    );
+    writeFileSync(
+      join(root, "steambun.config.ts"),
+      // The unextracted page CSS (own rules + the duplicated shared block)
+      // is well over 50 bytes; only the post-extraction file fits.
+      `export default { build: { sharedCss: { minSize: 1 }, budgets: { "assets/index*.css": "50b" }, server: false } };\n`,
+    );
+
+    await build({ root });
+
+    const assetsDir = join(root, "dist", "assets");
+    const indexCssFile = readdirSync(assetsDir).find(
+      (f) => f.startsWith("index-") && f.endsWith(".css"),
+    );
+    expect(indexCssFile).toBeDefined();
+    const onDiskBytes = (
+      await Bun.file(join(assetsDir, indexCssFile!)).arrayBuffer()
+    ).byteLength;
+    expect(onDiskBytes).toBeLessThan(50);
+
+    const metafile = JSON.parse(
+      await Bun.file(join(root, ".steambun", "metafile.json")).text(),
+    );
+    expect(metafile.outputs[`./assets/${indexCssFile}`].bytes).toBe(
+      onDiskBytes,
+    );
   });
 });

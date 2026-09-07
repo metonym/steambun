@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   mergeRenames,
+  refreshOutputSizes,
   renameArtifacts,
   renameMetafileOutputs,
 } from "../src/build/rename";
@@ -87,6 +91,37 @@ describe("renameMetafileOutputs", () => {
   test("empty rename map returns the same metafile reference", () => {
     const original = metafileFixture();
     expect(renameMetafileOutputs(original, new Map())).toBe(original);
+  });
+});
+
+describe("refreshOutputSizes", () => {
+  test("replaces bytes with the on-disk size", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "steambun-refresh-sizes-"));
+    writeFileSync(join(outDir, "index.html"), "12345");
+
+    const metafile = {
+      inputs: {},
+      outputs: {
+        "./index.html": { bytes: 999, inputs: {}, imports: [], exports: [] },
+      },
+    } as unknown as Bun.BuildMetafile;
+
+    const refreshed = await refreshOutputSizes(metafile, outDir);
+    expect(refreshed.outputs["./index.html"]!.bytes).toBe(5);
+  });
+
+  test("leaves an entry with no file on disk untouched", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "steambun-refresh-sizes-"));
+
+    const metafile = {
+      inputs: {},
+      outputs: {
+        "./missing.js": { bytes: 42, inputs: {}, imports: [], exports: [] },
+      },
+    } as unknown as Bun.BuildMetafile;
+
+    const refreshed = await refreshOutputSizes(metafile, outDir);
+    expect(refreshed.outputs["./missing.js"]!.bytes).toBe(42);
   });
 });
 
