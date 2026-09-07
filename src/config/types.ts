@@ -102,6 +102,13 @@ export interface BuildOptions {
    * object's directives are merged with the computed hashes. Default `false`.
    */
   csp?: false | "strict" | Record<string, string[]>;
+  /**
+   * Extra response headers by glob (matched the same way as `build.csp`'s
+   * `_headers.json` entries), merged into `outDir/_headers.json`. For a glob
+   * present in both, this wins per header key over the CSP-generated entry.
+   * Default none.
+   */
+  headers?: Record<string, Record<string, string>>;
 }
 
 export interface ResolveOptions {
