@@ -465,6 +465,7 @@ const precompress: Decoder<false | PrecompressEncoding[]> = withExpected(
 
 const BUILD_TABLE: KeyTable<BuildOptions> = {
   outDir: str,
+  emptyOutDir: bool,
   assetsDir: str,
   sourcemap: union(bool, oneOf<"inline" | "external">("inline", "external")),
   minify: union(

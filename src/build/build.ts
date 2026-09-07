@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { loadBunfigPlugins } from "../config/bunfig";
 import { loadConfig } from "../config/loader";
 import type { BunPlugin, ResolvedConfig } from "../config/types";
@@ -105,6 +105,18 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   );
 
   const outDir = join(config.root, config.build.outDir);
+  if (config.build.emptyOutDir && existsSync(outDir)) {
+    const rel = relative(config.root, outDir);
+    const insideRoot = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    if (insideRoot) {
+      await rm(outDir, { recursive: true, force: true });
+    } else {
+      console.warn(
+        `[steambun] build.outDir "${rel}" is outside root — not emptying it (set build.emptyOutDir: false to silence)`,
+      );
+    }
+  }
+
   const { bunPlugins, hooks } = splitPlugins([
     ...(await loadBunfigPlugins(config.root)),
     ...(config.plugins ?? []),
