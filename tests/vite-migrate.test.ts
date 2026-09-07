@@ -23,8 +23,10 @@ describe("viteConfigToUserConfig", () => {
       {
         server: { port: 3000, host: true, hmr: { overlay: false } },
         build: { outDir: "build", minify: true, lib: { entry: "x.ts" } },
+        preview: { port: 5000, host: true },
         resolve: {
           alias: [{ find: "@", replacement: "./src" }],
+          extensions: [".ts", ".vue"],
           dedupe: ["react"],
         },
         define: { __VERSION__: '"1.0"' },
@@ -41,7 +43,11 @@ describe("viteConfigToUserConfig", () => {
 
     expect(config.server).toEqual({ port: 3000, host: true });
     expect(config.build).toEqual({ outDir: "build", minify: true });
-    expect(config.resolve).toEqual({ alias: { "@": "./src" } });
+    expect(config.preview).toEqual({ port: 5000, host: true });
+    expect(config.resolve).toEqual({
+      alias: { "@": "./src" },
+      extensions: [".ts", ".vue"],
+    });
     expect(config.define).toEqual({ __VERSION__: '"1.0"' });
     expect(config.envPrefix).toBe("PUBLIC_");
     expect(config.envDir).toBe("config");
@@ -54,6 +60,8 @@ describe("viteConfigToUserConfig", () => {
     expect(warnings.some((w) => w.includes('"server.hmr"'))).toBe(true);
     expect(warnings.some((w) => w.includes('"build.lib"'))).toBe(true);
     expect(warnings.some((w) => w.includes('"resolve.dedupe"'))).toBe(true);
+    expect(warnings.some((w) => w.includes("preview"))).toBe(false);
+    expect(warnings.some((w) => w.includes("resolve.extensions"))).toBe(false);
     expect(
       warnings.some(
         (w) => w === "[steambun] Vite plugins are ignored; use Bun plugins.",
