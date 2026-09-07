@@ -1,4 +1,10 @@
-import type { BuildOptions, ServerOptions, UserConfig } from "./types";
+import type {
+  BuildOptions,
+  PreviewOptions,
+  ResolveOptions,
+  ServerOptions,
+  UserConfig,
+} from "./types";
 
 const SERVER_KEYS = new Set([
   "port",
@@ -17,9 +23,11 @@ const BUILD_KEYS = new Set([
   "manifest",
   "target",
 ]);
+const PREVIEW_KEYS = new Set(["port", "host", "open", "strictPort"]);
 const TOP_KEYS = new Set([
   "server",
   "build",
+  "preview",
   "resolve",
   "define",
   "envPrefix",
@@ -59,9 +67,11 @@ function convertViteAlias(alias: unknown): Record<string, string> | undefined {
  * `UserConfig`, warning (once per key) for anything not on the allowlist:
  * `server.{port,host,open,cors,headers,proxy,https}`,
  * `build.{outDir,assetsDir,sourcemap,minify,manifest,target}`,
- * `resolve.alias` (array or object form), `define`, `envPrefix`, `envDir`,
- * `base`, `publicDir`, `appType` (`"spa"`/`"mpa"` only), and `plugins`
- * (always warned — Vite plugins can't run under Bun's bundler).
+ * `preview.{port,host,open,strictPort}`,
+ * `resolve.{alias,extensions}` (alias as array or object form), `define`,
+ * `envPrefix`, `envDir`, `base`, `publicDir`, `appType` (`"spa"`/`"mpa"`
+ * only), and `plugins` (always warned — Vite plugins can't run under Bun's
+ * bundler).
  */
 export function viteConfigToUserConfig(
   vite: Record<string, unknown>,
@@ -99,12 +109,34 @@ export function viteConfigToUserConfig(
     }
   }
 
+  if (isRecord(vite.preview)) {
+    const preview: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(vite.preview)) {
+      if (PREVIEW_KEYS.has(key)) preview[key] = value;
+      else unsupported(`preview.${key}`);
+    }
+    if (Object.keys(preview).length > 0) {
+      config.preview = preview as PreviewOptions;
+    }
+  }
+
   if (isRecord(vite.resolve)) {
+    const resolve: Record<string, unknown> = {};
     for (const key of Object.keys(vite.resolve)) {
-      if (key !== "alias") unsupported(`resolve.${key}`);
+      if (key !== "alias" && key !== "extensions")
+        unsupported(`resolve.${key}`);
     }
     const alias = convertViteAlias(vite.resolve.alias);
-    if (alias) config.resolve = { alias };
+    if (alias) resolve.alias = alias;
+    if (
+      Array.isArray(vite.resolve.extensions) &&
+      vite.resolve.extensions.every((ext) => typeof ext === "string")
+    ) {
+      resolve.extensions = vite.resolve.extensions;
+    }
+    if (Object.keys(resolve).length > 0) {
+      config.resolve = resolve as ResolveOptions;
+    }
   }
 
   if (isRecord(vite.define)) {
