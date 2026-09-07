@@ -127,3 +127,55 @@ export function createErrorHandler(dev: boolean) {
     return Response.json({ error: "Internal Server Error" }, { status: 500 });
   };
 }
+
+export interface ListenOptions {
+  port: number;
+  strictPort?: boolean;
+  attempts?: number;
+  label?: string;
+}
+
+function isAddrInUseError(err: unknown): err is Error & { code: string } {
+  return (
+    err instanceof Error && (err as { code?: string }).code === "EADDRINUSE"
+  );
+}
+
+/**
+ * `Bun.serve` with Vite-style port retry: on `EADDRINUSE`, tries `port + 1`
+ * up to `attempts` times (default 10), unless `strictPort` is set, in which
+ * case it fails immediately with a clear message. `port: 0` (pick any free
+ * port) is passed through without retry.
+ *
+ * @example
+ * ```ts
+ * const server = serveWithPortRetry({ port: 5173, fetch }, { label: "dev" });
+ * ```
+ */
+export function serveWithPortRetry<T>(
+  options: Bun.Serve.Options<T> & { port: number },
+  opts: { strictPort?: boolean; attempts?: number; label?: string },
+): Bun.Server {
+  const { strictPort = false, attempts = 10, label } = opts;
+  if (options.port === 0) return Bun.serve(options);
+
+  let port = options.port;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return Bun.serve({ ...options, port });
+    } catch (err) {
+      if (!isAddrInUseError(err)) throw err;
+      if (strictPort) {
+        throw new Error(
+          `[steambun] port ${port} is already in use (strictPort)`,
+        );
+      }
+      const nextPort = port + 1;
+      console.warn(
+        `[steambun] ${label ? `${label} ` : ""}port ${port} is in use, trying ${nextPort}`,
+      );
+      port = nextPort;
+    }
+  }
+  return Bun.serve({ ...options, port });
+}
