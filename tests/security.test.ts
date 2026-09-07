@@ -180,7 +180,7 @@ describe("build() with build.csp", () => {
     const headers = JSON.parse(
       await Bun.file(join(dir, "dist", "_headers.json")).text(),
     );
-    const csp: string = headers["/*.html"]["Content-Security-Policy"];
+    const csp: string = headers["/**/*.html"]["Content-Security-Policy"];
     expect(csp).toContain("object-src 'none'");
     expect(csp).toMatch(/script-src 'self' 'sha256-[A-Za-z0-9+/=]+'/);
   });

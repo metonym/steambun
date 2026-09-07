@@ -266,7 +266,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     await writeFile(
       join(outDir, "_headers.json"),
       JSON.stringify(
-        { "/*.html": { "Content-Security-Policy": cspString } },
+        { "/**/*.html": { "Content-Security-Policy": cspString } },
         null,
         2,
       ),

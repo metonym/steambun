@@ -265,4 +265,34 @@ describe("createStaticHandler — headersFile", () => {
     const res = await handler(new Request("http://localhost/foo.txt"));
     expect(res.status).toBe(200);
   });
+
+  test("a /**/*.html glob applies its header to a nested HTML page", async () => {
+    const outDir = fixtureDir();
+    writeFileSync(
+      join(outDir, "_headers.json"),
+      JSON.stringify({
+        "/**/*.html": { "Content-Security-Policy": "default-src 'self'" },
+      }),
+    );
+
+    const handler = createStaticHandler({
+      outDir,
+      spa: false,
+      headersFile: join(outDir, "_headers.json"),
+    });
+
+    const res = await handler(new Request("http://localhost/nested/"));
+    expect(res.headers.get("content-security-policy")).toBe(
+      "default-src 'self'",
+    );
+  });
+});
+
+describe("/**/*.html glob (Bun.Glob pin)", () => {
+  test("matches root and nested HTML at any depth", () => {
+    const glob = new Bun.Glob("/**/*.html");
+    expect(glob.match("/index.html")).toBe(true);
+    expect(glob.match("/about/index.html")).toBe(true);
+    expect(glob.match("/a/b/c.html")).toBe(true);
+  });
 });
