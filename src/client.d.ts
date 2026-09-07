@@ -107,7 +107,10 @@ export interface SteambunSocket {
   readonly socket: WebSocket;
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
-  on(event: "open" | "message" | "close" | "error", fn: (ev: Event) => void): void;
+  on(
+    event: "open" | "message" | "close" | "error",
+    fn: (ev: Event) => void,
+  ): void;
 }
 
 type WebSocketRoutes = {

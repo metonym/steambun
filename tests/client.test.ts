@@ -218,9 +218,7 @@ describe("ws()", () => {
     const { instances, restore } = stubWebSocket();
     try {
       ws("/api/chat/:room", { params: { room: "42" }, query: { a: "1" } });
-      expect(instances[0]?.url).toBe(
-        "ws://example.test/api/chat/42?a=1",
-      );
+      expect(instances[0]?.url).toBe("ws://example.test/api/chat/42?a=1");
     } finally {
       restore();
     }

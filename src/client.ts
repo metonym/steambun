@@ -115,7 +115,10 @@ export interface SteambunSocket {
   readonly socket: WebSocket;
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
-  on(event: "open" | "message" | "close" | "error", fn: (ev: Event) => void): void;
+  on(
+    event: "open" | "message" | "close" | "error",
+    fn: (ev: Event) => void,
+  ): void;
 }
 
 function toWsUrl(path: string): string {
@@ -144,8 +147,10 @@ export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
   }
   const url = toWsUrl(withBase(resolved));
   const reconnect = opts.reconnect;
-  const maxAttempts = (typeof reconnect === "object" && reconnect.maxAttempts) || 10;
-  const baseDelayMs = (typeof reconnect === "object" && reconnect.baseDelayMs) || 250;
+  const maxAttempts =
+    (typeof reconnect === "object" && reconnect.maxAttempts) || 10;
+  const baseDelayMs =
+    (typeof reconnect === "object" && reconnect.baseDelayMs) || 250;
   const listeners: Record<string, Array<(ev: Event) => void>> = {};
   let socket: WebSocket;
   let attempts = 0;
@@ -154,12 +159,24 @@ export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
     const s = new WebSocket(url, opts.protocols);
     s.onopen = (ev) => {
       attempts = 0;
-      listeners.open?.forEach((fn) => fn(ev));
+      listeners.open?.forEach((fn) => {
+        fn(ev);
+      });
     };
-    s.onmessage = (ev) => listeners.message?.forEach((fn) => fn(ev));
-    s.onerror = (ev) => listeners.error?.forEach((fn) => fn(ev));
+    s.onmessage = (ev) => {
+      listeners.message?.forEach((fn) => {
+        fn(ev);
+      });
+    };
+    s.onerror = (ev) => {
+      listeners.error?.forEach((fn) => {
+        fn(ev);
+      });
+    };
     s.onclose = (ev) => {
-      listeners.close?.forEach((fn) => fn(ev));
+      listeners.close?.forEach((fn) => {
+        fn(ev);
+      });
       if (userClosed || !reconnect || attempts >= maxAttempts) return;
       setTimeout(
         () => {
@@ -181,7 +198,8 @@ export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
       socket.close(code, reason);
     },
     on: (event, fn) => {
-      (listeners[event] ??= []).push(fn);
+      if (!listeners[event]) listeners[event] = [];
+      listeners[event].push(fn);
     },
   };
 }
