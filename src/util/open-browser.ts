@@ -13,7 +13,19 @@ export function openBrowser(url: string): void {
       : process.platform === "win32"
         ? ["cmd", "/c", "start", "", url]
         : ["xdg-open", url];
-  Bun.spawn({ cmd, stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+  try {
+    const proc = Bun.spawn({
+      cmd,
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    proc.unref();
+  } catch (err) {
+    console.warn(
+      `[steambun] could not open a browser: ${(err as Error).message}`,
+    );
+  }
 }
 
 /**
