@@ -8,5 +8,7 @@ declare module "steambun/client" {
   interface SteambunPages {
     // biome-ignore lint/complexity/noBannedTypes: matches steambun's generated routes.d.ts output
     "/": {};
+    // biome-ignore lint/complexity/noBannedTypes: matches steambun's generated routes.d.ts output
+    "/about": {};
   }
 }

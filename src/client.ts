@@ -90,7 +90,16 @@ export async function api(
   return contentType.includes("json") ? JSON.parse(text) : text;
 }
 
-/** Typed link builder — substitutes `:param` segments and prefixes `import.meta.env.BASE_URL`. */
-export function href(path: string, params?: Record<string, string>): string {
-  return withBase(substituteParams(path, params));
+/** Typed link builder — substitutes `:param` segments, appends a query string, and prefixes `import.meta.env.BASE_URL`. */
+export function href(
+  path: string,
+  params?: Record<string, string>,
+  query?: Record<string, string>,
+): string {
+  let resolved = substituteParams(path, params);
+  if (query) {
+    const qs = new URLSearchParams(query).toString();
+    if (qs) resolved += `${resolved.includes("?") ? "&" : "?"}${qs}`;
+  }
+  return withBase(resolved);
 }
