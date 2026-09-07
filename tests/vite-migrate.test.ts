@@ -118,7 +118,7 @@ describe("migrate", () => {
     await expect(migrate(root)).rejects.toThrow(/No vite.config/);
   });
 
-  test("inlines a proxy.rewrite function instead of dropping it", async () => {
+  test("inlines a proxy.rewrite function and warns about it", async () => {
     const root = tmpMigrateRootWithSelfReference("steambun-migrate-rewrite-");
     writeFileSync(
       join(root, "vite.config.ts"),
@@ -135,11 +135,26 @@ describe("migrate", () => {
 `,
     );
 
-    await migrate(root);
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (msg: unknown) => logs.push(String(msg));
+    try {
+      await migrate(root);
+    } finally {
+      console.log = orig;
+    }
 
     const outPath = join(root, "steambun.config.ts");
     const written = readFileSync(outPath, "utf8");
     expect(written).toContain("rewrite: (p) => p.replace(");
+    expect(written).toContain(
+      '// Inlined functions to review: server.proxy["/api"].rewrite',
+    );
+    expect(
+      logs.some((l) =>
+        l.includes('inlined function at server.proxy["/api"].rewrite'),
+      ),
+    ).toBe(true);
 
     const mod = (await import(outPath)) as {
       default: {
@@ -147,6 +162,71 @@ describe("migrate", () => {
       };
     };
     expect(mod.default.server.proxy["/api"]!.rewrite("/api/x")).toBe("/x");
+  });
+
+  test("lists unsupported keys in an Ignored Vite keys header line", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-migrate-ignored-"));
+    writeFileSync(
+      join(root, "vite.config.ts"),
+      `export default {
+  css: { modules: {} },
+  server: { port: 3000 },
+};
+`,
+    );
+
+    await migrate(root);
+
+    const written = readFileSync(join(root, "steambun.config.ts"), "utf8");
+    expect(written).toContain("// Ignored Vite keys: css");
+  });
+
+  test("a function-form vite config with matching dev/build output writes a plain object with no divergence warning", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-migrate-same-"));
+    writeFileSync(
+      join(root, "vite.config.ts"),
+      `export default () => ({ server: { port: 4000 } });
+`,
+    );
+
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (msg: unknown) => logs.push(String(msg));
+    try {
+      await migrate(root);
+    } finally {
+      console.log = orig;
+    }
+
+    expect(logs.some((l) => l.includes("returns different values"))).toBe(
+      false,
+    );
+    const written = readFileSync(join(root, "steambun.config.ts"), "utf8");
+    expect(written).toContain("port: 4000");
+  });
+
+  test("a function-form vite config with differing dev/build output warns and writes the production result", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-migrate-diverge-"));
+    writeFileSync(
+      join(root, "vite.config.ts"),
+      `export default ({ command }) => ({
+  server: { port: command === "serve" ? 3000 : 4000 },
+});
+`,
+    );
+
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (msg: unknown) => logs.push(String(msg));
+    try {
+      await migrate(root);
+    } finally {
+      console.log = orig;
+    }
+
+    expect(logs.some((l) => l.includes("returns different values"))).toBe(true);
+    const written = readFileSync(join(root, "steambun.config.ts"), "utf8");
+    expect(written).toContain("port: 4000");
   });
 });
 
