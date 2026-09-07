@@ -17,8 +17,8 @@ async function collectFiles(dir: string): Promise<string[]> {
 }
 
 function urlPathFor(publicDir: string, file: string): string {
-  const rel = relative(publicDir, file).split(sep).join("/");
-  return `/${rel}`;
+  const segments = relative(publicDir, file).split(sep);
+  return `/${segments.map(encodeURIComponent).join("/")}`;
 }
 
 /**

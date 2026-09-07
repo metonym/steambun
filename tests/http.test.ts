@@ -148,6 +148,14 @@ describe("addPublicDirRoutes", () => {
     await addPublicDirRoutes(routes, join(tmpdir(), "steambun-no-public"));
     expect(routes).toEqual({});
   });
+
+  test("filenames with spaces are registered percent-encoded", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
+    writeFileSync(join(dir, "my file.png"), "png");
+    const routes: Record<string, unknown> = {};
+    await addPublicDirRoutes(routes, dir);
+    expect(routes["/my%20file.png"]).toBeInstanceOf(Blob);
+  });
 });
 
 describe("createAliasPlugin", () => {
