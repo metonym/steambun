@@ -1,0 +1,15 @@
+{
+  "name": "example-testing",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "steambun dev",
+    "build": "steambun build",
+    "preview": "steambun preview",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "steambun": "file:../.."
+  }
+}

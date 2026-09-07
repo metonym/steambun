@@ -36,6 +36,15 @@
         "steambun.config.ts",
         "src/api/**/*.ts"
       ]
+    },
+    "examples/testing": {
+      "entry": [
+        "index.html",
+        "src/main.ts",
+        "src/api/**/*.ts",
+        "steambun.config.ts",
+        "tests/**/*.test.ts"
+      ]
     }
   }
 }
