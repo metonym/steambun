@@ -178,6 +178,8 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 | `build.server` | `true` | Write `dist/server.js`, a bundled, dependency-free copy of the preview server. Run it with `bun dist/server.js`; `PORT` and `HOST` env vars work as in `steambun preview`. Skipped for `build.standalone` |
 | `build.sri` | `false` | Adds `integrity`/`crossorigin="anonymous"` to every local `<script src>` and `<link rel="stylesheet" href>` (a `sha384` hash of the built file). Paths are resolved against `base` |
 | `build.csp` | `false` | `"strict"` or a `{ directive: values[] }` object. Writes `dist/_headers.json` with a `Content-Security-Policy` for `"/**/*.html"` (every HTML page, at any depth), built from `sha256` hashes of every inline `<script>`/`<style>` merged into `script-src`/`style-src`. `"strict"` is `default-src 'self'; script-src 'self' <hashes>; style-src 'self' <hashes>; object-src 'none'; base-uri 'self'`. Directives without sources are omitted; an object without `script-src`/`style-src` gets only the inline hashes for those directives |
+| `build.headers` | none | Extra response headers by glob, matched the same way as `build.csp`'s `_headers.json` entries. Merged into `dist/_headers.json`; for a glob present in both, this wins per header key over the CSP-generated entry |
+| `build.deploy` | `false` | `"netlify"` / `"cloudflare-pages"` write `dist/_headers` + `dist/_redirects`; `"vercel"` writes `dist/vercel.json`; `"static"` writes `dist/_headers` + `dist/_redirects` (the most portable pair). `dist/_headers.json` is always written regardless of this setting — see [Deploying](#deploying) |
 | `features` | | Bun `--feature` flags for `bun:bundle` dead-code elimination (`import { feature } from "bun:bundle"`). Merges with the `STEAMBUN_FEATURES` env var (comma-separated). In `dev`, only the env var applies — Bun's dev bundler has no `features` build option in 1.4.1 |
 
 After JS/CSS minify, steambun collapses tag whitespace in the HTML output.
@@ -330,6 +332,27 @@ outDir = "bin"
 
 [steambun.compile.windows]
 title = "My App"
+```
+
+## Deploying
+
+The first recipe needs only `dist/`:
+
+```dockerfile
+# dist/server.js — any host that runs a container
+FROM oven/bun:1-slim
+WORKDIR /app
+COPY dist ./dist
+CMD ["bun", "dist/server.js"]
+```
+
+The second embeds the Bun runtime in the binary, so `scratch` (no glibc, no shell) is enough — `PORT`/`HOST` work the same in both:
+
+```dockerfile
+# compile: { targets: ["bun-linux-x64-musl"] } — no Bun runtime install needed
+FROM scratch
+COPY bin/server-bun-linux-x64-musl /server
+CMD ["/server"]
 ```
 
 ## Examples
