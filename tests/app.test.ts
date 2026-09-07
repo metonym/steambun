@@ -48,6 +48,7 @@ describe("createApp — api routes", () => {
     const config = baseConfig(root, { api: "api" });
     const app = await createApp({ config, mode: "dev" });
     expect(config.api).toBe(apiDir);
+    expect(app.collisions).toEqual([]);
 
     const userRes = await app.fetch(
       new Request("http://localhost/api/users/42"),

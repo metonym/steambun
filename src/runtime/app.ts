@@ -1,6 +1,7 @@
 import { join, relative } from "node:path";
 import type { ResolvedConfig } from "../config/types";
 import { splitPlugins } from "../util/plugins";
+import type { ApiRouteCollision } from "./api-routes";
 import { loadApiModules } from "./api-routes";
 import { composeServerMiddleware, createErrorHandler } from "./http";
 import type { Middleware, RouteHandler } from "./middleware";
@@ -54,6 +55,15 @@ export interface App {
   fetch(req: Request): Promise<Response>;
   /** Table rows for `steambun routes` and startup logging. */
   routeTable(): RouteRow[];
+  /** API routes shadowed by a more specific file mapping to the same path. */
+  readonly collisions: ApiRouteCollision[];
+}
+
+export function formatApiRouteCollision(
+  collision: ApiRouteCollision,
+  source: string,
+): string {
+  return `[steambun] api route collision: ${collision.path} ← ${source}/${collision.winner} (used) and ${source}/${collision.loser} (ignored)`;
 }
 
 function fileNameOf(value: unknown): string {
@@ -236,6 +246,10 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
   if (apiDir && apiModules) {
     const apiRoutes = apiModules.routes;
     const source = relative(config.root, apiDir);
+
+    for (const collision of apiModules.collisions) {
+      console.log(formatApiRouteCollision(collision, source));
+    }
     const paths = new Set([...Object.keys(apiRoutes), ...websockets.keys()]);
 
     for (const path of paths) {
@@ -326,6 +340,7 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
   const app: App = {
     routes,
     middleware,
+    collisions: apiModules?.collisions ?? [],
     // Placeholder — computed below from app.routes/app.middleware after
     // configureApp hooks run, so a hook that adds a route sees it served.
     serveOptions: {} as App["serveOptions"],

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { analyzeMetafile, checkBudgets, explainImport } from "./build/analyze";
 import { build } from "./build/build";
@@ -13,7 +13,7 @@ import {
   htmlServePath,
 } from "./dev/discover";
 import { writeRoutesDts } from "./routes-dts";
-import { createApp } from "./runtime/app";
+import { createApp, formatApiRouteCollision } from "./runtime/app";
 import { formatSize } from "./util/format";
 
 const USAGE = `steambun — a Bun-native, Vite-class dev & bundle toolkit
@@ -152,10 +152,17 @@ async function runRoutes(
   await writeRoutesDts(config.root, config.api, htmlEntries, config.appType);
   const app = await createApp({ config, mode: "dev", htmlRoutes });
   const rows = app.routeTable();
+  const source = config.api ? relative(config.root, config.api) : "";
   if (json) {
     console.log(JSON.stringify(rows, null, 2));
+    for (const collision of app.collisions) {
+      console.error(formatApiRouteCollision(collision, source));
+    }
   } else {
     console.log(Bun.inspect.table(rows));
+    for (const collision of app.collisions) {
+      console.log(formatApiRouteCollision(collision, source));
+    }
   }
 }
 
