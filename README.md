@@ -251,6 +251,16 @@ export const GET = (req) => Response.json({ room: req.params.room }); // optiona
 
 `ws.data.params` carries the route's `:param` values, same as `req.params`. Middleware still runs first — a middleware `Response` (401, etc.) blocks the upgrade. A request without an `Upgrade` header falls through to `GET` if present, else `426`. Bun allows exactly one server-level `websocket` handler; steambun merges file-based WebSocket routes and `server.proxy`'s `ws: true` connections into it automatically.
 
+```ts
+import { ws } from "steambun/client";
+
+const chat = ws("/api/chat/:room", { params: { room: "42" }, reconnect: true });
+chat.on("message", (ev) => console.log((ev as MessageEvent).data));
+chat.send("hello");
+```
+
+`ws(path, { params?, query?, protocols?, reconnect? })` mirrors `api()`/`href()` — `path` is checked against routes exporting `websocket`; `reconnect: true` (or `{ maxAttempts?, baseDelayMs? }`) retries with capped exponential backoff, and the returned `close()` never reconnects.
+
 ### Server-Sent Events
 
 A response with `Content-Type: text/event-stream` automatically gets `server.timeout(req, 0)` so Bun's idle timeout doesn't cut the stream — no manual call needed.

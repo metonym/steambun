@@ -1,7 +1,7 @@
 // Type-level test compiled by `bun run typecheck` (tsc), not `bun test` —
 // no assertions run; a compile error here fails the typecheck script.
 import "../fixtures/typed/routes.d.ts";
-import { api, href } from "steambun/client";
+import { api, href, ws } from "steambun/client";
 
 async function check() {
   // route()'s phantom __steambun_return carries the real value type through
@@ -16,6 +16,11 @@ async function check() {
   href("/api/users/:id", { id: "1" });
   href("/about", undefined, { tab: "info" });
   href("/api/users/:id", { id: "1" }, { debug: "1" });
+
+  ws("/api/chat/:room", { params: { room: "1" } });
+
+  // @ts-expect-error not a websocket route
+  ws("/api/users/:id", { params: { id: "1" } });
 }
 
 void check;
