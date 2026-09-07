@@ -267,7 +267,9 @@ const user = await api("get", "/api/users/:id", { params: { id: "42" } });
 const link = href("/api/users/:id", { id: "42" }); // "/api/users/42"
 ```
 
-`api(method, path, { params?, query?, body?, init? })` substitutes `:param` segments, JSON-encodes `body`, prefixes `import.meta.env.BASE_URL`, and throws a `SteambunApiError` (`status`, `body`) on a non-2xx response. Without `route()`, a handler returning a bare `Response` types as `unknown` — parse it yourself.
+`href(path, params?, query?)` also takes an optional third `query` argument, appended as a query string (e.g. `href("/about", undefined, { tab: "info" })` → `"/about?tab=info"`).
+
+`api(method, path, { params?, query?, body?, init? })` substitutes `:param` segments, JSON-encodes `body` (without overriding a caller-set `content-type`), prefixes `import.meta.env.BASE_URL`, and throws a `SteambunApiError` (`status`, `body`, and a message that includes the method and path) on a non-2xx response. On success, a `204`/`205` or empty body resolves `undefined`, a non-JSON response resolves raw text, and anything else resolves parsed JSON. Without `route()`, a handler returning a bare `Response` types as `unknown` — parse it yourself.
 
 `route()` imports from `"steambun/runtime"`, which a `compile: true` binary can't resolve inside an api route file — `--compile` dynamically imports api routes from its embedded assets, which can only reach Bun/Node builtins. Keep compiled-binary api routes on bare handlers.
 
