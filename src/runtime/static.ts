@@ -88,7 +88,9 @@ async function resolvePath(
   pathname: string,
   spa: boolean,
 ): Promise<string | null> {
+  if (pathname.includes("\0")) return null;
   const safePath = pathname.replace(/^\/+|\/+$/g, "");
+  if (safePath.split("/").some((segment) => segment === "..")) return null;
   if (DENIED_METADATA_FILES.has(safePath)) return null;
   const filePath = join(outDir, safePath || "index.html");
 
@@ -226,7 +228,14 @@ export function createStaticHandler(
       });
     }
 
-    const filePath = await resolvePath(outDir, pathname, spa);
+    let decodedPathname: string;
+    try {
+      decodedPathname = decodeURIComponent(pathname);
+    } catch {
+      return new Response("Bad Request", { status: 400 });
+    }
+
+    const filePath = await resolvePath(outDir, decodedPathname, spa);
     if (!filePath) {
       return new Response(req.method === "HEAD" ? null : "Not Found", {
         status: 404,

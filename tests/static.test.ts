@@ -18,6 +18,7 @@ function fixtureDir(): string {
     "<!doctype html><h1>dir</h1>",
   );
   writeFileSync(join(dir, "about.html"), "<!doctype html><h1>about</h1>");
+  writeFileSync(join(dir, "my file.png"), "png-bytes");
   return dir;
 }
 
@@ -72,6 +73,29 @@ describe("createStaticHandler", () => {
     const second = await spa(new Request("http://localhost/two"));
     expect(await first.text()).toContain("spa");
     expect(await second.text()).toContain("spa");
+  });
+
+  test("percent-encoded filename with a space is served", async () => {
+    const res = await spa(new Request("http://localhost/my%20file.png"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("png-bytes");
+  });
+
+  test("malformed percent-encoding is a 400", async () => {
+    const res = await spa(new Request("http://localhost/%"));
+    expect(res.status).toBe(400);
+  });
+
+  test("a decoded path with a .. segment is 404, not a file outside outDir", async () => {
+    const res = await noSpa(
+      new Request("http://localhost/%2e%2e/%2e%2e/etc/passwd"),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("a path containing %00 is 404", async () => {
+    const res = await noSpa(new Request("http://localhost/foo.txt%00.png"));
+    expect(res.status).toBe(404);
   });
 });
 
