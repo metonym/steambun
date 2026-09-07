@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverHtmlEntries, htmlServePath } from "../src/dev/discover";
+import {
+  discoverHtmlEntries,
+  discoverSkipDirs,
+  htmlServePath,
+} from "../src/dev/discover";
 
 describe("discoverHtmlEntries", () => {
   test("maps root index.html to a catch-all and about.html to /about", async () => {
@@ -43,6 +47,26 @@ describe("discoverHtmlEntries", () => {
     );
     const entries = await discoverHtmlEntries(dir);
     expect(entries.map((e) => e.routePath)).toEqual(["/*"]);
+  });
+
+  test("skips a nested build.outDir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-html-nested-outdir-"));
+    writeFileSync(join(dir, "index.html"), "<!doctype html>");
+    writeFileSync(join(dir, "about.html"), "<!doctype html>");
+    mkdirSync(join(dir, "build", "output"), { recursive: true });
+    writeFileSync(
+      join(dir, "build", "output", "leftover.html"),
+      "<!doctype html>",
+    );
+    const { skipDirs, skipPaths } = discoverSkipDirs({
+      build: { outDir: "build/output" },
+    });
+    const entries = await discoverHtmlEntries(dir, { skipDirs, skipPaths });
+    const routes = entries.map((e) => e.routePath);
+    expect(routes).toContain("/about");
+    expect(routes).toContain("/*");
+    expect(routes).not.toContain("/build/output/leftover");
+    expect(entries).toHaveLength(2);
   });
 });
 

@@ -144,8 +144,10 @@ async function runRoutes(
     mode: mode ?? "development",
     configFile,
   });
+  const { skipDirs, skipPaths } = discoverSkipDirs(config);
   const htmlEntries = await discoverHtmlEntries(config.root, {
-    skipDirs: discoverSkipDirs(config),
+    skipDirs,
+    skipPaths,
   });
   const htmlRoutes: Record<string, unknown> = {};
   for (const entry of htmlEntries) {
