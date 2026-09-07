@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { displayServerUrl, hostnameFromHost } from "../src/util/hostname";
-import { resolveOpenUrl } from "../src/util/open-browser";
+import { openBrowser, resolveOpenUrl } from "../src/util/open-browser";
 
 describe("hostnameFromHost", () => {
   test("true binds all interfaces", () => {
@@ -48,5 +48,23 @@ describe("resolveOpenUrl", () => {
   test("false and omitted do not open", () => {
     expect(resolveOpenUrl(url, false)).toBeNull();
     expect(resolveOpenUrl(url, undefined)).toBeNull();
+  });
+});
+
+describe("openBrowser", () => {
+  test("swallows a throwing Bun.spawn and warns", () => {
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation(() => {
+      throw new Error("Executable not found in $PATH");
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => openBrowser("http://localhost:5173")).not.toThrow();
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[steambun] could not open a browser: Executable not found in $PATH",
+      );
+    } finally {
+      spawnSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
   });
 });
