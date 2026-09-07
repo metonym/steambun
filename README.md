@@ -144,7 +144,7 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 | Key | Default | Behavior |
 | --- | --- | --- |
 | `appType` | `"spa"` | `"spa"` or `"mpa"`. After file lookup, unmatched paths get `index.html` (`spa`) or 404 (`mpa`). Applies to `dev`, `preview`, and `compile` |
-| `server.port` | `5173` | Listen port |
+| `server.port` | `5173` | Listen port. `PORT`, `HOST`, and `STRICT_PORT` env vars override `server.port`/`server.host`/`server.strictPort` for `steambun dev`, the same way they do for `steambun preview` and `dist/server.js` |
 | `server.host` | `false` (`127.0.0.1`) | `true` binds `0.0.0.0` |
 | `server.open` | off | Open a browser after listen. `true` opens `/`. A string is a path. If no browser opener is available, a warning is printed and startup continues |
 | `server.cors` | `false` | CORS middleware |

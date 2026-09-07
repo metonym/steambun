@@ -142,7 +142,7 @@ async function loadUserBunfigForMerge(
   return relocateBunfigPaths(raw, config.root, dir);
 }
 
-function generateServeSource(
+export function generateServeSource(
   config: ResolvedConfig,
   htmlEntries: HtmlEntry[],
   dir: string,
@@ -194,14 +194,31 @@ ${htmlRouteEntries}
   },
 });
 
+const envPort = Number(process.env.PORT);
+if (process.env.PORT && (!Number.isInteger(envPort) || envPort <= 0)) {
+  console.warn(\`[steambun] ignoring invalid PORT "\${process.env.PORT}"\`);
+}
+const port =
+  process.env.PORT && Number.isInteger(envPort) && envPort > 0
+    ? envPort
+    : config.server.port;
+const host =
+  process.env.HOST !== undefined ? process.env.HOST || true : config.server.host;
+const strictPort =
+  process.env.STRICT_PORT === "1"
+    ? true
+    : process.env.STRICT_PORT === "0"
+      ? false
+      : config.server.strictPort;
+
 const server = serveWithPortRetry(
   {
-    port: config.server.port,
-    hostname: hostnameFromHost(config.server.host),
+    port,
+    hostname: hostnameFromHost(host),
     tls: tlsFromHttps(config.server.https, config.root),
     ...app.serveOptions,
   },
-  { strictPort: config.server.strictPort, label: "dev" },
+  { strictPort, label: "dev" },
 );
 
 const displayUrl = displayServerUrl(server.url);
