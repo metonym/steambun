@@ -29,7 +29,12 @@ import {
 import { precompressDir } from "./precompress";
 import { generateProdServeSource } from "./prod-server";
 import type { RenameMap } from "./rename";
-import { mergeRenames, renameArtifacts, renameMetafileOutputs } from "./rename";
+import {
+  mergeRenames,
+  refreshOutputSizes,
+  renameArtifacts,
+  renameMetafileOutputs,
+} from "./rename";
 import { applySri, buildCspString, collectInlineHashes } from "./security";
 import { extractSharedCss } from "./shared-css";
 
@@ -142,29 +147,6 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     throw new Error("[steambun] Build failed.");
   }
 
-  if (result.metafile) {
-    const serveDir = join(config.root, ".steambun");
-    await mkdir(serveDir, { recursive: true });
-    await writeFile(
-      join(serveDir, "metafile.json"),
-      JSON.stringify(result.metafile),
-      "utf8",
-    );
-  }
-
-  if (config.build.budgets && result.metafile) {
-    const { outputs } = analyzeMetafile(result.metafile);
-    const violations = checkBudgets(outputs, config.build.budgets);
-    if (violations.length > 0) {
-      for (const v of violations) {
-        console.error(
-          `[steambun] ${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
-        );
-      }
-      throw new Error("[steambun] Size budget exceeded.");
-    }
-  }
-
   let renames: RenameMap = new Map();
   const base = config.base.endsWith("/") ? config.base : `${config.base}/`;
   const htmlFiles = result.outputs
@@ -220,8 +202,28 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   let metafile = result.metafile;
   if (renames.size > 0 && metafile) {
     metafile = renameMetafileOutputs(metafile, renames);
+  }
+
+  if (metafile) {
+    metafile = await refreshOutputSizes(metafile, outDir);
+
+    if (config.build.budgets) {
+      const { outputs } = analyzeMetafile(metafile);
+      const violations = checkBudgets(outputs, config.build.budgets);
+      if (violations.length > 0) {
+        for (const v of violations) {
+          console.error(
+            `[steambun] ${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
+          );
+        }
+        throw new Error("[steambun] Size budget exceeded.");
+      }
+    }
+
+    const serveDir = join(config.root, ".steambun");
+    await mkdir(serveDir, { recursive: true });
     await writeFile(
-      join(config.root, ".steambun", "metafile.json"),
+      join(serveDir, "metafile.json"),
       JSON.stringify(metafile),
       "utf8",
     );

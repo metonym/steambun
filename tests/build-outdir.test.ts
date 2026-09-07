@@ -26,9 +26,7 @@ describe("build() emptyOutDir", () => {
 
     await build({ root });
 
-    expect(await Bun.file(join(root, "dist", "stale.js")).exists()).toBe(
-      false,
-    );
+    expect(await Bun.file(join(root, "dist", "stale.js")).exists()).toBe(false);
   });
 
   test("build.emptyOutDir: false keeps a stale file", async () => {
@@ -42,9 +40,7 @@ describe("build() emptyOutDir", () => {
 
     await build({ root });
 
-    expect(await Bun.file(join(root, "dist", "stale.js")).exists()).toBe(
-      true,
-    );
+    expect(await Bun.file(join(root, "dist", "stale.js")).exists()).toBe(true);
   });
 
   test("an outDir outside root warns and is not emptied", async () => {
