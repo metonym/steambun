@@ -141,10 +141,12 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       root: config.root,
       envDir,
       configFileName: config.configFile ? basename(config.configFile) : null,
-      onRestart: () => {
+      onRestart: (filename) => {
         if (shuttingDown || restarting) return;
         restarting = true;
-        console.log("[steambun] config changed, restarting");
+        console.log(
+          `[steambun] ${filename ?? "a watched file"} changed, restarting`,
+        );
         proc?.kill();
       },
     });

@@ -37,27 +37,32 @@ export function shouldTriggerRestart(
 }
 
 export interface RestartTrigger {
-  notify(): void;
+  notify(filename?: string | null): void;
   cancel(): void;
 }
 
 /** Coalesces bursts of filesystem events (e.g. an editor's save) into one restart. */
 export function createRestartTrigger(
-  onRestart: () => void,
+  onRestart: (filename: string | null) => void,
   debounceMs = 100,
 ): RestartTrigger {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastFilename: string | null = null;
   return {
-    notify() {
+    notify(filename = null) {
+      lastFilename = filename;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        onRestart();
+        const firedFilename = lastFilename;
+        lastFilename = null;
+        onRestart(firedFilename);
       }, debounceMs);
     },
     cancel() {
       if (timer) clearTimeout(timer);
       timer = null;
+      lastFilename = null;
     },
   };
 }
@@ -71,9 +76,9 @@ export interface DevWatchOptions {
   root: string;
   envDir: string;
   configFileName: string | null;
-  onRestart: () => void;
+  onRestart: (filename: string | null) => void;
   debounceMs?: number;
-  /** Injectable for tests — defaults to `node:fs`'s `watch`, non-recursive. */
+  /** Injectable for tests — defaults to `node:fs`'s `watch`, recursive on `root`. */
   watchDir?: WatchFn;
 }
 
@@ -102,7 +107,7 @@ export function setupDevWatchers(opts: DevWatchOptions): DevWatchController {
   const watchers = [...dirs].map((dir) =>
     watchDir(dir, (eventType, filename) => {
       if (shouldTriggerRestart(eventType, dir, filename, targets)) {
-        trigger.notify();
+        trigger.notify(filename);
       }
     }),
   );
