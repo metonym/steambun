@@ -46,7 +46,11 @@ describe("api()", () => {
   test("substitutes :param segments and appends query", async () => {
     const { api } = await loadClient();
     const calls = stubFetch(
-      () => new Response(JSON.stringify({ id: "42" }), { status: 200 }),
+      () =>
+        new Response(JSON.stringify({ id: "42" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
     );
     const result = await api("get", "/api/users/:id", {
       params: { id: "42" },
@@ -66,6 +70,28 @@ describe("api()", () => {
       "application/json",
     );
     expect(init?.body).toBe(JSON.stringify({ name: "ada" }));
+  });
+
+  test("resolves undefined for a 204 response", async () => {
+    const { api } = await loadClient();
+    stubFetch(() => new Response(null, { status: 204 }));
+    const result = await api("delete", "/api/users/:id", {
+      params: { id: "1" },
+    });
+    expect(result).toBeUndefined();
+  });
+
+  test("resolves raw text for a non-JSON success response", async () => {
+    const { api } = await loadClient();
+    stubFetch(
+      () =>
+        new Response("plain text", {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+    );
+    const result = await api("get", "/api/text");
+    expect(result).toBe("plain text");
   });
 
   test("throws SteambunApiError with status and body on a non-2xx response", async () => {

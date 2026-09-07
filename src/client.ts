@@ -77,7 +77,11 @@ export async function api(
     throw new SteambunApiError(res.status, errorBody);
   }
 
-  return res.json();
+  if (res.status === 204 || res.status === 205) return undefined;
+  const text = await res.text();
+  if (text === "") return undefined;
+  const contentType = res.headers.get("content-type") ?? "";
+  return contentType.includes("json") ? JSON.parse(text) : text;
 }
 
 /** Typed link builder — substitutes `:param` segments and prefixes `import.meta.env.BASE_URL`. */
