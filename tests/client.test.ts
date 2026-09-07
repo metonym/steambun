@@ -72,6 +72,20 @@ describe("api()", () => {
     expect(init?.body).toBe(JSON.stringify({ name: "ada" }));
   });
 
+  test("doesn't override a caller-set content-type", async () => {
+    const { api } = await loadClient();
+    const calls = stubFetch(() => new Response("{}", { status: 200 }));
+    await api("post", "/api/x", {
+      body: { a: 1 },
+      init: { headers: { "content-type": "application/vnd.api+json" } },
+    });
+    const [, init] = calls[0]!;
+    expect(new Headers(init?.headers).get("content-type")).toBe(
+      "application/vnd.api+json",
+    );
+    expect(init?.body).toBe(JSON.stringify({ a: 1 }));
+  });
+
   test("resolves undefined for a 204 response", async () => {
     const { api } = await loadClient();
     stubFetch(() => new Response(null, { status: 204 }));

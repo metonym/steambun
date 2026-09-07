@@ -56,7 +56,8 @@ export async function api(
   const headers = new Headers(opts.init?.headers);
   let body = opts.init?.body;
   if (opts.body !== undefined) {
-    headers.set("content-type", "application/json");
+    if (!headers.has("content-type"))
+      headers.set("content-type", "application/json");
     body = JSON.stringify(opts.body);
   }
 
