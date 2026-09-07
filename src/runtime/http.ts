@@ -152,10 +152,13 @@ function isAddrInUseError(err: unknown): err is Error & { code: string } {
  * const server = serveWithPortRetry({ port: 5173, fetch }, { label: "dev" });
  * ```
  */
-export function serveWithPortRetry<T>(
-  options: Bun.Serve.Options<T> & { port: number },
+export function serveWithPortRetry<
+  WebSocketData = undefined,
+  R extends string = never,
+>(
+  options: Bun.Serve.Options<WebSocketData, R> & { port: number },
   opts: { strictPort?: boolean; attempts?: number; label?: string },
-): Bun.Server {
+): Bun.Server<WebSocketData> {
   const { strictPort = false, attempts = 10, label } = opts;
   if (options.port === 0) return Bun.serve(options);
 
