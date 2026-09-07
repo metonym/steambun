@@ -5,11 +5,13 @@ export { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 export { loadApiRoutes } from "./api-routes";
 export type { App, AppRoutes, CreateAppOptions, RouteRow } from "./app";
 export { createApp, printRouteTable } from "./app";
+export type { ListenOptions } from "./http";
 export {
   composeServerMiddleware,
   corsMiddleware,
   createErrorHandler,
   headersMiddleware,
+  serveWithPortRetry,
   tlsFromHttps,
 } from "./http";
 export type { Middleware, NextFn, RouteHandler } from "./middleware";

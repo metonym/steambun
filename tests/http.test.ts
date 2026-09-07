@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import {
   corsMiddleware,
   createErrorHandler,
   headersMiddleware,
+  serveWithPortRetry,
 } from "../src/runtime/http";
 import { withMiddleware } from "../src/runtime/middleware";
 import { addPublicDirRoutes } from "../src/runtime/public-dir";
@@ -74,6 +75,55 @@ describe("createErrorHandler", () => {
     } finally {
       console.error = orig;
     }
+  });
+});
+
+describe("serveWithPortRetry", () => {
+  test("retries the next port when the first is taken", () => {
+    const occupied = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    const servers: Bun.Server[] = [occupied];
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const server = serveWithPortRetry(
+        { port: occupied.port, fetch: () => new Response("ok") },
+        { label: "dev" },
+      );
+      servers.push(server);
+      expect(server.port).toBeGreaterThan(occupied.port);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      for (const server of servers) server.stop(true);
+    }
+  });
+
+  test("strictPort rethrows instead of retrying", () => {
+    const occupied = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    try {
+      expect(() =>
+        serveWithPortRetry(
+          { port: occupied.port, fetch: () => new Response("ok") },
+          { strictPort: true },
+        ),
+      ).toThrow(
+        `[steambun] port ${occupied.port} is already in use (strictPort)`,
+      );
+    } finally {
+      occupied.stop(true);
+    }
+  });
+
+  test("a non-EADDRINUSE error is rethrown unchanged", () => {
+    expect(() =>
+      serveWithPortRetry(
+        {
+          port: 5173,
+          hostname: "not a real hostname",
+          fetch: () => new Response("ok"),
+        },
+        {},
+      ),
+    ).toThrow();
   });
 });
 
