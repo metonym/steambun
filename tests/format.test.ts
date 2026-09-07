@@ -9,6 +9,14 @@ describe("formatSize", () => {
   test("1024 and above print as N.N KB", () => {
     expect(formatSize(1536)).toBe("1.5 KB");
   });
+
+  test("1024 * 1024 and above print as N.N MB", () => {
+    expect(formatSize(1572864)).toBe("1.5 MB");
+  });
+
+  test("exactly 1MB prints as MB, not four-digit KB", () => {
+    expect(formatSize(1024 * 1024)).toBe("1.0 MB");
+  });
 });
 
 describe("buildFileType", () => {
