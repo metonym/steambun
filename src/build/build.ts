@@ -233,7 +233,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
       }
       if (compactHtml) html = minifyHtml(html);
       if (config.build.sri) {
-        html = await applySri(html, outDir, dirname(artifact.path));
+        html = await applySri(html, outDir, dirname(artifact.path), base);
       }
       if (config.build.csp) {
         const hashes = await collectInlineHashes(html);
