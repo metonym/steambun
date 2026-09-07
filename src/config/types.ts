@@ -230,6 +230,7 @@ export interface ResolvedConfig extends UserConfig {
   root: string;
   base: string;
   publicDir: string | false;
+  envDir: string;
   appType: AppType;
   mode: Mode;
   command: Command;

@@ -180,6 +180,10 @@ export function resolveDefaults(
 
   const api = userConfig.api ? join(ctx.root, userConfig.api) : undefined;
 
+  const envDir = userConfig.envDir
+    ? join(ctx.root, userConfig.envDir)
+    : ctx.root;
+
   const envPrefix = userConfig.envPrefix
     ? Array.isArray(userConfig.envPrefix)
       ? userConfig.envPrefix
@@ -192,6 +196,7 @@ export function resolveDefaults(
     base: userConfig.base ?? "/",
     publicDir,
     api,
+    envDir,
     appType: userConfig.appType === "mpa" ? "mpa" : "spa",
     mode: ctx.mode,
     command: ctx.command,

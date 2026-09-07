@@ -55,6 +55,15 @@ describe("resolveDefaults drop / standalone", () => {
     );
   });
 
+  test("envDir defaults to root and resolves relative to root", () => {
+    expect(resolveDefaults({}, ctx("production")).envDir).toBe(
+      ctx("production").root,
+    );
+    expect(
+      resolveDefaults({ envDir: "config" }, ctx("production")).envDir,
+    ).toBe(join(ctx("production").root, "config"));
+  });
+
   test("production default drop is debugger", () => {
     const config = resolveDefaults({}, ctx("production"));
     expect(config.build.drop).toEqual(["debugger"]);

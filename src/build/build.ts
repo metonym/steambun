@@ -97,7 +97,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
 
   await writeRoutesDts(config.root, config.api, htmlEntries, config.appType);
 
-  const envDir = config.envDir ?? config.root;
+  const envDir = config.envDir;
   const fileEnv = await loadEnvFiles(mode, envDir);
   const publicEnv = filterPublicEnv(withProcessEnv(fileEnv), config.envPrefix);
   await writeEnvDts(config.root, filterPublicEnv(fileEnv, config.envPrefix));
