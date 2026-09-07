@@ -55,6 +55,15 @@ describe("shouldTriggerRestart", () => {
     );
   });
 
+  test("matches a nested .html file only on rename, not change", () => {
+    expect(
+      shouldTriggerRestart("rename", "/project", "about/nested.html", targets),
+    ).toBe(true);
+    expect(
+      shouldTriggerRestart("change", "/project", "about/nested.html", targets),
+    ).toBe(false);
+  });
+
   test("no configFileName still matches bunfig.toml and .env", () => {
     const noConfig = { ...targets, configFileName: null };
     expect(

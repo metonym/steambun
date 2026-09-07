@@ -86,13 +86,16 @@ export interface DevWatchController {
   close(): void;
 }
 
-const defaultWatchDir: WatchFn = (dir, listener) => watch(dir, listener);
+const defaultWatchDir: WatchFn = (dir, listener) =>
+  watch(dir, { recursive: true }, listener);
 
 /**
- * Watches `root` (config file, `bunfig.toml`, top-level `*.html` add/remove)
- * and `envDir` (`.env*` files) non-recursively, restarting the dev server on
- * a match. Nested HTML directories are out of scope — only the immediate
- * children of `root` are watched.
+ * Watches `root` recursively (config file, `bunfig.toml`, `*.html` add/remove
+ * at any depth) and `envDir` (`.env*` files, top-level only), restarting the
+ * dev server on a match. `fs.watch`'s recursive option is native on
+ * macOS/Windows; on Linux (inotify-backed) a directory created after the
+ * watcher started may not be included until the process restarts (see
+ * oven-sh/bun#15939) — this is a platform gap, not silently degraded.
  */
 export function setupDevWatchers(opts: DevWatchOptions): DevWatchController {
   const watchDir = opts.watchDir ?? defaultWatchDir;
