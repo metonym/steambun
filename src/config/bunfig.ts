@@ -4,13 +4,16 @@ import { pathToFileURL } from "node:url";
 import { isBunPlugin, isSteambunHooks } from "../util/plugins";
 import { toImportSpecifier } from "../util/specifier";
 import type {
+  AppType,
   BuildOptions,
   CompileOptions,
   CompileWindowsOptions,
   HttpsOptions,
+  MinifyObject,
   Plugin,
   PreviewOptions,
   ProxyEntry,
+  ProxyOptions,
   ResolveOptions,
   ServerOptions,
   UserConfig,
@@ -50,10 +53,13 @@ export function parseBunfigToml(text: string): Record<string, unknown> {
  * const config = bunfigToUserConfig(raw); // { server: { port: 3000 }, ... }
  * ```
  */
-export function bunfigToUserConfig(raw: unknown): UserConfig {
+export function bunfigToUserConfig(
+  raw: unknown,
+  warn: WarnFn = console.warn,
+): UserConfig {
   const root = asRecord(raw) ?? {};
-  const native = nativeBunfigToUserConfig(root);
-  const steambun = mapSteambunTable(asRecord(root.steambun) ?? {});
+  const native = nativeBunfigToUserConfig(root, warn);
+  const steambun = mapSteambunTable(asRecord(root.steambun) ?? {}, warn);
   return mergeUserConfig(native, steambun);
 }
 
@@ -205,10 +211,368 @@ function bunfigMiddlewareSpecifiers(raw: unknown): string[] {
   return asStringArray(steambun.middleware) ?? [];
 }
 
-function nativeBunfigToUserConfig(root: Record<string, unknown>): UserConfig {
+type WarnFn = (message: string) => void;
+
+/**
+ * A decoder validates one raw TOML value into `T`, returning `undefined`
+ * (and warning through `warn`, for container decoders that check each of
+ * their own entries) when the value doesn't fit. `decodeTable` uses
+ * `.expected` to report a decoder's expected shape when it rejects a value
+ * outright.
+ */
+type Decoder<T> = ((
+  value: unknown,
+  path: string,
+  warn: WarnFn,
+) => T | undefined) & { expected?: string; silent?: boolean };
+
+type KeyTable<T> = { [K in keyof Required<T>]: Decoder<T[K]> };
+
+function withExpected<T>(
+  fn: (value: unknown, path: string, warn: WarnFn) => T | undefined,
+  expected: string,
+): Decoder<T> {
+  const decoder = fn as Decoder<T>;
+  decoder.expected = expected;
+  return decoder;
+}
+
+/**
+ * Wraps a decoder so `decodeTable` never prints its generic "expected X, got
+ * Y" message on rejection — for the rare decoder (just `compile`, so far)
+ * that must stay exactly as silent as its hand-written predecessor.
+ */
+function silent<T>(decoder: Decoder<T>): Decoder<T> {
+  const wrapped: Decoder<T> = (value, path, warn) => decoder(value, path, warn);
+  wrapped.expected = decoder.expected;
+  wrapped.silent = true;
+  return wrapped;
+}
+
+function describeType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * Decodes every key of `raw` against `table`, warning once per key that is
+ * either absent from `table` (`Unknown bunfig key`) or rejected by its
+ * decoder (`expected X, got Y`). Container decoders (`nested`, `record`)
+ * recurse into this for their own tables, so warnings carry the full
+ * dotted path.
+ */
+function decodeTable<T>(
+  raw: Record<string, unknown>,
+  table: KeyTable<T>,
+  path: string,
+  warn: WarnFn,
+): Partial<T> {
+  const out: Partial<T> = {};
+  const decoders = table as Record<string, Decoder<unknown>>;
+  for (const [key, value] of Object.entries(raw)) {
+    const keyPath = `${path}.${key}`;
+    const decoder = decoders[key];
+    if (!decoder) {
+      warn(`[steambun] Unknown bunfig key "${keyPath}" was ignored.`);
+      continue;
+    }
+    const decoded = decoder(value, keyPath, warn);
+    if (decoded === undefined) {
+      if (!decoder.silent) {
+        warn(
+          `[steambun] bunfig key "${keyPath}" expected ${decoder.expected ?? "a different type"}, got ${describeType(value)} — ignored.`,
+        );
+      }
+      continue;
+    }
+    (out as Record<string, unknown>)[key] = decoded;
+  }
+  return out;
+}
+
+const bool: Decoder<boolean> = withExpected(
+  (value) => (typeof value === "boolean" ? value : undefined),
+  "boolean",
+);
+const str: Decoder<string> = withExpected(
+  (value) => (typeof value === "string" ? value : undefined),
+  "string",
+);
+const num: Decoder<number> = withExpected(
+  (value) => (typeof value === "number" ? value : undefined),
+  "number",
+);
+const strArray: Decoder<string[]> = withExpected(
+  (value) => asStringArray(value),
+  "string[]",
+);
+
+function oneOf<T>(...values: T[]): Decoder<T> {
+  return withExpected(
+    (value) => (values.includes(value as T) ? (value as T) : undefined),
+    values.map((value) => JSON.stringify(value)).join(" | "),
+  );
+}
+
+function union<A, B>(a: Decoder<A>, b: Decoder<B>): Decoder<A | B> {
+  return withExpected(
+    (value, path, warn) => {
+      const decoded = a(value, path, warn);
+      return decoded !== undefined ? decoded : b(value, path, warn);
+    },
+    `${a.expected ?? "value"} or ${b.expected ?? "value"}`,
+  );
+}
+
+/**
+ * A record whose keys are unknown ahead of time (`define`, `headers`,
+ * `alias`, ...): every entry is decoded with `valueDecoder`, warning and
+ * dropping only the entries that don't fit rather than the whole table.
+ */
+function record<V>(valueDecoder: Decoder<V>): Decoder<Record<string, V>> {
+  return withExpected((value, path, warn) => {
+    const rec = asRecord(value);
+    if (!rec) return undefined;
+    const out: Record<string, V> = {};
+    for (const [key, item] of Object.entries(rec)) {
+      const keyPath = `${path}.${key}`;
+      const decoded = valueDecoder(item, keyPath, warn);
+      if (decoded === undefined) {
+        warn(
+          `[steambun] bunfig key "${keyPath}" expected ${valueDecoder.expected ?? "a different type"}, got ${describeType(item)} — ignored.`,
+        );
+        continue;
+      }
+      out[key] = decoded;
+    }
+    return out;
+  }, "object");
+}
+
+const strRecord: Decoder<Record<string, string>> = record(str);
+
+/**
+ * A nested `[steambun.*]` table, decoded with its own `KeyTable`. Returns
+ * `{}` (not `undefined`) when every entry was rejected — those entries
+ * already warned individually, so the caller shouldn't warn again about the
+ * table itself being the wrong shape.
+ */
+function nested<T>(table: KeyTable<T>): Decoder<T> {
+  return withExpected((value, path, warn) => {
+    const rec = asRecord(value);
+    if (!rec) return undefined;
+    return decodeTable(rec, table, path, warn) as T;
+  }, "object");
+}
+
+const PROXY_TABLE: KeyTable<Omit<ProxyOptions, "rewrite">> = {
+  target: str,
+  changeOrigin: bool,
+  ws: bool,
+};
+
+const proxyEntry: Decoder<ProxyEntry> = withExpected((value, path, warn) => {
+  if (typeof value === "string") return value;
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const { rewrite, ...rest } = rec;
+  if (rewrite !== undefined) {
+    warn(
+      `[steambun] bunfig key "${path}.rewrite" requires a TypeScript config and was ignored.`,
+    );
+  }
+  const decoded = decodeTable(rest, PROXY_TABLE, path, warn);
+  return typeof decoded.target === "string"
+    ? (decoded as ProxyOptions)
+    : undefined;
+}, "string or object");
+
+const HTTPS_TABLE: KeyTable<HttpsOptions> = {
+  key: str,
+  cert: str,
+  passphrase: str,
+  ca: union(str, strArray),
+};
+
+const httpsEntry: Decoder<HttpsOptions> = withExpected((value, path, warn) => {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const decoded = decodeTable(rec, HTTPS_TABLE, path, warn);
+  return typeof decoded.key === "string" && typeof decoded.cert === "string"
+    ? (decoded as HttpsOptions)
+    : undefined;
+}, "object");
+
+const SERVER_TABLE: KeyTable<ServerOptions> = {
+  port: num,
+  host: union(bool, str),
+  open: union(bool, str),
+  cors: bool,
+  headers: strRecord,
+  proxy: record(proxyEntry),
+  https: httpsEntry,
+  idleTimeout: num,
+  maxRequestBodySize: num,
+};
+
+const PREVIEW_TABLE: KeyTable<PreviewOptions> = {
+  port: num,
+  host: union(bool, str),
+  open: union(bool, str),
+};
+
+const RESOLVE_TABLE: KeyTable<ResolveOptions> = {
+  alias: strRecord,
+  extensions: strArray,
+  viteSuffixes: bool,
+};
+
+const MINIFY_OBJECT_TABLE: KeyTable<MinifyObject> = {
+  whitespace: bool,
+  syntax: bool,
+  identifiers: bool,
+  keepNames: bool,
+};
+
+const SHARED_CSS_TABLE: KeyTable<{ minSize: number }> = {
+  minSize: num,
+};
+
+const PRECOMPRESS_ENCODINGS = ["gzip", "br", "zstd"] as const;
+type PrecompressEncoding = (typeof PRECOMPRESS_ENCODINGS)[number];
+
+const precompress: Decoder<false | PrecompressEncoding[]> = withExpected(
+  (value, path, warn) => {
+    if (value === false) return false;
+    if (!Array.isArray(value)) return undefined;
+    const out: PrecompressEncoding[] = [];
+    value.forEach((item, index) => {
+      if ((PRECOMPRESS_ENCODINGS as readonly unknown[]).includes(item)) {
+        out.push(item as PrecompressEncoding);
+      } else {
+        warn(
+          `[steambun] bunfig key "${path}[${index}]" has an unknown precompress encoding ${JSON.stringify(item)} — ignored.`,
+        );
+      }
+    });
+    return out;
+  },
+  `false or an array of ${PRECOMPRESS_ENCODINGS.map((encoding) => JSON.stringify(encoding)).join(" | ")}`,
+);
+
+const BUILD_TABLE: KeyTable<BuildOptions> = {
+  outDir: str,
+  assetsDir: str,
+  sourcemap: union(bool, oneOf<"inline" | "external">("inline", "external")),
+  minify: union(
+    bool,
+    union(
+      oneOf<"esbuild" | "terser">("esbuild", "terser"),
+      nested(MINIFY_OBJECT_TABLE),
+    ),
+  ),
+  drop: strArray,
+  standalone: bool,
+  manifest: bool,
+  target: oneOf<"browser" | "bun" | "node">("browser", "bun", "node"),
+  bytecode: bool,
+  splitting: bool,
+  budgets: record(union(str, num)),
+  cssChunking: bool,
+  minChunkSize: num,
+  importMap: bool,
+  sharedCss: union(bool, nested(SHARED_CSS_TABLE)),
+  precompress,
+  precompressMinSize: num,
+  server: bool,
+  sri: bool,
+  csp: union(oneOf<false | "strict">(false, "strict"), record(strArray)),
+};
+
+const COMPILE_WINDOWS_TABLE: KeyTable<CompileWindowsOptions> = {
+  icon: str,
+  hideConsole: bool,
+  title: str,
+  publisher: str,
+  version: str,
+  description: str,
+  copyright: str,
+};
+
+const COMPILE_TABLE: KeyTable<CompileOptions> = {
+  targets: strArray,
+  outDir: str,
+  autoloadDotenv: bool,
+  autoloadBunfig: bool,
+  windows: nested(COMPILE_WINDOWS_TABLE),
+};
+
+/**
+ * `resolveDefaults` treats an empty `{}` as "compile enabled with defaults",
+ * unlike other nested tables, so — unlike `nested()` — an empty
+ * `[steambun.compile]` (no keys, or every key rejected) must decode to
+ * `undefined` rather than `{}`.
+ */
+const compileTable: Decoder<CompileOptions> = withExpected(
+  (value, path, warn) => {
+    const rec = asRecord(value);
+    if (!rec) return undefined;
+    const decoded = decodeTable(rec, COMPILE_TABLE, path, warn);
+    return Object.keys(decoded).length > 0
+      ? (decoded as CompileOptions)
+      : undefined;
+  },
+  "object",
+);
+
+interface SteambunTopFields {
+  base: string;
+  publicDir: string | false;
+  appType: AppType;
+  api: string;
+  compile: boolean | CompileOptions;
+  features: string[];
+  envDir: string;
+  envPrefix: string | string[];
+  define: Record<string, string>;
+  server: ServerOptions;
+  build: BuildOptions;
+  preview: PreviewOptions;
+  resolve: ResolveOptions;
+  middleware: string[];
+  plugins: string[];
+}
+
+const STEAMBUN_TABLE: KeyTable<SteambunTopFields> = {
+  base: str,
+  publicDir: union(oneOf<false>(false), str),
+  appType: oneOf<AppType>("spa", "mpa"),
+  api: str,
+  compile: silent(union(bool, compileTable)),
+  features: strArray,
+  envDir: str,
+  envPrefix: union(str, strArray),
+  define: strRecord,
+  server: nested(SERVER_TABLE),
+  build: nested(BUILD_TABLE),
+  preview: nested(PREVIEW_TABLE),
+  resolve: nested(RESOLVE_TABLE),
+  // Specifiers only — resolved to plugins/functions by loadBunfigPlugins /
+  // resolveBunfigModules, not part of the decoded UserConfig itself.
+  middleware: strArray,
+  plugins: strArray,
+};
+
+function nativeBunfigToUserConfig(
+  root: Record<string, unknown>,
+  warn: WarnFn,
+): UserConfig {
   const config: UserConfig = {};
-  const define = asStringRecord(root.define);
-  if (define) config.define = define;
+  if (root.define !== undefined) {
+    const define = strRecord(root.define, "define", warn);
+    if (define) config.define = define;
+  }
 
   const serve = asRecord(root.serve) ?? {};
   if (typeof serve.port === "number") {
@@ -222,194 +586,13 @@ function nativeBunfigToUserConfig(root: Record<string, unknown>): UserConfig {
   return config;
 }
 
-function mapSteambunTable(raw: Record<string, unknown>): UserConfig {
-  const config: UserConfig = {};
-  if (typeof raw.base === "string") config.base = raw.base;
-  if (raw.publicDir === false || typeof raw.publicDir === "string") {
-    config.publicDir = raw.publicDir;
-  }
-  if (raw.appType === "spa" || raw.appType === "mpa") {
-    config.appType = raw.appType;
-  }
-  if (typeof raw.api === "string") config.api = raw.api;
-  if (typeof raw.compile === "boolean") config.compile = raw.compile;
-  const compile = mapCompile(asRecord(raw.compile));
-  if (compile) config.compile = compile;
-  const features = asStringArray(raw.features);
-  if (features) config.features = features;
-  if (typeof raw.envDir === "string") config.envDir = raw.envDir;
-  if (typeof raw.envPrefix === "string") config.envPrefix = raw.envPrefix;
-  const prefixes = asStringArray(raw.envPrefix);
-  if (prefixes) config.envPrefix = prefixes;
-
-  const define = asStringRecord(raw.define);
-  if (define) config.define = define;
-
-  const server = mapServer(asRecord(raw.server));
-  if (server) config.server = server;
-  const build = mapBuild(asRecord(raw.build));
-  if (build) config.build = build;
-  const preview = mapPreview(asRecord(raw.preview));
-  if (preview) config.preview = preview;
-  const resolve = mapResolve(asRecord(raw.resolve));
-  if (resolve) config.resolve = resolve;
+function mapSteambunTable(
+  raw: Record<string, unknown>,
+  warn: WarnFn,
+): UserConfig {
+  const decoded = decodeTable(raw, STEAMBUN_TABLE, "steambun", warn);
+  const { plugins: _plugins, middleware: _middleware, ...config } = decoded;
   return config;
-}
-
-function mapServer(
-  raw: Record<string, unknown> | undefined,
-): ServerOptions | undefined {
-  if (!raw) return undefined;
-  const server: ServerOptions = {};
-  if (typeof raw.port === "number") server.port = raw.port;
-  if (typeof raw.host === "boolean" || typeof raw.host === "string") {
-    server.host = raw.host;
-  }
-  if (typeof raw.open === "boolean" || typeof raw.open === "string") {
-    server.open = raw.open;
-  }
-  if (typeof raw.cors === "boolean") server.cors = raw.cors;
-  if (typeof raw.idleTimeout === "number") server.idleTimeout = raw.idleTimeout;
-  if (typeof raw.maxRequestBodySize === "number") {
-    server.maxRequestBodySize = raw.maxRequestBodySize;
-  }
-  const headers = asStringRecord(raw.headers);
-  if (headers) server.headers = headers;
-  const proxy = mapProxy(raw.proxy);
-  if (proxy) server.proxy = proxy;
-  const https = mapHttps(asRecord(raw.https));
-  if (https) server.https = https;
-  return Object.keys(server).length > 0 ? server : undefined;
-}
-
-function mapProxy(raw: unknown): Record<string, ProxyEntry> | undefined {
-  const rec = asRecord(raw);
-  if (!rec) return undefined;
-  const out: Record<string, ProxyEntry> = {};
-  for (const [key, value] of Object.entries(rec)) {
-    if (typeof value === "string") {
-      out[key] = value;
-      continue;
-    }
-    const obj = asRecord(value);
-    if (!obj || typeof obj.target !== "string") continue;
-    out[key] = {
-      target: obj.target,
-      ...(typeof obj.changeOrigin === "boolean"
-        ? { changeOrigin: obj.changeOrigin }
-        : {}),
-      ...(typeof obj.ws === "boolean" ? { ws: obj.ws } : {}),
-    };
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
-function mapHttps(
-  raw: Record<string, unknown> | undefined,
-): HttpsOptions | undefined {
-  if (!raw || typeof raw.key !== "string" || typeof raw.cert !== "string") {
-    return undefined;
-  }
-  const https: HttpsOptions = { key: raw.key, cert: raw.cert };
-  if (typeof raw.passphrase === "string") https.passphrase = raw.passphrase;
-  if (typeof raw.ca === "string") https.ca = raw.ca;
-  const caList = asStringArray(raw.ca);
-  if (caList) https.ca = caList;
-  return https;
-}
-
-function mapBuild(
-  raw: Record<string, unknown> | undefined,
-): BuildOptions | undefined {
-  if (!raw) return undefined;
-  const build: BuildOptions = {};
-  if (typeof raw.outDir === "string") build.outDir = raw.outDir;
-  if (typeof raw.assetsDir === "string") build.assetsDir = raw.assetsDir;
-  if (typeof raw.sourcemap === "boolean") build.sourcemap = raw.sourcemap;
-  if (raw.sourcemap === "inline" || raw.sourcemap === "external") {
-    build.sourcemap = raw.sourcemap;
-  }
-  if (typeof raw.minify === "boolean") build.minify = raw.minify;
-  if (raw.minify === "esbuild" || raw.minify === "terser") {
-    build.minify = raw.minify;
-  }
-  if (typeof raw.manifest === "boolean") build.manifest = raw.manifest;
-  if (typeof raw.standalone === "boolean") build.standalone = raw.standalone;
-  if (typeof raw.bytecode === "boolean") build.bytecode = raw.bytecode;
-  if (typeof raw.splitting === "boolean") build.splitting = raw.splitting;
-  if (
-    raw.target === "browser" ||
-    raw.target === "bun" ||
-    raw.target === "node"
-  ) {
-    build.target = raw.target;
-  }
-  const drop = asStringArray(raw.drop);
-  if (drop) build.drop = drop;
-  return Object.keys(build).length > 0 ? build : undefined;
-}
-
-function mapCompileWindows(
-  raw: Record<string, unknown> | undefined,
-): CompileWindowsOptions | undefined {
-  if (!raw) return undefined;
-  const windows: CompileWindowsOptions = {};
-  if (typeof raw.icon === "string") windows.icon = raw.icon;
-  if (typeof raw.hideConsole === "boolean")
-    windows.hideConsole = raw.hideConsole;
-  if (typeof raw.title === "string") windows.title = raw.title;
-  if (typeof raw.publisher === "string") windows.publisher = raw.publisher;
-  if (typeof raw.version === "string") windows.version = raw.version;
-  if (typeof raw.description === "string")
-    windows.description = raw.description;
-  if (typeof raw.copyright === "string") windows.copyright = raw.copyright;
-  return Object.keys(windows).length > 0 ? windows : undefined;
-}
-
-function mapCompile(
-  raw: Record<string, unknown> | undefined,
-): CompileOptions | undefined {
-  if (!raw) return undefined;
-  const compile: CompileOptions = {};
-  const targets = asStringArray(raw.targets);
-  if (targets) compile.targets = targets;
-  if (typeof raw.outDir === "string") compile.outDir = raw.outDir;
-  if (typeof raw.autoloadDotenv === "boolean") {
-    compile.autoloadDotenv = raw.autoloadDotenv;
-  }
-  if (typeof raw.autoloadBunfig === "boolean") {
-    compile.autoloadBunfig = raw.autoloadBunfig;
-  }
-  const windows = mapCompileWindows(asRecord(raw.windows));
-  if (windows) compile.windows = windows;
-  return Object.keys(compile).length > 0 ? compile : undefined;
-}
-
-function mapPreview(
-  raw: Record<string, unknown> | undefined,
-): PreviewOptions | undefined {
-  if (!raw) return undefined;
-  const preview: PreviewOptions = {};
-  if (typeof raw.port === "number") preview.port = raw.port;
-  if (typeof raw.host === "boolean" || typeof raw.host === "string") {
-    preview.host = raw.host;
-  }
-  if (typeof raw.open === "boolean" || typeof raw.open === "string") {
-    preview.open = raw.open;
-  }
-  return Object.keys(preview).length > 0 ? preview : undefined;
-}
-
-function mapResolve(
-  raw: Record<string, unknown> | undefined,
-): ResolveOptions | undefined {
-  if (!raw) return undefined;
-  const resolve: ResolveOptions = {};
-  const alias = asStringRecord(raw.alias);
-  if (alias) resolve.alias = alias;
-  const extensions = asStringArray(raw.extensions);
-  if (extensions) resolve.extensions = extensions;
-  return Object.keys(resolve).length > 0 ? resolve : undefined;
 }
 
 function relocateSpecifier(
@@ -503,16 +686,6 @@ function asStringArray(value: unknown): string[] | undefined {
     return undefined;
   }
   return value;
-}
-
-function asStringRecord(value: unknown): Record<string, string> | undefined {
-  const rec = asRecord(value);
-  if (!rec) return undefined;
-  const out: Record<string, string> = {};
-  for (const [key, item] of Object.entries(rec)) {
-    if (typeof item === "string") out[key] = item;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function unique(items: string[]): string[] {
