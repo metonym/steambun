@@ -177,6 +177,9 @@ async function buildResponse(
     }
   }
 
+  if (status === 200 && body) {
+    headers.set("content-length", String(body.size));
+  }
   if (req.method === "HEAD") body = null;
 
   return new Response(body, { status, headers });

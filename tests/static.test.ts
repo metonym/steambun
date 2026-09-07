@@ -147,6 +147,9 @@ describe("createStaticHandler — headers", () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("etag")).toBeTruthy();
+    expect(res.headers.get("content-length")).toBe(
+      String(Bun.file(join(outDir, "foo.txt")).size),
+    );
     expect(await res.text()).toBe("");
   });
 });
