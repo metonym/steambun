@@ -127,6 +127,153 @@ hideConsole = true
     );
     expect(config.features).toEqual(["a", "b"]);
   });
+
+  test("decodes every [steambun.build] key", () => {
+    const config = bunfigToUserConfig(
+      parseBunfigToml(`
+[steambun.build]
+outDir = "dist"
+assetsDir = "static"
+sourcemap = "inline"
+minify = { whitespace = true, syntax = true }
+drop = ["debugger", "console"]
+standalone = true
+manifest = true
+target = "node"
+bytecode = true
+splitting = true
+cssChunking = true
+minChunkSize = 1024
+importMap = true
+sharedCss = { minSize = 100 }
+precompress = ["gzip", "br"]
+precompressMinSize = 2048
+server = false
+sri = true
+
+[steambun.build.budgets]
+"assets/*.js" = "250kb"
+
+[steambun.build.csp]
+"default-src" = ["'self'"]
+`),
+    );
+    expect(config.build).toEqual({
+      outDir: "dist",
+      assetsDir: "static",
+      sourcemap: "inline",
+      minify: { whitespace: true, syntax: true },
+      drop: ["debugger", "console"],
+      standalone: true,
+      manifest: true,
+      target: "node",
+      bytecode: true,
+      splitting: true,
+      cssChunking: true,
+      minChunkSize: 1024,
+      importMap: true,
+      sharedCss: { minSize: 100 },
+      precompress: ["gzip", "br"],
+      precompressMinSize: 2048,
+      server: false,
+      sri: true,
+      budgets: { "assets/*.js": "250kb" },
+      csp: { "default-src": ["'self'"] },
+    });
+  });
+
+  test('[steambun.build] csp = "strict" is a supported literal', () => {
+    const config = bunfigToUserConfig(
+      parseBunfigToml(`[steambun.build]\ncsp = "strict"\n`),
+    );
+    expect(config.build?.csp).toBe("strict");
+  });
+});
+
+describe("bunfigToUserConfig warnings", () => {
+  function capture(toml: string): {
+    config: ReturnType<typeof bunfigToUserConfig>;
+    warnings: string[];
+  } {
+    const warnings: string[] = [];
+    const config = bunfigToUserConfig(parseBunfigToml(toml), (message) =>
+      warnings.push(message),
+    );
+    return { config, warnings };
+  }
+
+  test("warns on an unknown top-level [steambun] key", () => {
+    const { warnings } = capture(`[steambun]\nprot = 3000\n`);
+    expect(warnings).toEqual([
+      '[steambun] Unknown bunfig key "steambun.prot" was ignored.',
+    ]);
+  });
+
+  test("warns on an unknown nested key", () => {
+    const { warnings } = capture(`[steambun.build]\noutdir = "out"\n`);
+    expect(warnings).toEqual([
+      '[steambun] Unknown bunfig key "steambun.build.outdir" was ignored.',
+    ]);
+  });
+
+  test("warns on a wrong-typed server.port", () => {
+    const { config, warnings } = capture(`[steambun.server]\nport = "5173"\n`);
+    expect(config.server?.port).toBeUndefined();
+    expect(warnings).toEqual([
+      '[steambun] bunfig key "steambun.server.port" expected number, got string — ignored.',
+    ]);
+  });
+
+  test("drops an unknown precompress encoding but keeps the valid ones", () => {
+    const { config, warnings } = capture(
+      `[steambun.build]\nprecompress = ["gzip", "xz"]\n`,
+    );
+    expect(config.build?.precompress).toEqual(["gzip"]);
+    expect(warnings).toEqual([
+      '[steambun] bunfig key "steambun.build.precompress[1]" has an unknown precompress encoding "xz" — ignored.',
+    ]);
+  });
+
+  test("[define] drops only the non-string entry", () => {
+    const { config, warnings } = capture(`
+[define]
+a = "1"
+b = 2
+c = "3"
+`);
+    expect(config.define).toEqual({ a: "1", c: "3" });
+    expect(warnings).toEqual([
+      '[steambun] bunfig key "define.b" expected string, got number — ignored.',
+    ]);
+  });
+
+  test("no warnings for a fully valid config, including native [serve]/[define]", () => {
+    const { warnings } = capture(`
+[serve]
+port = 3000
+
+[define]
+FOO = "bar"
+
+[serve.static]
+env = "PUBLIC_*"
+
+[steambun]
+api = "./src/api"
+
+[steambun.server]
+host = true
+
+[steambun.build]
+outDir = "dist"
+sri = true
+precompress = ["gzip", "br"]
+
+[steambun.resolve.alias]
+"@" = "./src"
+`);
+    expect(warnings).toEqual([]);
+  });
 });
 
 describe("serializeMergedBunfig", () => {
