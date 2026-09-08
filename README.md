@@ -29,6 +29,8 @@ steambun build
 steambun preview
 ```
 
+Or scaffold one: `bunx steambun init my-app`.
+
 Config is optional. With no config file, `dev`, `build`, and `preview` use the defaults below.
 
 ## Commands
@@ -42,6 +44,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `steambun routes` | Print the route graph (HTML, `publicDir`, `api`, `proxy`) without starting a server |
 | `steambun migrate` | Convert a `vite.config.*` into `steambun.config.ts` (never overwrites an existing one) |
 | `steambun doctor` | Check config conflicts, `.steambun/` tsconfig reachability, and secret-shaped public env keys; exits 1 on any failure |
+| `steambun init [dir]` | Scaffold a new project from the minimal template |
 
 | Flag | Meaning |
 | --- | --- |
@@ -61,6 +64,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `--md` | `analyze` only: print the report as GitHub-flavored Markdown tables instead of aligned text |
 | `--html [out]` | `analyze` only: write a self-contained treemap HTML report (default `<root>/analyze.html`) |
 | `--brotli` | `analyze` only: also compute brotli sizes for the compression columns. Off by default — brotli is slow |
+| `--force` | `init` only: scaffold into a non-empty directory |
 
 ## Doctor
 
