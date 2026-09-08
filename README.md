@@ -65,6 +65,8 @@ Every `*.html` file under the project root is an entry, except files in `node_mo
 
 File lookup runs first in both modes: `/about` serves `about.html`, `/about/` serves `about/index.html`. After a miss, `"spa"` serves `index.html` and `"mpa"` returns 404. `appType` applies to `dev`, `preview`, and `compile`.
 
+In `dev` only, a thrown error in an API route, a `middleware` function, or `server.proxy`'s handler returns a visible `500` instead of a bare crash — JSON with `error`/`stack`/`method`/`path`/`route`, or an HTML alert dialog for a browser navigation (`Accept: text/html`). `preview`, `dist/server.js`, and a compiled binary keep the generic `500`.
+
 ## Configuration
 
 Discovery order:
@@ -301,6 +303,8 @@ const link = href("/api/users/:id", { id: "42" }); // "/api/users/42"
 ## Proxy
 
 `server.proxy` maps a path prefix to a target string or `{ target, changeOrigin?, rewrite?, ws? }`. `ws: true` proxies WebSockets.
+
+An unreachable target (connection refused, DNS failure) returns `502` with `{ error: "proxy target unreachable", target }` instead of an unhandled rejection. `changeOrigin: true` also sets `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forwarded-For`, without overwriting a value the incoming request already carries. Hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`) are stripped from both the outgoing request and the returned response.
 
 ## Plugins and macros
 
