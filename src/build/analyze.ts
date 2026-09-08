@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
+import { outPath, stripDotSlash } from "./rename";
 
 // Bun's metafile output keys are already relative to `outdir`, just with a
 // "./" prefix for top-level files — strip it so budgets glob against the
@@ -202,4 +204,80 @@ export function checkBudgets(
     }
   }
   return violations;
+}
+
+export interface CompareRow {
+  path: string;
+  status: "added" | "removed" | "changed";
+  before: number;
+  after: number;
+  delta: number;
+}
+
+/**
+ * Diffs two metafiles' output sizes by normalized path. Equal-size paths are
+ * omitted; the rest are sorted by absolute delta, largest first.
+ */
+export function compareMetafiles(
+  before: Bun.BuildMetafile,
+  after: Bun.BuildMetafile,
+): CompareRow[] {
+  const beforeBytes = new Map<string, number>();
+  for (const [path, output] of Object.entries(before.outputs)) {
+    beforeBytes.set(normalizeOutputPath(path), output.bytes);
+  }
+  const afterBytes = new Map<string, number>();
+  for (const [path, output] of Object.entries(after.outputs)) {
+    afterBytes.set(normalizeOutputPath(path), output.bytes);
+  }
+
+  const rows: CompareRow[] = [];
+  const paths = new Set([...beforeBytes.keys(), ...afterBytes.keys()]);
+  for (const path of paths) {
+    const b = beforeBytes.get(path);
+    const a = afterBytes.get(path);
+    if (b === undefined && a !== undefined) {
+      rows.push({ path, status: "added", before: 0, after: a, delta: a });
+    } else if (b !== undefined && a === undefined) {
+      rows.push({ path, status: "removed", before: b, after: 0, delta: -b });
+    } else if (b !== undefined && a !== undefined && b !== a) {
+      rows.push({ path, status: "changed", before: b, after: a, delta: a - b });
+    }
+  }
+  rows.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+  return rows;
+}
+
+export interface CompressedSizes {
+  gzip: number;
+  br?: number;
+  zstd: number;
+}
+
+/**
+ * Reads each output's on-disk file under `outDir` and compresses it with
+ * gzip/zstd (and brotli, opt-in — it's slow). Outputs with no file on disk
+ * (e.g. a stale metafile) are skipped, not errored.
+ */
+export async function computeCompressedSizes(
+  outputs: AnalyzeReport["outputs"],
+  outDir: string,
+  opts: { brotli: boolean },
+): Promise<Map<string, CompressedSizes>> {
+  const sizes = new Map<string, CompressedSizes>();
+  for (const output of outputs) {
+    const file = Bun.file(outPath(outDir, stripDotSlash(output.path)));
+    if (!(await file.exists())) continue;
+    const buf = await file.bytes();
+    sizes.set(output.path, {
+      gzip: Bun.gzipSync(buf, { level: 9 }).length,
+      zstd: Bun.zstdCompressSync(buf, { level: 19 }).length,
+      br: opts.brotli
+        ? brotliCompressSync(buf, {
+            params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
+          }).length
+        : undefined,
+    });
+  }
+  return sizes;
 }
