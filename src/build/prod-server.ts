@@ -65,7 +65,7 @@ import { existsSync } from "node:fs";
 ${steambunImports}
 import {
   createApp,
-  displayServerUrl,
+  displayServerUrls,
   hostnameFromHost,
   openBrowser,
   resolveOpenUrl,
@@ -111,9 +111,17 @@ const server = serveWithPortRetry(
   },
 );
 
-const displayUrl = displayServerUrl(server.url);
-console.log(\`[steambun] preview server ready at \${displayUrl}\`);
-const openUrl = resolveOpenUrl(displayUrl, config.preview?.open ?? config.server.open);
+const { local, network } = displayServerUrls(server.url);
+console.log(\`[steambun] preview server ready\`);
+console.log(\`  Local:   \${local}\`);
+for (const url of network) console.log(\`  Network: \${url}\`);
+const open =
+  process.env.OPEN === "1"
+    ? true
+    : process.env.OPEN === "0"
+      ? false
+      : (config.preview?.open ?? config.server.open);
+const openUrl = resolveOpenUrl(local, open);
 if (openUrl) openBrowser(openUrl);
 `;
 }

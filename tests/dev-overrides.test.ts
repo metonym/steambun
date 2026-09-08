@@ -75,7 +75,7 @@ describe("steambun dev --port", () => {
       const decoder = new TextDecoder();
       let output = "";
       const deadline = Date.now() + 10_000;
-      while (!output.includes("dev server ready at")) {
+      while (!output.includes(`:${port}/`)) {
         if (Date.now() > deadline) {
           throw new Error(`timed out waiting for dev server; got: ${output}`);
         }
