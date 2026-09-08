@@ -47,6 +47,9 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `--port <n>` | Port for `dev` and `preview` |
 | `--host [addr]` | Bind address. Omit the value, or set `server.host: true`, to bind `0.0.0.0` |
 | `--strictPort` | Fail instead of trying the next port (`dev`, `preview`) |
+| `--open` | Open a browser after listen (`dev`, `preview`) |
+| `--emptyOutDir <true\|false>` | Override `build.emptyOutDir` (`build`) |
+| `--logLevel <silent\|error\|warn\|info>` | Set log verbosity. Default `info` |
 | `--mode <name>` | Mode. Default `development` for `dev`, `production` for `build` |
 | `--config <path>` | Config file (skips discovery) |
 | `--root <path>` | Project root (default: cwd) |
@@ -148,7 +151,7 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 | `appType` | `"spa"` | `"spa"` or `"mpa"`. After file lookup, unmatched paths get `index.html` (`spa`) or 404 (`mpa`). Applies to `dev`, `preview`, and `compile` |
 | `server.port` | `5173` | Listen port. `PORT`, `HOST`, and `STRICT_PORT` env vars override `server.port`/`server.host`/`server.strictPort` for `steambun dev`, the same way they do for `steambun preview` and `dist/server.js` |
 | `server.host` | `false` (`127.0.0.1`) | `true` binds `0.0.0.0` |
-| `server.open` | off | Open a browser after listen. `true` opens `/`. A string is a path. If no browser opener is available, a warning is printed and startup continues |
+| `server.open` | off | Open a browser after listen. `true` opens `/`. A string is a path. If no browser opener is available, a warning is printed and startup continues. Binding `0.0.0.0` prints one `Local:` and one `Network:` line per non-internal IPv4 interface instead of a single ready line |
 | `server.cors` | `false` | CORS middleware |
 | `server.headers` | | Extra response headers |
 | `server.https` | | `{ key, cert, ca?, passphrase? }` paths, resolved against `root`. Maps to `Bun.serve({ tls })` |
