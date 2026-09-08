@@ -2,6 +2,22 @@ import type { ProxyEntry, ProxyOptions } from "../config/types";
 
 interface BunServerLike {
   upgrade: (req: Request, opts?: { data?: unknown }) => boolean;
+  requestIP?: (req: Request) => { address: string } | null;
+}
+
+const HOP_BY_HOP_HEADERS = [
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+];
+
+function stripHopByHopHeaders(headers: Headers): void {
+  for (const name of HOP_BY_HOP_HEADERS) headers.delete(name);
 }
 
 export interface ProxyWebSocketData {
@@ -41,6 +57,8 @@ export function createProxyRouteHandler(prefix: string, entry: ProxyEntry) {
     return new URL(path + url.search, targetBase);
   }
 
+  let loggedUnreachable = false;
+
   return (
     req: Request,
     server: BunServerLike,
@@ -55,12 +73,23 @@ export function createProxyRouteHandler(prefix: string, entry: ProxyEntry) {
     }
 
     const target = resolveTargetUrl(req);
-    let headers: Headers = req.headers as Headers;
+    const headers = new Headers(req.headers);
     if (opts.changeOrigin) {
-      headers = new Headers(req.headers);
       headers.set("host", target.host);
       headers.set("origin", target.origin);
+      const reqUrl = new URL(req.url);
+      if (!headers.has("x-forwarded-proto")) {
+        headers.set("x-forwarded-proto", reqUrl.protocol.replace(/:$/, ""));
+      }
+      if (!headers.has("x-forwarded-host")) {
+        headers.set("x-forwarded-host", reqUrl.host);
+      }
+      if (!headers.has("x-forwarded-for")) {
+        const address = server.requestIP?.(req)?.address;
+        if (address) headers.set("x-forwarded-for", address);
+      }
     }
+    stripHopByHopHeaders(headers);
 
     const init: RequestInit = {
       method: req.method,
@@ -70,7 +99,27 @@ export function createProxyRouteHandler(prefix: string, entry: ProxyEntry) {
     };
     if (req.body) (init as { duplex?: string }).duplex = "half";
 
-    return fetch(target, init);
+    return fetch(target, init).then(
+      (res) => {
+        const responseHeaders = new Headers(res.headers);
+        stripHopByHopHeaders(responseHeaders);
+        return new Response(res.body, {
+          status: res.status,
+          statusText: res.statusText,
+          headers: responseHeaders,
+        });
+      },
+      () => {
+        if (!loggedUnreachable) {
+          loggedUnreachable = true;
+          console.error(`[steambun] proxy target unreachable: ${opts.target}`);
+        }
+        return Response.json(
+          { error: "proxy target unreachable", target: opts.target },
+          { status: 502 },
+        );
+      },
+    );
   };
 }
 
