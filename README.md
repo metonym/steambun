@@ -41,6 +41,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `steambun analyze` | Report outputs (with gzip/zstd/brotli columns), packages, and duplicates from the last build's metafile. `--compare`, `--ci`, `--md`, `--html` add a baseline diff, CI annotations, a Markdown report, and a treemap |
 | `steambun routes` | Print the route graph (HTML, `publicDir`, `api`, `proxy`) without starting a server |
 | `steambun migrate` | Convert a `vite.config.*` into `steambun.config.ts` (never overwrites an existing one) |
+| `steambun doctor` | Check config conflicts, `.steambun/` tsconfig reachability, and secret-shaped public env keys; exits 1 on any failure |
 
 | Flag | Meaning |
 | --- | --- |
@@ -53,13 +54,41 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `--mode <name>` | Mode. Default `development` for `dev`, `production` for `build` |
 | `--config <path>` | Config file (skips discovery) |
 | `--root <path>` | Project root (default: cwd) |
-| `--json` | Machine-readable output for `analyze` and `routes` |
+| `--json` | Machine-readable output for `analyze`, `routes`, and `doctor` |
 | `--why <text>` | `analyze` only: print up to 3 shortest import chains from an entry to a path containing `<text>` |
 | `--compare <metafile.json>` | `analyze` only: diff outputs against a prior build's `.steambun/metafile.json` (added/removed/changed, largest delta first) |
-| `--ci` | `analyze` only: print `::error`/`::warning` GitHub Actions annotations for budget violations and (with `--compare`) outputs that grew over 10%. Implied when `GITHUB_ACTIONS` is set |
+| `--ci` | `analyze`: print `::error`/`::warning` GitHub Actions annotations for budget violations and (with `--compare`) outputs that grew over 10%. `doctor`: same annotations for failing/warning checks. Implied when `GITHUB_ACTIONS` is set |
 | `--md` | `analyze` only: print the report as GitHub-flavored Markdown tables instead of aligned text |
 | `--html [out]` | `analyze` only: write a self-contained treemap HTML report (default `<root>/analyze.html`) |
 | `--brotli` | `analyze` only: also compute brotli sizes for the compression columns. Off by default — brotli is slow |
+
+## Doctor
+
+`steambun doctor` runs a fixed set of checks against the resolved config and project files:
+
+| Check id | Catches |
+| --- | --- |
+| `bun-version` | Bun older than the required 1.4.0 |
+| `html-entries` | No `*.html` entrypoints under `root` |
+| `config-conflict` | A `steambun.config.*` and a `bunfig.toml` `[steambun]` table both exist — the TS config wins and the table is silently ignored |
+| `stray-vite-config` | A `steambun.config.*` and a `vite.config.*` both exist — the Vite config is never read |
+| `tsconfig-reachability` | `tsconfig.json`'s `include`/`exclude` would hide the generated `.steambun/env.d.ts` / `.steambun/routes.d.ts` from the editor or `tsc` |
+| `tsconfig-types` | `compilerOptions.types` is set but omits both `"bun-types"` and `"@types/bun"` |
+| `gitignore` | `.gitignore` doesn't cover `.steambun` or `build.outDir` |
+| `secret-env-keys` | A public env key (matching `envPrefix`) looks like a secret (`SECRET`, `TOKEN`, `PASSWORD`, `PRIVATE`, `API_KEY`) and would be inlined into client JavaScript |
+| `env-in-public-dir` | A `.env*` file sitting inside `publicDir`, publicly reachable |
+| `outdir-placement` | `build.outDir` resolving to `root` itself, or inside `publicDir` |
+
+Each check is `"ok"`, `"warn"`, or `"fail"`; the command exits `1` if any check is `"fail"`. `--json` prints `{ checks, ok }` instead of the colored report, e.g.:
+
+```json
+{
+  "checks": [{ "id": "bun-version", "level": "ok", "message": "Bun 1.4.2" }],
+  "ok": true
+}
+```
+
+`--ci` (or `GITHUB_ACTIONS=true`) additionally prints a `::error`/`::warning` GitHub Actions workflow command per failing/warning check, regardless of `--json`.
 
 ## HTML entries
 
