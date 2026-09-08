@@ -48,7 +48,8 @@ export function localNetworkAddresses(
     const addresses: string[] = [];
     for (const infos of Object.values(all)) {
       for (const info of infos ?? []) {
-        if (!info.internal && info.family === "IPv4") addresses.push(info.address);
+        if (!info.internal && info.family === "IPv4")
+          addresses.push(info.address);
       }
     }
     return addresses;
