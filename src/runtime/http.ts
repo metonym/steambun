@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path";
 import type { HttpsOptions } from "../config/types";
-import type { Middleware } from "./middleware";
+import type { Middleware, RouteHandler } from "./middleware";
 
 const CORS_ALLOW_METHODS = "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS";
 const CORS_ALLOW_HEADERS = "Content-Type, Authorization";
@@ -125,6 +125,75 @@ export function createErrorHandler(dev: boolean) {
     console.error(err);
     if (dev) return;
     return Response.json({ error: "Internal Server Error" }, { status: 500 });
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function devErrorHtml(error: Error, route: string): string {
+  return `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>steambun dev error</title></head>
+<body>
+<div role="alertdialog" aria-modal="true" style="font-family: monospace; padding: 1.5rem; max-width: 60rem;">
+  <button aria-label="Close" onclick="this.closest('[role=alertdialog]').remove()" style="float: right;">&times;</button>
+  <h1 style="color: #e5484d;">${escapeHtml(error.message)}</h1>
+  <p>${escapeHtml(route)}</p>
+  <pre style="white-space: pre-wrap;">${escapeHtml(error.stack ?? "")}</pre>
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * Dev-only: wraps a `RouteHandler` so a thrown error becomes a visible 500
+ * (JSON, or an HTML alert dialog for a browser navigation) instead of the
+ * silent failure `createErrorHandler`'s dev branch leaves behind — Bun's own
+ * `error` hook never sees a throw from inside a route/proxy/middleware
+ * function, only from its own dispatch.
+ *
+ * @example
+ * ```ts
+ * routes[path] = wrapDevErrors(handler, "api/users/[id].ts");
+ * ```
+ */
+export function wrapDevErrors(
+  handler: RouteHandler,
+  route: string,
+): RouteHandler {
+  return async (req, server) => {
+    try {
+      return await handler(req, server);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      const pathname = new URL(req.url).pathname;
+      console.error(
+        `[steambun] ${req.method} ${pathname} threw: ${error.message} (${route})`,
+      );
+      if (req.headers.get("accept")?.includes("text/html")) {
+        return new Response(devErrorHtml(error, route), {
+          status: 500,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return Response.json(
+        {
+          error: error.message,
+          stack: error.stack,
+          method: req.method,
+          path: pathname,
+          route,
+        },
+        { status: 500 },
+      );
+    }
   };
 }
 

@@ -3,7 +3,11 @@ import type { ResolvedConfig } from "../config/types";
 import { splitPlugins } from "../util/plugins";
 import type { ApiRouteCollision } from "./api-routes";
 import { loadApiModules } from "./api-routes";
-import { composeServerMiddleware, createErrorHandler } from "./http";
+import {
+  composeServerMiddleware,
+  createErrorHandler,
+  wrapDevErrors,
+} from "./http";
 import type { Middleware, RouteHandler } from "./middleware";
 import { withMiddleware } from "./middleware";
 import { createProxyRouteHandler } from "./proxy";
@@ -220,14 +224,17 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
 
   let hasWsProxy = false;
   for (const [prefix, entry] of Object.entries(config.server?.proxy ?? {})) {
-    const handler = withMiddleware(
+    const target = typeof entry === "string" ? entry : entry.target;
+    let handler = withMiddleware(
       middleware,
       createProxyRouteHandler(prefix, entry) as unknown as RouteHandler,
     );
+    if (mode === "dev") {
+      handler = wrapDevErrors(handler, `proxy ${prefix} -> ${target}`);
+    }
     const wildcard = prefix.endsWith("/") ? `${prefix}*` : `${prefix}/*`;
     routes[prefix] = handler;
     routes[wildcard] = handler;
-    const target = typeof entry === "string" ? entry : entry.target;
     rows.push({ path: prefix, kind: "proxy", methods: ["*"], source: target });
     rows.push({
       path: wildcard,
@@ -246,6 +253,8 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
   if (apiDir && apiModules) {
     const apiRoutes = apiModules.routes;
     const source = relative(config.root, apiDir);
+    const routeLabel = (path: string) =>
+      join(source, apiModules.fileForPath.get(path) ?? "");
 
     for (const collision of apiModules.collisions) {
       console.log(formatApiRouteCollision(collision, source));
@@ -276,7 +285,10 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
           }
           return fallback(req, server);
         };
-        routes[path] = withMiddleware(middleware, combined);
+        routes[path] = withMiddleware(
+          middleware,
+          mode === "dev" ? wrapDevErrors(combined, routeLabel(path)) : combined,
+        );
         const methods =
           handler && typeof handler === "object" ? Object.keys(handler) : ["*"];
         rows.push({ path, kind: "ws", methods, source });
@@ -284,21 +296,19 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
       }
 
       if (typeof handler === "function") {
-        routes[path] = withMiddleware(
-          middleware,
-          withSseTimeout(handler as RouteHandler),
-        );
+        let fn = withSseTimeout(handler as RouteHandler);
+        if (mode === "dev") fn = wrapDevErrors(fn, routeLabel(path));
+        routes[path] = withMiddleware(middleware, fn);
         rows.push({ path, kind: "api", methods: ["*"], source });
       } else {
         const wrapped: Record<string, unknown> = {};
         const methods: string[] = [];
-        for (const [method, fn] of Object.entries(
+        for (const [method, handlerFn] of Object.entries(
           handler as Record<string, unknown>,
         )) {
-          wrapped[method] = withMiddleware(
-            middleware,
-            withSseTimeout(fn as RouteHandler),
-          );
+          let fn = withSseTimeout(handlerFn as RouteHandler);
+          if (mode === "dev") fn = wrapDevErrors(fn, routeLabel(path));
+          wrapped[method] = withMiddleware(middleware, fn);
           methods.push(method);
         }
         routes[path] = wrapped;
