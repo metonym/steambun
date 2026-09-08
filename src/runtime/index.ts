@@ -1,5 +1,10 @@
 export { createAliasPlugin } from "../util/alias";
-export { displayServerUrl, hostnameFromHost } from "../util/hostname";
+export {
+  displayServerUrl,
+  displayServerUrls,
+  hostnameFromHost,
+  localNetworkAddresses,
+} from "../util/hostname";
 export { openBrowser, resolveOpenUrl } from "../util/open-browser";
 export { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 export { loadApiRoutes } from "./api-routes";

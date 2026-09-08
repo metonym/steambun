@@ -169,7 +169,7 @@ ${htmlImports}
 import { loadConfig } from "steambun";
 import {
   createApp,
-  displayServerUrl,
+  displayServerUrls,
   hostnameFromHost,
   openBrowser,
   resolveOpenUrl,
@@ -221,10 +221,18 @@ const server = serveWithPortRetry(
   { strictPort, label: "dev" },
 );
 
-const displayUrl = displayServerUrl(server.url);
+const { local, network } = displayServerUrls(server.url);
 const elapsed = Math.round(performance.now() - startedAt);
-console.log(\`[steambun] dev server ready at \${displayUrl} in \${elapsed}ms\`);
-const openUrl = resolveOpenUrl(displayUrl, config.server.open);
+console.log(\`[steambun] dev server ready in \${elapsed}ms\`);
+console.log(\`  Local:   \${local}\`);
+for (const url of network) console.log(\`  Network: \${url}\`);
+const open =
+  process.env.OPEN === "1"
+    ? true
+    : process.env.OPEN === "0"
+      ? false
+      : config.server.open;
+const openUrl = resolveOpenUrl(local, open);
 if (openUrl) openBrowser(openUrl);
 `;
 }
