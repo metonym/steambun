@@ -61,11 +61,56 @@ describe("analyzeMetafile", () => {
     expect(report.total).toBe(400);
   });
 
-  test("nested node_modules directories are flagged as duplicates", () => {
-    const report = analyzeMetafile(fixtureMetafile());
-    const dup = report.duplicates.find((d) => d.name === "left-pad");
-    expect(dup).toBeDefined();
-    expect(report.duplicates.some((d) => d.name === "@scope/pkg")).toBe(false);
+  test("nested node_modules directories with different versions are flagged as duplicates", () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-dup-diff-"));
+    mkdirSync(join(root, "node_modules", "left-pad"), { recursive: true });
+    mkdirSync(join(root, "packages", "sub", "node_modules", "left-pad"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, "node_modules", "left-pad", "package.json"),
+      JSON.stringify({ name: "left-pad", version: "1.0.0" }),
+    );
+    writeFileSync(
+      join(root, "packages", "sub", "node_modules", "left-pad", "package.json"),
+      JSON.stringify({ name: "left-pad", version: "2.0.0" }),
+    );
+    const prevCwd = process.cwd();
+    process.chdir(root);
+    try {
+      const report = analyzeMetafile(fixtureMetafile());
+      const dup = report.duplicates.find((d) => d.name === "left-pad");
+      expect(dup).toBeDefined();
+      expect(report.duplicates.some((d) => d.name === "@scope/pkg")).toBe(
+        false,
+      );
+    } finally {
+      process.chdir(prevCwd);
+    }
+  });
+
+  test("nested node_modules directories with the same version are not flagged as duplicates", () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-dup-same-"));
+    mkdirSync(join(root, "node_modules", "left-pad"), { recursive: true });
+    mkdirSync(join(root, "packages", "sub", "node_modules", "left-pad"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, "node_modules", "left-pad", "package.json"),
+      JSON.stringify({ name: "left-pad", version: "1.0.0" }),
+    );
+    writeFileSync(
+      join(root, "packages", "sub", "node_modules", "left-pad", "package.json"),
+      JSON.stringify({ name: "left-pad", version: "1.0.0" }),
+    );
+    const prevCwd = process.cwd();
+    process.chdir(root);
+    try {
+      const report = analyzeMetafile(fixtureMetafile());
+      expect(report.duplicates.some((d) => d.name === "left-pad")).toBe(false);
+    } finally {
+      process.chdir(prevCwd);
+    }
   });
 
   test("output rows carry per-input byte contributions, largest first", () => {

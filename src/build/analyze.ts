@@ -120,7 +120,7 @@ export function analyzeMetafile(metafile: Bun.BuildMetafile): AnalyzeReport {
     .sort((a, b) => b.bytes - a.bytes);
 
   const duplicates = [...packageAgg.entries()]
-    .filter(([, agg]) => agg.dirs.size > 1)
+    .filter(([, agg]) => agg.versions.size > 1)
     .map(([name, agg]) => ({ name, versions: [...agg.versions] }));
 
   return { outputs, packages, duplicates, total };
