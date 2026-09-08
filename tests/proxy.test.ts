@@ -141,10 +141,7 @@ describe("createProxyRouteHandler", () => {
         changeOrigin: true,
       });
 
-      await handler(
-        new Request("http://localhost:5173/api/users"),
-        fakeServer,
-      );
+      await handler(new Request("http://localhost:5173/api/users"), fakeServer);
       expect(captured.get("x-forwarded-proto")).toBe("http");
       expect(captured.get("x-forwarded-host")).toBe("localhost:5173");
 
