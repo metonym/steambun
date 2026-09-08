@@ -1,0 +1,15 @@
+{
+  "name": "steambun-app",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "steambun dev",
+    "build": "steambun build",
+    "preview": "steambun preview"
+  },
+  "devDependencies": {
+    "steambun": "*",
+    "@types/bun": "^1.4.1"
+  }
+}

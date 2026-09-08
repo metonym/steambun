@@ -19,7 +19,8 @@
   },
   "files": [
     "src",
-    "bin"
+    "bin",
+    "templates"
   ],
   "workspaces": [
     "examples/*"
