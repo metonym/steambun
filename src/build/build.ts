@@ -50,6 +50,7 @@ export interface BuildOptions {
   root?: string;
   mode?: string;
   configFile?: string;
+  emptyOutDir?: boolean;
 }
 
 const BUILD_FILE_TYPE_RANK: Record<string, number> = { html: 0, css: 1, js: 2 };
@@ -113,6 +114,8 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     mode,
     configFile: opts.configFile,
   });
+  if (opts.emptyOutDir !== undefined)
+    config.build.emptyOutDir = opts.emptyOutDir;
 
   const { skipDirs, skipPaths } = discoverSkipDirs(config);
   const htmlEntries = await discoverHtmlEntries(config.root, {

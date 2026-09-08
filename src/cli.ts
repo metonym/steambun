@@ -15,6 +15,7 @@ import {
 import { writeRoutesDts } from "./routes-dts";
 import { createApp, formatApiRouteCollision } from "./runtime/app";
 import { formatSize } from "./util/format";
+import { type LogLevel, log, setLogLevel } from "./util/terminal";
 
 const USAGE = `steambun — a Bun-native, Vite-class dev & bundle toolkit
 
@@ -30,6 +31,9 @@ Flags:
 --port <n>       Port for dev/preview
 --host [addr]    Expose on network (dev/preview)
 --strictPort     Fail instead of trying the next port (dev, preview)
+--open           Open a browser after listen (dev, preview)
+--emptyOutDir <true|false>  Empty outDir before building (build)
+--logLevel <silent|error|warn|info>  Set log verbosity (default: info)
   --mode <name>    Set mode (default: development for dev, production for build)
   --config <path>  Explicit config file path
   --root <path>    Project root (default: cwd)
@@ -37,11 +41,16 @@ Flags:
   --why <text>     Print import chains to an output/input path containing <text> (analyze)
 `;
 
+const LOG_LEVELS: LogLevel[] = ["silent", "error", "warn", "info"];
+
 function commonOptions() {
   return {
     port: { type: "string" as const },
     host: { type: "string" as const },
     strictPort: { type: "boolean" as const },
+    open: { type: "boolean" as const },
+    emptyOutDir: { type: "string" as const },
+    logLevel: { type: "string" as const },
     mode: { type: "string" as const },
     config: { type: "string" as const },
     root: { type: "string" as const },
@@ -49,6 +58,20 @@ function commonOptions() {
     why: { type: "string" as const },
     help: { type: "boolean" as const, short: "h" },
   };
+}
+
+/** `undefined` in → `undefined` out; anything besides `"true"`/`"false"` warns and is ignored. */
+export function parseBooleanFlag(
+  value: string | undefined,
+  flag: string,
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  console.warn(
+    `[steambun] --${flag} expects "true" or "false", got "${value}" — ignored.`,
+  );
+  return undefined;
 }
 
 async function runAnalyze(
@@ -65,7 +88,7 @@ async function runAnalyze(
   });
   const metafilePath = join(config.root, ".steambun", "metafile.json");
   if (!existsSync(metafilePath)) {
-    console.error(
+    log.error(
       "[steambun] No build metafile found. Run `steambun build` first.",
     );
     process.exitCode = 1;
@@ -190,8 +213,18 @@ export async function main(argv: string[]): Promise<void> {
   });
 
   if (values.help) {
-    console.log(USAGE);
+    log.info(USAGE);
     return;
+  }
+
+  if (values.logLevel !== undefined) {
+    if ((LOG_LEVELS as string[]).includes(values.logLevel)) {
+      setLogLevel(values.logLevel as LogLevel);
+    } else {
+      console.warn(
+        `[steambun] --logLevel expects one of ${LOG_LEVELS.join(", ")}, got "${values.logLevel}" — ignored.`,
+      );
+    }
   }
 
   const root = values.root;
@@ -206,10 +239,16 @@ export async function main(argv: string[]): Promise<void> {
         port: values.port ? Number(values.port) : undefined,
         host: values.host !== undefined ? values.host || true : undefined,
         strictPort: values.strictPort,
+        open: values.open,
       });
       return;
     case "build":
-      await build({ root, configFile, mode: values.mode });
+      await build({
+        root,
+        configFile,
+        mode: values.mode,
+        emptyOutDir: parseBooleanFlag(values.emptyOutDir, "emptyOutDir"),
+      });
       return;
     case "preview":
       await preview({
@@ -219,6 +258,7 @@ export async function main(argv: string[]): Promise<void> {
         port: values.port ? Number(values.port) : undefined,
         host: values.host !== undefined ? values.host || true : undefined,
         strictPort: values.strictPort,
+        open: values.open,
       });
       return;
     case "analyze":
@@ -236,7 +276,7 @@ export async function main(argv: string[]): Promise<void> {
       await migrate(root ?? process.cwd());
       return;
     default:
-      console.log(USAGE);
+      log.info(USAGE);
       process.exitCode = 1;
   }
 }
