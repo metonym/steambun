@@ -26,6 +26,7 @@ import {
   htmlServePath,
 } from "./dev/discover";
 import { runDoctor } from "./doctor";
+import { init } from "./init";
 import { writeRoutesDts } from "./routes-dts";
 import { createApp, formatApiRouteCollision } from "./runtime/app";
 import { formatSize } from "./util/format";
@@ -41,6 +42,7 @@ Usage:
   steambun routes          Print the route graph without starting a server
   steambun migrate         Convert a vite.config.* into steambun.config.ts
   steambun doctor          Check config conflicts, tsconfig reachability, and secret env keys
+  steambun init [dir]      Scaffold a new project from the minimal template
 
 Flags:
 --port <n>       Port for dev/preview
@@ -48,6 +50,7 @@ Flags:
 --strictPort     Fail instead of trying the next port (dev, preview)
 --open           Open a browser after listen (dev, preview)
 --emptyOutDir <true|false>  Empty outDir before building (build)
+--force          Scaffold into a non-empty directory (init)
 --logLevel <silent|error|warn|info>  Set log verbosity (default: info)
   --mode <name>    Set mode (default: development for dev, production for build)
   --config <path>  Explicit config file path
@@ -81,6 +84,7 @@ function commonOptions() {
     md: { type: "boolean" as const },
     html: { type: "boolean" as const },
     brotli: { type: "boolean" as const },
+    force: { type: "boolean" as const },
     help: { type: "boolean" as const, short: "h" },
   };
 }
@@ -419,6 +423,7 @@ export async function main(argv: string[]): Promise<void> {
     "routes",
     "migrate",
     "doctor",
+    "init",
   ].includes(command ?? "");
   const args = isKnownCommand ? rest : argv;
   const resolvedCommand = isKnownCommand ? command! : "dev";
@@ -510,6 +515,13 @@ export async function main(argv: string[]): Promise<void> {
       if (!result.ok) process.exitCode = 1;
       return;
     }
+    case "init":
+      await init({
+        dir: positionals[0],
+        force: !!values.force,
+        cwd: root,
+      });
+      return;
     default:
       log.info(USAGE);
       process.exitCode = 1;
