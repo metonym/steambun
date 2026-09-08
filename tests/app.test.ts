@@ -41,6 +41,16 @@ export const DELETE = () => new Response(null, { status: 204 });
   return apiDir;
 }
 
+function writeThrowingApiFixture(root: string): string {
+  const apiDir = join(root, "api");
+  mkdirSync(apiDir, { recursive: true });
+  writeFileSync(
+    join(apiDir, "boom.ts"),
+    `export const GET = () => { throw new Error("boom"); };\n`,
+  );
+  return apiDir;
+}
+
 describe("createApp — api routes", () => {
   test("dispatches params, 405s on unhandled methods, and reaches the default export", async () => {
     const root = tmpDir("steambun-app-api-");
@@ -131,6 +141,55 @@ describe("createApp — preview mode", () => {
       new Request("http://localhost/nonexistent"),
     );
     expect(fallback.status).toBe(404);
+  });
+});
+
+describe("createApp — dev error surface", () => {
+  test("dev mode: a thrown API handler becomes a visible 500 JSON", async () => {
+    const root = tmpDir("steambun-app-dev-err-");
+    writeThrowingApiFixture(root);
+    const config = baseConfig(root, { api: "api" });
+    const app = await createApp({ config, mode: "dev" });
+
+    const res = await app.fetch(new Request("http://localhost/api/boom"));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("boom");
+    expect(typeof body.stack).toBe("string");
+    expect(body.method).toBe("GET");
+    expect(body.path).toBe("/api/boom");
+    expect(body.route).toBe(join("api", "boom.ts"));
+  });
+
+  test("dev mode: Accept: text/html returns an alert dialog", async () => {
+    const root = tmpDir("steambun-app-dev-err-html-");
+    writeThrowingApiFixture(root);
+    const config = baseConfig(root, { api: "api" });
+    const app = await createApp({ config, mode: "dev" });
+
+    const res = await app.fetch(
+      new Request("http://localhost/api/boom", {
+        headers: { accept: "text/html" },
+      }),
+    );
+    expect(res.status).toBe(500);
+    const html = await res.text();
+    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain("<button");
+  });
+
+  test("preview mode: the same route is not wrapped", async () => {
+    const root = tmpDir("steambun-app-dev-err-preview-");
+    writeThrowingApiFixture(root);
+    const outDir = join(root, "dist");
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, "index.html"), "<html></html>");
+    const config = baseConfig(root, { api: "api" });
+    const app = await createApp({ config, mode: "preview", outDir });
+
+    await expect(
+      app.fetch(new Request("http://localhost/api/boom")),
+    ).rejects.toThrow("boom");
   });
 });
 
