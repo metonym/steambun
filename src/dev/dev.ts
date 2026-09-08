@@ -20,10 +20,11 @@ export interface DevOptions {
   port?: number;
   host?: string | boolean;
   strictPort?: boolean;
+  open?: boolean;
 }
 
 export function devChildEnv(
-  opts: Pick<DevOptions, "port" | "host" | "strictPort">,
+  opts: Pick<DevOptions, "port" | "host" | "strictPort" | "open">,
 ): Record<string, string> {
   return {
     ...(opts.port ? { PORT: String(opts.port) } : {}),
@@ -35,6 +36,7 @@ export function devChildEnv(
     ...(opts.strictPort !== undefined
       ? { STRICT_PORT: opts.strictPort ? "1" : "0" }
       : {}),
+    ...(opts.open !== undefined ? { OPEN: opts.open ? "1" : "0" } : {}),
   };
 }
 
