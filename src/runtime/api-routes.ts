@@ -147,6 +147,8 @@ export interface ApiModules {
   routes: Record<string, unknown>;
   websockets: Map<string, WebSocketRouteHandlers>;
   collisions: ApiRouteCollision[];
+  /** apiDir-relative file that owns each route path */
+  fileForPath: Map<string, string>;
 }
 
 interface RouteOwner {
@@ -214,7 +216,12 @@ export async function loadApiModules(apiDir: string): Promise<ApiModules> {
     }
   }
 
-  return { routes, websockets, collisions };
+  const fileForPath = new Map<string, string>();
+  for (const [path, owner] of routeOwners) fileForPath.set(path, owner.rel);
+  for (const [path, owner] of wsOwners)
+    if (!fileForPath.has(path)) fileForPath.set(path, owner.rel);
+
+  return { routes, websockets, collisions, fileForPath };
 }
 
 /**
