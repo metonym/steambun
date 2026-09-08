@@ -38,7 +38,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `steambun` / `steambun dev` | Dev server (default) |
 | `steambun build` | Production build to `build.outDir` (default `dist`) |
 | `steambun preview` | Serve the last production build |
-| `steambun analyze` | Report outputs, packages, and duplicates from the last build's metafile |
+| `steambun analyze` | Report outputs (with gzip/zstd/brotli columns), packages, and duplicates from the last build's metafile. `--compare`, `--ci`, `--md`, `--html` add a baseline diff, CI annotations, a Markdown report, and a treemap |
 | `steambun routes` | Print the route graph (HTML, `publicDir`, `api`, `proxy`) without starting a server |
 | `steambun migrate` | Convert a `vite.config.*` into `steambun.config.ts` (never overwrites an existing one) |
 
@@ -55,6 +55,11 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `--root <path>` | Project root (default: cwd) |
 | `--json` | Machine-readable output for `analyze` and `routes` |
 | `--why <text>` | `analyze` only: print up to 3 shortest import chains from an entry to a path containing `<text>` |
+| `--compare <metafile.json>` | `analyze` only: diff outputs against a prior build's `.steambun/metafile.json` (added/removed/changed, largest delta first) |
+| `--ci` | `analyze` only: print `::error`/`::warning` GitHub Actions annotations for budget violations and (with `--compare`) outputs that grew over 10%. Implied when `GITHUB_ACTIONS` is set |
+| `--md` | `analyze` only: print the report as GitHub-flavored Markdown tables instead of aligned text |
+| `--html [out]` | `analyze` only: write a self-contained treemap HTML report (default `<root>/analyze.html`) |
+| `--brotli` | `analyze` only: also compute brotli sizes for the compression columns. Off by default — brotli is slow |
 
 ## HTML entries
 
@@ -189,7 +194,7 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 
 After JS/CSS minify, steambun collapses tag whitespace in the HTML output.
 
-`steambun build` writes `.steambun/metafile.json` (Bun's build metafile) so `steambun analyze` can report on it after the fact, without a full rebuild. Sizes reflect the files as written after `build.importMap`/`build.sharedCss` rewrote and renamed them; `build.budgets` is checked against those final, on-disk sizes.
+`steambun build` writes `.steambun/metafile.json` (Bun's build metafile) so `steambun analyze` can report on it after the fact, without a full rebuild. Sizes reflect the files as written after `build.importMap`/`build.sharedCss` rewrote and renamed them; `build.budgets` is checked against those final, on-disk sizes. A "duplicate package" is one resolved to more than one distinct *version* across `node_modules/<name>` directories — same-version copies hoisted into separate directories (as some pnpm layouts do) aren't flagged.
 
 The terminal summary printed after every build shows a `gzip:` size (level 6, never brotli — too slow to run on every build) next to each `.js`/`.css`/`.html`/`.svg`/`.json` output of at least 1KB, plus a total row for both raw and gzip size.
 
