@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   analyzeMetafile,
   checkBudgets,
+  compareMetafiles,
+  computeCompressedSizes,
   explainImport,
   parseSize,
 } from "../src/build/analyze";
@@ -173,6 +175,84 @@ describe("checkBudgets", () => {
     expect(violations[0]?.path).toBe("entry.js");
 
     expect(checkBudgets(report.outputs, { "*.js": 1000 })).toHaveLength(0);
+  });
+});
+
+describe("computeCompressedSizes", () => {
+  test("compresses a real file smaller than raw bytes, and skips a missing one", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-compress-"));
+    const text = "a".repeat(2000);
+    writeFileSync(join(root, "entry.js"), text);
+    const outputs = [
+      { path: "entry.js", bytes: text.length, inputs: [] },
+      { path: "missing.js", bytes: 100, inputs: [] },
+    ];
+
+    const sizes = await computeCompressedSizes(outputs, root, {
+      brotli: false,
+    });
+
+    const entry = sizes.get("entry.js");
+    expect(entry).toBeDefined();
+    expect(entry!.gzip).toBeLessThan(text.length);
+    expect(entry!.zstd).toBeLessThan(text.length);
+    expect(entry!.br).toBeUndefined();
+    expect(sizes.has("missing.js")).toBe(false);
+  });
+
+  test("includes br when brotli is enabled", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-compress-br-"));
+    const text = "b".repeat(2000);
+    writeFileSync(join(root, "entry.js"), text);
+    const outputs = [{ path: "entry.js", bytes: text.length, inputs: [] }];
+
+    const sizes = await computeCompressedSizes(outputs, root, { brotli: true });
+
+    expect(sizes.get("entry.js")?.br).toBeLessThan(text.length);
+  });
+});
+
+describe("compareMetafiles", () => {
+  test("reports added, removed, and changed paths, and omits unchanged ones", () => {
+    const before = {
+      inputs: {},
+      outputs: {
+        "./same.js": { bytes: 100, inputs: {}, imports: [], exports: [] },
+        "./shrunk.js": { bytes: 200, inputs: {}, imports: [], exports: [] },
+        "./removed.js": { bytes: 50, inputs: {}, imports: [], exports: [] },
+      },
+    } as unknown as Bun.BuildMetafile;
+    const after = {
+      inputs: {},
+      outputs: {
+        "./same.js": { bytes: 100, inputs: {}, imports: [], exports: [] },
+        "./shrunk.js": { bytes: 150, inputs: {}, imports: [], exports: [] },
+        "./added.js": { bytes: 30, inputs: {}, imports: [], exports: [] },
+      },
+    } as unknown as Bun.BuildMetafile;
+
+    const rows = compareMetafiles(before, after);
+    const byPath = Object.fromEntries(rows.map((r) => [r.path, r]));
+
+    expect(byPath["same.js"]).toBeUndefined();
+    expect(byPath["added.js"]).toMatchObject({
+      status: "added",
+      before: 0,
+      after: 30,
+      delta: 30,
+    });
+    expect(byPath["removed.js"]).toMatchObject({
+      status: "removed",
+      before: 50,
+      after: 0,
+      delta: -50,
+    });
+    expect(byPath["shrunk.js"]).toMatchObject({
+      status: "changed",
+      before: 200,
+      after: 150,
+      delta: -50,
+    });
   });
 });
 
