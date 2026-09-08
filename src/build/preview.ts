@@ -11,6 +11,7 @@ export interface PreviewOptions {
   port?: number;
   host?: string | boolean;
   strictPort?: boolean;
+  open?: boolean;
 }
 
 export async function preview(opts: PreviewOptions = {}): Promise<void> {
@@ -54,6 +55,7 @@ export async function preview(opts: PreviewOptions = {}): Promise<void> {
       ...((opts.strictPort ?? config.preview?.strictPort)
         ? { STRICT_PORT: "1" }
         : {}),
+      ...(opts.open !== undefined ? { OPEN: opts.open ? "1" : "0" } : {}),
     },
   });
 
