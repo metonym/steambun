@@ -17,7 +17,7 @@ import type {
 } from "./types";
 import { viteConfigToUserConfig } from "./vite";
 
-const STEAMBUN_CONFIG_NAMES = [
+export const STEAMBUN_CONFIG_NAMES = [
   "steambun.config.ts",
   "steambun.config.mts",
   "steambun.config.js",
