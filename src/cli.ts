@@ -25,6 +25,7 @@ import {
   discoverSkipDirs,
   htmlServePath,
 } from "./dev/discover";
+import { runDoctor } from "./doctor";
 import { writeRoutesDts } from "./routes-dts";
 import { createApp, formatApiRouteCollision } from "./runtime/app";
 import { formatSize } from "./util/format";
@@ -39,6 +40,7 @@ Usage:
   steambun analyze         Report a build size/dependency breakdown from the last build
   steambun routes          Print the route graph without starting a server
   steambun migrate         Convert a vite.config.* into steambun.config.ts
+  steambun doctor          Check config conflicts, tsconfig reachability, and secret env keys
 
 Flags:
 --port <n>       Port for dev/preview
@@ -50,10 +52,10 @@ Flags:
   --mode <name>    Set mode (default: development for dev, production for build)
   --config <path>  Explicit config file path
   --root <path>    Project root (default: cwd)
-  --json           Machine-readable output (analyze, routes)
+  --json           Machine-readable output (analyze, routes, doctor)
   --why <text>     Print import chains to an output/input path containing <text> (analyze)
   --compare <metafile>  Diff outputs against a prior build's metafile.json (analyze)
-  --ci             Print ::error/::warning annotations for budgets/growth (analyze; implied by GITHUB_ACTIONS)
+  --ci             Print ::error/::warning annotations for budgets/growth (analyze) or failing/warning checks (doctor); implied by GITHUB_ACTIONS
   --md             Print the report as GitHub-flavored Markdown tables (analyze)
   --html [out]     Write a treemap HTML report (default <root>/analyze.html) (analyze)
   --brotli         Also compute brotli sizes (slow; opt-in) (analyze)
@@ -416,6 +418,7 @@ export async function main(argv: string[]): Promise<void> {
     "analyze",
     "routes",
     "migrate",
+    "doctor",
   ].includes(command ?? "");
   const args = isKnownCommand ? rest : argv;
   const resolvedCommand = isKnownCommand ? command! : "dev";
@@ -497,6 +500,16 @@ export async function main(argv: string[]): Promise<void> {
     case "migrate":
       await migrate(root ?? process.cwd());
       return;
+    case "doctor": {
+      const result = await runDoctor({
+        root,
+        configFile,
+        json: !!values.json,
+        ci: !!values.ci,
+      });
+      if (!result.ok) process.exitCode = 1;
+      return;
+    }
     default:
       log.info(USAGE);
       process.exitCode = 1;
