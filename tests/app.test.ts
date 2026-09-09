@@ -52,28 +52,35 @@ function writeThrowingApiFixture(root: string): string {
 }
 
 describe("createApp — api routes", () => {
-  test("dispatches params, 405s on unhandled methods, and reaches the default export", async () => {
+  test("dispatches params, 404s on unhandled methods (Bun's own router semantics), and reaches the default export", async () => {
     const root = tmpDir("steambun-app-api-");
     const apiDir = writeApiFixture(root);
     const config = baseConfig(root, { api: "api" });
     const app = await createApp({ config, mode: "dev" });
-    expect(config.api).toBe(apiDir);
-    expect(app.collisions).toEqual([]);
+    try {
+      expect(config.api).toBe(apiDir);
+      expect(app.collisions).toEqual([]);
 
-    const userRes = await app.fetch(
-      new Request("http://localhost/api/users/42"),
-    );
-    expect(await userRes.json()).toEqual({ id: "42" });
+      const userRes = await app.fetch(
+        new Request("http://localhost/api/users/42"),
+      );
+      expect(await userRes.json()).toEqual({ id: "42" });
 
-    const healthRes = await app.fetch(
-      new Request("http://localhost/api/health", { method: "POST" }),
-    );
-    expect(healthRes.status).toBe(405);
+      // health.ts only exports GET — Bun's real router 404s an unmapped
+      // method on a method-map route rather than 405ing (verified against a
+      // bare Bun.serve; see the deleted hand-rolled matcher this replaced).
+      const healthRes = await app.fetch(
+        new Request("http://localhost/api/health", { method: "POST" }),
+      );
+      expect(healthRes.status).toBe(404);
 
-    const echoRes = await app.fetch(
-      new Request("http://localhost/api/echo", { method: "PUT" }),
-    );
-    expect(await echoRes.json()).toEqual({ method: "PUT" });
+      const echoRes = await app.fetch(
+        new Request("http://localhost/api/echo", { method: "PUT" }),
+      );
+      expect(await echoRes.json()).toEqual({ method: "PUT" });
+    } finally {
+      app.close();
+    }
   });
 
   test("runs config.middleware and server.cors for api routes", async () => {
@@ -93,15 +100,40 @@ describe("createApp — api routes", () => {
       ],
     });
     const app = await createApp({ config, mode: "dev" });
+    try {
+      const preflight = await app.fetch(
+        new Request("http://localhost/api/echo", { method: "OPTIONS" }),
+      );
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("*");
 
-    const preflight = await app.fetch(
-      new Request("http://localhost/api/echo", { method: "OPTIONS" }),
-    );
-    expect(preflight.status).toBe(204);
-    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      const res = await app.fetch(new Request("http://localhost/api/health"));
+      expect(res.headers.get("x-mw")).toBe("1");
+    } finally {
+      app.close();
+    }
+  });
 
-    const res = await app.fetch(new Request("http://localhost/api/health"));
-    expect(res.headers.get("x-mw")).toBe("1");
+  test("html bundle-shaped routes serve their real content, not a blank 200", async () => {
+    const root = tmpDir("steambun-app-html-");
+    const config = baseConfig(root);
+    const app = await createApp({
+      config,
+      mode: "dev",
+      htmlRoutes: {
+        "/": new Response("<html>hi</html>", {
+          headers: { "content-type": "text/html" },
+        }),
+      },
+    });
+    try {
+      const res = await app.fetch(new Request("http://localhost/"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      expect(await res.text()).toBe("<html>hi</html>");
+    } finally {
+      app.close();
+    }
   });
 });
 
@@ -119,28 +151,36 @@ describe("createApp — preview mode", () => {
     const { root, outDir } = previewFixture();
     const config = baseConfig(root, { appType: "spa" });
     const app = await createApp({ config, mode: "preview", outDir });
+    try {
+      const home = await app.fetch(new Request("http://localhost/"));
+      expect(home.status).toBe(200);
 
-    const home = await app.fetch(new Request("http://localhost/"));
-    expect(home.status).toBe(200);
+      const asset = await app.fetch(
+        new Request("http://localhost/assets/x.js"),
+      );
+      expect(asset.status).toBe(200);
 
-    const asset = await app.fetch(new Request("http://localhost/assets/x.js"));
-    expect(asset.status).toBe(200);
-
-    const fallback = await app.fetch(
-      new Request("http://localhost/nonexistent"),
-    );
-    expect(fallback.status).toBe(200);
+      const fallback = await app.fetch(
+        new Request("http://localhost/nonexistent"),
+      );
+      expect(fallback.status).toBe(200);
+    } finally {
+      app.close();
+    }
   });
 
   test("mpa returns 404 on a miss", async () => {
     const { root, outDir } = previewFixture();
     const config = baseConfig(root, { appType: "mpa" });
     const app = await createApp({ config, mode: "preview", outDir });
-
-    const fallback = await app.fetch(
-      new Request("http://localhost/nonexistent"),
-    );
-    expect(fallback.status).toBe(404);
+    try {
+      const fallback = await app.fetch(
+        new Request("http://localhost/nonexistent"),
+      );
+      expect(fallback.status).toBe(404);
+    } finally {
+      app.close();
+    }
   });
 });
 
@@ -150,15 +190,18 @@ describe("createApp — dev error surface", () => {
     writeThrowingApiFixture(root);
     const config = baseConfig(root, { api: "api" });
     const app = await createApp({ config, mode: "dev" });
-
-    const res = await app.fetch(new Request("http://localhost/api/boom"));
-    expect(res.status).toBe(500);
-    const body = await res.json();
-    expect(body.error).toBe("boom");
-    expect(typeof body.stack).toBe("string");
-    expect(body.method).toBe("GET");
-    expect(body.path).toBe("/api/boom");
-    expect(body.route).toBe(join("api", "boom.ts"));
+    try {
+      const res = await app.fetch(new Request("http://localhost/api/boom"));
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe("boom");
+      expect(typeof body.stack).toBe("string");
+      expect(body.method).toBe("GET");
+      expect(body.path).toBe("/api/boom");
+      expect(body.route).toBe(join("api", "boom.ts"));
+    } finally {
+      app.close();
+    }
   });
 
   test("dev mode: Accept: text/html returns an alert dialog", async () => {
@@ -166,19 +209,22 @@ describe("createApp — dev error surface", () => {
     writeThrowingApiFixture(root);
     const config = baseConfig(root, { api: "api" });
     const app = await createApp({ config, mode: "dev" });
-
-    const res = await app.fetch(
-      new Request("http://localhost/api/boom", {
-        headers: { accept: "text/html" },
-      }),
-    );
-    expect(res.status).toBe(500);
-    const html = await res.text();
-    expect(html).toContain('role="alertdialog"');
-    expect(html).toContain("<button");
+    try {
+      const res = await app.fetch(
+        new Request("http://localhost/api/boom", {
+          headers: { accept: "text/html" },
+        }),
+      );
+      expect(res.status).toBe(500);
+      const html = await res.text();
+      expect(html).toContain('role="alertdialog"');
+      expect(html).toContain("<button");
+    } finally {
+      app.close();
+    }
   });
 
-  test("preview mode: the same route is not wrapped", async () => {
+  test("preview mode: the same route is not wrapped, so a throw surfaces as Bun's own 500", async () => {
     const root = tmpDir("steambun-app-dev-err-preview-");
     writeThrowingApiFixture(root);
     const outDir = join(root, "dist");
@@ -186,10 +232,16 @@ describe("createApp — dev error surface", () => {
     writeFileSync(join(outDir, "index.html"), "<html></html>");
     const config = baseConfig(root, { api: "api" });
     const app = await createApp({ config, mode: "preview", outDir });
-
-    await expect(
-      app.fetch(new Request("http://localhost/api/boom")),
-    ).rejects.toThrow("boom");
+    try {
+      // Unlike dev mode, preview doesn't wrap routes in wrapDevErrors, so the
+      // throw is caught by Bun's own `error` hook (createErrorHandler(false)),
+      // which hides details behind a generic 500 — not a rejected fetch().
+      const res = await app.fetch(new Request("http://localhost/api/boom"));
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "Internal Server Error" });
+    } finally {
+      app.close();
+    }
   });
 });
 
@@ -215,6 +267,7 @@ describe("createApp — routeTable", () => {
 
     expect(byPath["/"]?.kind).toBe("html");
     expect(byPath["/favicon.ico"]?.kind).toBe("public");
+    expect(byPath["/favicon.ico"]?.source).toBe(join("public", "favicon.ico"));
     expect(byPath["/api/health"]?.kind).toBe("api");
     expect(byPath["/api/users/:id"]?.methods.sort()).toEqual(["DELETE", "GET"]);
     expect(byPath["/legacy"]?.kind).toBe("proxy");

@@ -1,4 +1,5 @@
 import { group, task } from "ostia";
+import { corsMiddleware, headersMiddleware } from "../src/runtime/http";
 import type { Middleware } from "../src/runtime/middleware";
 import { withMiddleware } from "../src/runtime/middleware";
 
@@ -29,4 +30,29 @@ group("runtime/middleware: withMiddleware (per-request hot path)", () => {
 
 group("runtime/middleware: withMiddleware (construction)", () => {
   task("build a 5-deep chain", () => chain(5));
+});
+
+group("runtime/http: cors + headers middleware (per-request hot path)", () => {
+  // Fresh Response per call: withHeaders sets headers in place, so a shared
+  // Response would accumulate the same header values across trials — cheap
+  // but not representative of a route that builds a new Response per request.
+  const fresh = () =>
+    new Response("ok", { headers: { "content-type": "text/plain" } });
+  const chainWithHeaders = withMiddleware(
+    [
+      corsMiddleware(),
+      headersMiddleware({ "x-powered-by": "steambun", "x-a": "1" }),
+    ],
+    fresh,
+  );
+  const get = new Request("http://localhost:5173/api/hello");
+  const preflight = new Request("http://localhost:5173/api/hello", {
+    method: "OPTIONS",
+  });
+
+  task("B0 baseline: handler only (Response alloc)", () => fresh(), {
+    baseline: true,
+  });
+  task("B1 cors + headers chain, GET", () => chainWithHeaders(get));
+  task("B2 cors OPTIONS preflight", () => chainWithHeaders(preflight));
 });

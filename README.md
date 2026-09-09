@@ -364,7 +364,7 @@ A plugin object matching neither a Bun plugin (`setup`) nor any hook key throws 
 
 `dev`, `build`, and `preview` are exported from `"steambun"` alongside `defineConfig` and `loadConfig`, for tooling that wants to drive steambun without the CLI.
 
-`createApp({ config, mode, htmlRoutes?, outDir?, apiDir? })`, exported from `"steambun/runtime"`, builds the same route table `dev` and `preview` serve from: HTML entries, `publicDir`, `server.proxy`, `api`, and (in `"preview"` mode) the static asset and SPA-fallback routes. It returns `{ routes, middleware, serveOptions, fetch, routeTable }` — pass `serveOptions` to `Bun.serve` alongside `port`/`hostname`/`tls`, call `fetch(req)` to dispatch a request without a socket (handy in tests), or call `routeTable()` to inspect the rows directly (not printed automatically).
+`createApp({ config, mode, htmlRoutes?, outDir?, apiDir? })`, exported from `"steambun/runtime"`, builds the same route table `dev` and `preview` serve from: HTML entries, `publicDir`, `server.proxy`, `api`, and (in `"preview"` mode) the static asset and SPA-fallback routes. It returns `{ routes, middleware, serveOptions, fetch, close, routeTable }` — pass `serveOptions` to `Bun.serve` alongside `port`/`hostname`/`tls`, call `fetch(req)` to dispatch a request through a real, lazily started `Bun.serve` instance bound to those routes (handy in tests — call `close()` afterward to stop it), or call `routeTable()` to inspect the rows directly (not printed automatically).
 
 ## Compile
 

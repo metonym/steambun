@@ -6,13 +6,11 @@ export interface WsRouteData {
   route: string;
   params: Record<string, string>;
   user?: unknown;
+  /** Resolved once at upgrade time so `message`/`open`/`close` skip the `Map.get` per event. */
+  handlers?: WebSocketRouteHandlers;
 }
 
 export type WebSocketRouteHandlers = Bun.WebSocketHandler<WsRouteData>;
-
-interface ServerLike {
-  upgrade: (req: Request, opts?: { data?: unknown }) => boolean;
-}
 
 function isRouteData(data: unknown): data is WsRouteData {
   return !!data && typeof data === "object" && "route" in data;
@@ -40,28 +38,15 @@ export function createWsRouter(handlers: Map<string, WebSocketRouteHandlers>): {
 } {
   const proxy = createProxyWebSocketHandlers();
 
+  /** The handlers for this socket: file-route handlers resolved at upgrade time, or the proxy pass-through. */
+  const target = (ws: Bun.ServerWebSocket<WsRouteData | ProxyWebSocketData>) =>
+    isRouteData(ws.data) ? ws.data.handlers : proxy;
+
   const websocket: Bun.WebSocketHandler<WsRouteData | ProxyWebSocketData> = {
-    open(ws) {
-      if (isRouteData(ws.data)) {
-        handlers.get(ws.data.route)?.open?.(ws as never);
-      } else {
-        proxy.open(ws as never);
-      }
-    },
-    message(ws, message) {
-      if (isRouteData(ws.data)) {
-        handlers.get(ws.data.route)?.message?.(ws as never, message as never);
-      } else {
-        proxy.message(ws as never, message);
-      }
-    },
-    close(ws, code, reason) {
-      if (isRouteData(ws.data)) {
-        handlers.get(ws.data.route)?.close?.(ws as never, code, reason);
-      } else {
-        proxy.close(ws as never);
-      }
-    },
+    open: (ws) => target(ws)?.open?.(ws as never),
+    message: (ws, message) =>
+      target(ws)?.message?.(ws as never, message as never),
+    close: (ws, code, reason) => target(ws)?.close?.(ws as never, code, reason),
   };
 
   function upgradeHandler(routePath: string): RouteHandler {
@@ -71,10 +56,12 @@ export function createWsRouter(handlers: Map<string, WebSocketRouteHandlers>): {
       }
       const params =
         (req as Request & { params?: Record<string, string> }).params ?? {};
-      const data: WsRouteData = { route: routePath, params };
-      const upgraded = (server as ServerLike | undefined)?.upgrade(req, {
-        data,
-      });
+      const data: WsRouteData = {
+        route: routePath,
+        params,
+        handlers: handlers.get(routePath),
+      };
+      const upgraded = server?.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response("WebSocket upgrade failed", { status: 500 });
     };
