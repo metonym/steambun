@@ -2,11 +2,9 @@
 
 Demonstrates steambun's recommended testing pattern: exercising a file-based
 API route through `createApp({ mode: "preview" }).fetch()` inside `bun test`,
-no browser needed.
-
-**Caveat:** `fetch()` uses steambun's own route matcher and returns a
-**blank 200** for HTML/static routes — assert on API, proxy, or `publicDir`
-routes only, never on page content.
+no browser needed. `fetch()` lazily starts a real `Bun.serve` instance bound
+to the app's routes and dispatches through it, so the response is exactly
+what a real request would get — call `app.close()` when done to stop it.
 
 ```bash
 bun install && bun test

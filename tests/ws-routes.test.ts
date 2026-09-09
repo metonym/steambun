@@ -99,8 +99,12 @@ describe("file-based WebSocket routes", () => {
     const apiDir = tmpApiDir();
     const config = baseConfig(apiDir);
     const app = await createApp({ config, mode: "dev" });
-    const res = await app.fetch(new Request("http://localhost/api/sse"));
-    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    try {
+      const res = await app.fetch(new Request("http://localhost/api/sse"));
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+    } finally {
+      app.close();
+    }
   });
 });
 

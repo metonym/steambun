@@ -1,11 +1,7 @@
 import type { ProxyEntry, ProxyOptions } from "../config/types";
+import type { RouteHandler, ServerLike } from "./middleware";
 
-interface BunServerLike {
-  upgrade: (req: Request, opts?: { data?: unknown }) => boolean;
-  requestIP?: (req: Request) => { address: string } | null;
-}
-
-const HOP_BY_HOP_HEADERS = [
+const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
   "proxy-authenticate",
@@ -14,10 +10,17 @@ const HOP_BY_HOP_HEADERS = [
   "trailer",
   "transfer-encoding",
   "upgrade",
-];
+]);
 
+/**
+ * Deletes only the hop-by-hop headers actually present, instead of probing
+ * all of them unconditionally. Keys are collected before deleting — mutating
+ * a `Headers` while iterating its live `keys()` iterator skips entries.
+ */
 function stripHopByHopHeaders(headers: Headers): void {
-  for (const name of HOP_BY_HOP_HEADERS) headers.delete(name);
+  for (const name of [...headers.keys()]) {
+    if (HOP_BY_HOP_HEADERS.has(name)) headers.delete(name);
+  }
 }
 
 export interface ProxyWebSocketData {
@@ -46,46 +49,48 @@ function normalize(entry: ProxyEntry): ProxyOptions {
  * };
  * ```
  */
-export function createProxyRouteHandler(prefix: string, entry: ProxyEntry) {
+export function createProxyRouteHandler(
+  prefix: string,
+  entry: ProxyEntry,
+): RouteHandler {
   const opts = normalize(entry);
   const targetBase = new URL(opts.target);
 
-  function resolveTargetUrl(req: Request): URL {
-    const url = new URL(req.url);
-    let path = url.pathname.slice(prefix.length) || "/";
+  function resolveTargetUrl(req: Request): { target: URL; reqUrl: URL } {
+    const reqUrl = new URL(req.url);
+    let path = reqUrl.pathname.slice(prefix.length) || "/";
     if (opts.rewrite) path = opts.rewrite(path);
-    return new URL(path + url.search, targetBase);
+    return { target: new URL(path + reqUrl.search, targetBase), reqUrl };
   }
 
   let loggedUnreachable = false;
 
   return (
     req: Request,
-    server: BunServerLike,
+    server?: ServerLike,
   ): Response | Promise<Response> | undefined => {
     if (opts.ws && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      const targetUrl = resolveTargetUrl(req);
+      const { target: targetUrl } = resolveTargetUrl(req);
       targetUrl.protocol = targetUrl.protocol === "https:" ? "wss:" : "ws:";
       const data: ProxyWebSocketData = { proxyTarget: targetUrl.toString() };
-      const upgraded = server.upgrade(req, { data });
+      const upgraded = server?.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
 
-    const target = resolveTargetUrl(req);
+    const { target, reqUrl } = resolveTargetUrl(req);
     const headers = new Headers(req.headers);
     if (opts.changeOrigin) {
       headers.set("host", target.host);
       headers.set("origin", target.origin);
-      const reqUrl = new URL(req.url);
       if (!headers.has("x-forwarded-proto")) {
-        headers.set("x-forwarded-proto", reqUrl.protocol.replace(/:$/, ""));
+        headers.set("x-forwarded-proto", reqUrl.protocol.slice(0, -1));
       }
       if (!headers.has("x-forwarded-host")) {
         headers.set("x-forwarded-host", reqUrl.host);
       }
       if (!headers.has("x-forwarded-for")) {
-        const address = server.requestIP?.(req)?.address;
+        const address = server?.requestIP?.(req)?.address;
         if (address) headers.set("x-forwarded-for", address);
       }
     }
@@ -130,16 +135,11 @@ interface ProxyServerWebSocket {
 }
 
 /**
- * Bun.serve `websocket` handlers that pipe a proxied connection to its
+ * `Bun.serve` `websocket` handlers that pipe a proxied connection to its
  * upstream target (set on `ws.data.proxyTarget` by `server.upgrade(req, { data })`).
- *
- * @example
- * ```ts
- * Bun.serve({
- *   routes: { "/ws/*": createProxyRouteHandler("/ws", { target: "http://localhost:8080", ws: true }) },
- *   websocket: createProxyWebSocketHandlers(),
- * });
- * ```
+ * Internal — {@link createWsRouter} in `ws-routes.ts` merges this in with
+ * file-based WebSocket routes into the single `websocket` handler
+ * `Bun.serve` allows.
  */
 export function createProxyWebSocketHandlers() {
   return {

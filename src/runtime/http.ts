@@ -5,12 +5,24 @@ import type { Middleware, RouteHandler } from "./middleware";
 const CORS_ALLOW_METHODS = "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS";
 const CORS_ALLOW_HEADERS = "Content-Type, Authorization";
 
-function withHeaders(res: Response, headers: Record<string, string>): Response {
-  const out = new Response(res.body, res);
-  for (const [key, value] of Object.entries(headers)) {
-    out.headers.set(key, value);
+/**
+ * Sets `pairs` on `res.headers` in place — no allocation on the common case,
+ * where a route/proxy response has mutable headers. Falls back to Bun's
+ * clone-and-set for the rare immutable `Response` (e.g. one returned
+ * directly from a raw `fetch()`).
+ */
+function withHeaders(
+  res: Response,
+  pairs: readonly [string, string][],
+): Response {
+  try {
+    for (const [key, value] of pairs) res.headers.set(key, value);
+    return res;
+  } catch {
+    const out = new Response(res.body, res);
+    for (const [key, value] of pairs) out.headers.set(key, value);
+    return out;
   }
-  return out;
 }
 
 /**
@@ -30,13 +42,16 @@ export function corsMiddleware(): Middleware {
     "Access-Control-Allow-Methods": CORS_ALLOW_METHODS,
     "Access-Control-Allow-Headers": CORS_ALLOW_HEADERS,
   };
-  return async (req, next) => {
+  const pairs = Object.entries(corsHeaders) as [string, string][];
+  const preflightHeaders = new Headers(corsHeaders);
+  return (req, next) => {
     if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders });
+      return new Response(null, { status: 204, headers: preflightHeaders });
     }
-    const res = await next();
-    if (!res) return res;
-    return withHeaders(res, corsHeaders);
+    const apply = (res: Response | undefined) =>
+      res ? withHeaders(res, pairs) : res;
+    const result = next();
+    return result instanceof Promise ? result.then(apply) : apply(result);
   };
 }
 
@@ -49,10 +64,12 @@ export function corsMiddleware(): Middleware {
  * ```
  */
 export function headersMiddleware(headers: Record<string, string>): Middleware {
-  return async (_req, next) => {
-    const res = await next();
-    if (!res) return res;
-    return withHeaders(res, headers);
+  const pairs = Object.entries(headers) as [string, string][];
+  return (_req, next) => {
+    const apply = (res: Response | undefined) =>
+      res ? withHeaders(res, pairs) : res;
+    const result = next();
+    return result instanceof Promise ? result.then(apply) : apply(result);
   };
 }
 
@@ -195,13 +212,6 @@ export function wrapDevErrors(
       );
     }
   };
-}
-
-export interface ListenOptions {
-  port: number;
-  strictPort?: boolean;
-  attempts?: number;
-  label?: string;
 }
 
 function isAddrInUseError(err: unknown): err is Error & { code: string } {

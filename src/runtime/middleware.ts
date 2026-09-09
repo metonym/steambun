@@ -4,9 +4,20 @@ export type Middleware = (
   next: NextFn,
 ) => Response | Promise<Response | undefined> | undefined;
 
+/**
+ * Structural subset of `Bun.Server` that route, proxy, and WebSocket-upgrade
+ * handlers need — lets those modules take `server` typed instead of
+ * `unknown`/`as never`.
+ */
+export interface ServerLike {
+  upgrade(req: Request, opts?: { data?: unknown }): boolean;
+  requestIP?(req: Request): { address: string } | null;
+  timeout?(req: Request, seconds: number): void;
+}
+
 export type RouteHandler = (
   req: Request,
-  server?: unknown,
+  server?: ServerLike,
 ) => Response | Promise<Response | undefined> | undefined;
 
 /**

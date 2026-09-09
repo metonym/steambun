@@ -14,42 +14,53 @@ const HTTP_METHODS = [
 const ROUTE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx"]);
 
 async function collectFiles(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
+  const entries = await readdir(dir, { withFileTypes: true, recursive: true });
   const files: string[] = [];
   for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await collectFiles(path)));
-    } else if (ROUTE_EXTENSIONS.has(extname(entry.name))) {
-      files.push(path);
+    if (entry.isFile() && ROUTE_EXTENSIONS.has(extname(entry.name))) {
+      files.push(join(entry.parentPath, entry.name));
     }
   }
   return files;
 }
 
+/**
+ * Maps one filename segment to its Bun route piece and specificity score in
+ * a single pass (a literal segment scores 0, a `[param]` segment 1, a
+ * `[...catchAll]` / `[[...optionalCatchAll]]` segment 2 — so `index.ts` (0)
+ * beats `[[...slug]].ts` (2) for `/api`, and a `:param` beats a `*`).
+ */
 function segmentToBun(
   segment: string,
-): { kind: "optional-catch-all" } | { kind: "part"; value: string } {
+):
+  | { kind: "optional-catch-all"; score: number }
+  | { kind: "part"; value: string; score: number } {
   if (/^\[\[\.\.\.(.+)\]\]$/.test(segment)) {
-    return { kind: "optional-catch-all" };
+    return { kind: "optional-catch-all", score: 2 };
   }
   const catchAll = segment.match(/^\[\.\.\.(.+)\]$/);
-  if (catchAll) return { kind: "part", value: "*" };
+  if (catchAll) return { kind: "part", value: "*", score: 2 };
   const dyn = segment.match(/^\[(.+)\]$/);
-  if (dyn) return { kind: "part", value: `:${dyn[1]}` };
-  return { kind: "part", value: segment };
+  if (dyn) return { kind: "part", value: `:${dyn[1]}`, score: 1 };
+  return { kind: "part", value: segment, score: 0 };
 }
 
-/** `users/[id].ts` → `/api/users/:id`. Optional catch-all yields two paths. */
-export function fileToApiPaths(rel: string): string[] {
+/**
+ * Bun route paths and specificity score for one apiDir-relative filename, in
+ * a single pass over its segments. `score` is the sum of each segment's
+ * specificity (see {@link segmentToBun}) — lower is more specific.
+ */
+function apiPathsAndScore(rel: string): { paths: string[]; score: number } {
   const withoutExt = rel.replace(/\.[^/.]+$/, "");
   const withoutIndex = withoutExt.replace(/(^|\/)index$/, "");
   const segments = withoutIndex.split("/").filter(Boolean);
 
   const parts: string[] = [];
+  let score = 0;
   let optionalCatchAll = false;
   for (const segment of segments) {
     const mapped = segmentToBun(segment);
+    score += mapped.score;
     if (mapped.kind === "optional-catch-all") {
       optionalCatchAll = true;
       break;
@@ -58,8 +69,13 @@ export function fileToApiPaths(rel: string): string[] {
   }
 
   const base = parts.length === 0 ? "/api" : `/api/${parts.join("/")}`;
-  if (optionalCatchAll) return [base, `${base}/*`];
-  return [base];
+  const paths = optionalCatchAll ? [base, `${base}/*`] : [base];
+  return { paths, score };
+}
+
+/** `users/[id].ts` → `/api/users/:id`. Optional catch-all yields two paths. */
+export function fileToApiPaths(rel: string): string[] {
+  return apiPathsAndScore(rel).paths;
 }
 
 function handlerFromModule(mod: Record<string, unknown>): unknown | null {
@@ -89,6 +105,8 @@ export interface ApiFileEntry {
   /** apiDir-relative path with forward slashes, e.g. "users/[id].ts" */
   rel: string;
   paths: string[];
+  /** Specificity score — lower wins a collision. See {@link fileToApiPaths}. */
+  score: number;
 }
 
 const WEBSOCKET_EXPORT_RE = /\bexport\s+const\s+websocket\b/;
@@ -109,30 +127,11 @@ export async function listApiFileEntries(
   const files = await collectFiles(apiDir);
   const entries = files.map((file) => {
     const rel = relative(apiDir, file).split(sep).join("/");
-    return { file, rel, paths: fileToApiPaths(rel) };
+    const { paths, score } = apiPathsAndScore(rel);
+    return { file, rel, paths, score };
   });
   entries.sort((a, b) => a.rel.localeCompare(b.rel, "en"));
   return entries;
-}
-
-/**
- * Lower is more specific: a literal segment scores 0, a `[param]` segment 1,
- * and a `[...catchAll]` / `[[...optionalCatchAll]]` segment 2 — so
- * `index.ts` (0) beats `[[...slug]].ts` (2) for `/api`, and a `:param`
- * beats a `*`.
- */
-export function routeSpecificity(rel: string): number {
-  const withoutExt = rel.replace(/\.[^/.]+$/, "");
-  const withoutIndex = withoutExt.replace(/(^|\/)index$/, "");
-  const segments = withoutIndex.split("/").filter(Boolean);
-
-  let score = 0;
-  for (const segment of segments) {
-    if (/^\[\[\.\.\.(.+)\]\]$/.test(segment)) score += 2;
-    else if (/^\[\.\.\.(.+)\]$/.test(segment)) score += 2;
-    else if (/^\[(.+)\]$/.test(segment)) score += 1;
-  }
-  return score;
 }
 
 export interface ApiRouteCollision {
@@ -182,21 +181,27 @@ function resolveCollision(
  * Loads every file under `apiDir` into HTTP route handlers and, for files
  * exporting `websocket`, a map of route path → WebSocket handlers. Backs
  * both {@link loadApiRoutes} (HTTP only) and `createApp`'s WebSocket wiring.
- * Files load in sorted order; when two files map to the same path the more
- * specific one wins (see {@link routeSpecificity}), ties go to the
- * lexically-first file (processed first since entries are sorted).
+ * Modules import concurrently (startup only), but collisions still resolve
+ * in sorted order: when two files map to the same path the more specific
+ * one wins (see {@link fileToApiPaths}), ties go to the lexically-first
+ * file.
  */
 export async function loadApiModules(apiDir: string): Promise<ApiModules> {
   const entries = await listApiFileEntries(apiDir);
+  const mods = await Promise.all(
+    entries.map(
+      (entry) => import(entry.file) as Promise<Record<string, unknown>>,
+    ),
+  );
+
   const routes: Record<string, unknown> = {};
   const websockets = new Map<string, WebSocketRouteHandlers>();
   const collisions: ApiRouteCollision[] = [];
   const routeOwners = new Map<string, RouteOwner>();
   const wsOwners = new Map<string, RouteOwner>();
 
-  for (const { file, rel, paths } of entries) {
-    const mod = (await import(file)) as Record<string, unknown>;
-    const score = routeSpecificity(rel);
+  entries.forEach(({ rel, paths, score }, i) => {
+    const mod = mods[i]!;
 
     const handler = handlerFromModule(mod);
     if (handler) {
@@ -214,7 +219,7 @@ export async function loadApiModules(apiDir: string): Promise<ApiModules> {
         }
       }
     }
-  }
+  });
 
   const fileForPath = new Map<string, string>();
   for (const [path, owner] of routeOwners) fileForPath.set(path, owner.rel);
