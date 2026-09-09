@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { STEAMBUN_DIR_NAME } from "../util/paths";
+import { writeIfChanged } from "../util/write-if-changed";
 
 const BUILTIN_KEYS = new Set(["MODE", "DEV", "PROD", "SSR", "BASE_URL"]);
-const STEAMBUN_DIR = ".steambun";
-const LEGACY_ENV_DTS = "steambun-env.d.ts";
 
 function isIdent(key: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key);
@@ -46,17 +46,13 @@ export async function writeEnvDts(
   root: string,
   publicEnv: Record<string, string>,
 ): Promise<string> {
-  const dir = join(root, STEAMBUN_DIR);
+  const dir = join(root, STEAMBUN_DIR_NAME);
   await mkdir(dir, { recursive: true });
   const path = join(dir, "env.d.ts");
   const hasRoutesDts = existsSync(join(dir, "routes.d.ts"));
-  await writeFile(path, generateEnvDts(Object.keys(publicEnv), hasRoutesDts));
-  await removeLegacyEnvDts(root);
+  await writeIfChanged(
+    path,
+    generateEnvDts(Object.keys(publicEnv), hasRoutesDts),
+  );
   return path;
-}
-
-async function removeLegacyEnvDts(root: string): Promise<void> {
-  const legacy = join(root, LEGACY_ENV_DTS);
-  if (!existsSync(legacy)) return;
-  await unlink(legacy);
 }

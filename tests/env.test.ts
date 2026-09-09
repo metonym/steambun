@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -189,15 +189,22 @@ declare global {
 });
 
 describe("writeEnvDts", () => {
-  test("writes .steambun/env.d.ts and removes a legacy root file", async () => {
+  test("writes .steambun/env.d.ts", async () => {
     const dir = mkdtempSync(join(tmpdir(), "steambun-env-dts-"));
-    writeFileSync(join(dir, "steambun-env.d.ts"), "// leftover\n");
     const path = await writeEnvDts(dir, { PUBLIC_GREETING: "hello" });
     expect(path).toBe(join(dir, ".steambun", "env.d.ts"));
     expect(readFileSync(path, "utf8")).toContain(
       "readonly PUBLIC_GREETING: string;",
     );
-    expect(existsSync(join(dir, "steambun-env.d.ts"))).toBe(false);
+  });
+
+  test("does not rewrite the file when the content is unchanged", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-env-dts-"));
+    const path = await writeEnvDts(dir, { PUBLIC_GREETING: "hello" });
+    const before = statSync(path).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await writeEnvDts(dir, { PUBLIC_GREETING: "hello" });
+    expect(statSync(path).mtimeMs).toBe(before);
   });
 });
 

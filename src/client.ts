@@ -20,6 +20,21 @@ function substituteParams(
   );
 }
 
+/** Substitutes `:param` segments and appends a query string — shared by
+ * `api`, `href`, and `ws`. */
+function buildPath(
+  path: string,
+  params?: Record<string, string>,
+  query?: Record<string, string>,
+): string {
+  let resolved = substituteParams(path, params);
+  if (query) {
+    const qs = new URLSearchParams(query).toString();
+    if (qs) resolved += `${resolved.includes("?") ? "&" : "?"}${qs}`;
+  }
+  return resolved;
+}
+
 // A plain member-expression chain (no `?.`/fallback) so both Bun's
 // build-time `define` and the dev-mode textual substitution — which matches
 // "import.meta.env.BASE_URL" verbatim — can replace it. Like Vite,
@@ -30,7 +45,12 @@ function withBase(path: string): string {
   return `${base.replace(/\/$/, "")}${path}`;
 }
 
-export interface ApiOptions {
+// Not exported: consumers always see the generic ApiOptions<P>/WsOptions<P>/
+// SteambunSocket declared in client.d.ts (package.json's "./client" export
+// maps `types` there, independent of this file's own exports) — exporting
+// these non-generic copies too would just be a second, drifting definition
+// with no reader.
+interface ApiOptions {
   params?: Record<string, string>;
   query?: Record<string, string>;
   body?: unknown;
@@ -47,11 +67,7 @@ export async function api(
   path: string,
   opts: ApiOptions = {},
 ): Promise<unknown> {
-  let resolved = substituteParams(path, opts.params);
-  if (opts.query) {
-    const qs = new URLSearchParams(opts.query).toString();
-    if (qs) resolved += `${resolved.includes("?") ? "&" : "?"}${qs}`;
-  }
+  const resolved = buildPath(path, opts.params, opts.query);
 
   const headers = new Headers(opts.init?.headers);
   let body = opts.init?.body;
@@ -96,22 +112,19 @@ export function href(
   params?: Record<string, string>,
   query?: Record<string, string>,
 ): string {
-  let resolved = substituteParams(path, params);
-  if (query) {
-    const qs = new URLSearchParams(query).toString();
-    if (qs) resolved += `${resolved.includes("?") ? "&" : "?"}${qs}`;
-  }
-  return withBase(resolved);
+  return withBase(buildPath(path, params, query));
 }
 
-export interface WsOptions {
+// Not exported — see the comment on ApiOptions above.
+interface WsOptions {
   params?: Record<string, string>;
   query?: Record<string, string>;
   protocols?: string | string[];
   reconnect?: boolean | { maxAttempts?: number; baseDelayMs?: number };
 }
 
-export interface SteambunSocket {
+// Not exported — see the comment on ApiOptions above.
+interface SteambunSocket {
   readonly socket: WebSocket;
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
@@ -140,18 +153,16 @@ function toWsUrl(path: string): string {
  * never reconnects.
  */
 export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
-  let resolved = substituteParams(path, opts.params);
-  if (opts.query) {
-    const qs = new URLSearchParams(opts.query).toString();
-    if (qs) resolved += `${resolved.includes("?") ? "&" : "?"}${qs}`;
-  }
-  const url = toWsUrl(withBase(resolved));
+  const url = toWsUrl(withBase(buildPath(path, opts.params, opts.query)));
   const reconnect = opts.reconnect;
   const maxAttempts =
-    (typeof reconnect === "object" && reconnect.maxAttempts) || 10;
+    (typeof reconnect === "object" ? reconnect.maxAttempts : undefined) ?? 10;
   const baseDelayMs =
-    (typeof reconnect === "object" && reconnect.baseDelayMs) || 250;
+    (typeof reconnect === "object" ? reconnect.baseDelayMs : undefined) ?? 250;
   const listeners: Record<string, Array<(ev: Event) => void>> = {};
+  const fanOut = (event: string, ev: Event) => {
+    for (const fn of listeners[event] ?? []) fn(ev);
+  };
   let socket: WebSocket;
   let attempts = 0;
   let userClosed = false;
@@ -159,24 +170,12 @@ export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
     const s = new WebSocket(url, opts.protocols);
     s.onopen = (ev) => {
       attempts = 0;
-      listeners.open?.forEach((fn) => {
-        fn(ev);
-      });
+      fanOut("open", ev);
     };
-    s.onmessage = (ev) => {
-      listeners.message?.forEach((fn) => {
-        fn(ev);
-      });
-    };
-    s.onerror = (ev) => {
-      listeners.error?.forEach((fn) => {
-        fn(ev);
-      });
-    };
+    s.onmessage = (ev) => fanOut("message", ev);
+    s.onerror = (ev) => fanOut("error", ev);
     s.onclose = (ev) => {
-      listeners.close?.forEach((fn) => {
-        fn(ev);
-      });
+      fanOut("close", ev);
       if (userClosed || !reconnect || attempts >= maxAttempts) return;
       setTimeout(
         () => {

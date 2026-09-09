@@ -1,7 +1,8 @@
-import { basename, relative, sep } from "node:path";
+import { basename } from "node:path";
 import { isTomlConfigPath } from "../config/bunfig";
 import type { ResolvedConfig } from "../config/types";
-import { toImportSpecifier } from "../util/specifier";
+import { SERVER_ENV_DECODER_SOURCE } from "../util/server-env";
+import { posixRelative, toImportSpecifier } from "../util/specifier";
 
 const DEFAULT_PREVIEW_PORT = 4173;
 
@@ -27,7 +28,7 @@ export function generateProdServeSource(
   opts: ProdServeOptions = {},
 ): string {
   const serveDir = `${config.root}/.steambun`;
-  const outDirRelative = relative(serveDir, outDir).split(sep).join("/");
+  const outDirRelative = posixRelative(serveDir, outDir);
   // A compiled binary's --asset-embedded directories are only reachable by
   // basename under the virtual /$bunfs/root — leading path segments are
   // dropped — so try both layouts.
@@ -75,7 +76,6 @@ import {
 ${configImport}
 
 ${outDirBlock}
-const port = Number(process.env.PORT ?? ${JSON.stringify(config.preview?.port ?? DEFAULT_PREVIEW_PORT)});
 
 ${rawConfigBlock}
 
@@ -93,34 +93,30 @@ const apiDir = apiDirCandidates.find(existsSync) ?? config.api;
 
 const app = await createApp({ config, mode: "preview", outDir, apiDir });
 
-const previewHost = process.env.HOST ?? config.preview?.host ?? config.server.host;
+${SERVER_ENV_DECODER_SOURCE}
+const overrides = serverOverridesFromEnv(process.env, {
+  port: config.preview?.port ?? ${JSON.stringify(DEFAULT_PREVIEW_PORT)},
+  host: config.preview?.host ?? config.server.host,
+  strictPort: config.preview?.strictPort,
+  open: config.preview?.open ?? config.server.open,
+});
+const { port, host, open } = overrides;
+const strictPort = ${opts.embedOutDir ? "true" : "overrides.strictPort"};
+
 const server = serveWithPortRetry(
   {
     port,
-    hostname: hostnameFromHost(previewHost === "" ? true : previewHost),
+    hostname: hostnameFromHost(host),
     tls: tlsFromHttps(config.server.https, config.root),
     ...app.serveOptions,
   },
-  {
-    strictPort: ${
-      opts.embedOutDir
-        ? "true"
-        : `process.env.STRICT_PORT === "1" || config.preview?.strictPort`
-    },
-    label: "preview",
-  },
+  { strictPort, label: "preview" },
 );
 
 const { local, network } = displayServerUrls(server.url);
 console.log(\`[steambun] preview server ready\`);
 console.log(\`  Local:   \${local}\`);
 for (const url of network) console.log(\`  Network: \${url}\`);
-const open =
-  process.env.OPEN === "1"
-    ? true
-    : process.env.OPEN === "0"
-      ? false
-      : (config.preview?.open ?? config.server.open);
 const openUrl = resolveOpenUrl(local, open);
 if (openUrl) openBrowser(openUrl);
 `;

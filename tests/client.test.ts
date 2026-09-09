@@ -256,4 +256,21 @@ describe("ws()", () => {
       restore();
     }
   });
+
+  test("maxAttempts: 0 disables reconnecting (0 is not treated as unset)", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      ws("/api/chat/:room", {
+        params: { room: "42" },
+        reconnect: { maxAttempts: 0, baseDelayMs: 1 },
+      });
+      expect(instances).toHaveLength(1);
+      instances[0]?.fireClose();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(instances).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
 });

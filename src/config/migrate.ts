@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, join } from "node:path";
+import { isPlainObject } from "../util/guards";
 import {
   findConfigFile,
   type LoadConfigOptions,
@@ -10,16 +11,6 @@ import type { Command, Mode, UserConfig } from "./types";
 import { viteConfigToUserConfig } from "./vite";
 
 const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    !(value instanceof RegExp) &&
-    Object.getPrototypeOf(value) === Object.prototype
-  );
-}
 
 function keyPath(base: string, key: string): string {
   if (IDENTIFIER_RE.test(key)) return base ? `${base}.${key}` : key;
@@ -97,12 +88,9 @@ function serializeConfig(config: UserConfig): {
 /**
  * Converts a `vite.config.*` in `root` into `steambun.config.ts`, printing
  * one warning per unsupported key. Never overwrites an existing steambun
- * config.
+ * config. `root` must be absolute — the CLI resolves it once in `main()`.
  */
-export async function migrate(rootInput: string): Promise<void> {
-  const root = isAbsolute(rootInput)
-    ? rootInput
-    : join(process.cwd(), rootInput);
+export async function migrate(root: string): Promise<void> {
   const found = findConfigFile(root);
   if (found?.kind === "steambun") {
     throw new Error(

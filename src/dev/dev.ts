@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { loadConfig } from "../config/loader";
+import { bumpConfigGeneration, loadConfig } from "../config/loader";
 import {
   buildBundleDefine,
   filterPublicEnv,
@@ -9,6 +9,7 @@ import {
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
 import { mergeFeatures } from "../util/features";
+import { childEnv } from "../util/server-env";
 import { discoverHtmlEntries, discoverSkipDirs } from "./discover";
 import { synthesizeDevServer } from "./synth";
 import { setupDevWatchers } from "./watch";
@@ -21,23 +22,6 @@ export interface DevOptions {
   host?: string | boolean;
   strictPort?: boolean;
   open?: boolean;
-}
-
-export function devChildEnv(
-  opts: Pick<DevOptions, "port" | "host" | "strictPort" | "open">,
-): Record<string, string> {
-  return {
-    ...(opts.port ? { PORT: String(opts.port) } : {}),
-    ...(opts.host === true
-      ? { HOST: "" }
-      : typeof opts.host === "string"
-        ? { HOST: opts.host }
-        : {}),
-    ...(opts.strictPort !== undefined
-      ? { STRICT_PORT: opts.strictPort ? "1" : "0" }
-      : {}),
-    ...(opts.open !== undefined ? { OPEN: opts.open ? "1" : "0" } : {}),
-  };
 }
 
 export async function dev(opts: DevOptions = {}): Promise<void> {
@@ -147,7 +131,7 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       env: {
         ...process.env,
         NODE_ENV: "development",
-        ...devChildEnv(opts),
+        ...childEnv(opts),
       },
     });
 
@@ -173,6 +157,7 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
 
     if (killedForRestart) {
       killedForRestart = false;
+      bumpConfigGeneration();
       return startOnce();
     }
 
@@ -182,6 +167,7 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       );
       await waitForNextChange();
       if (shuttingDown) return 0;
+      bumpConfigGeneration();
       return startOnce();
     }
 
