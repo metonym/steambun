@@ -225,7 +225,7 @@ After JS/CSS minify, steambun collapses tag whitespace in the HTML output.
 
 `steambun build` writes `.steambun/metafile.json` (Bun's build metafile) so `steambun analyze` can report on it after the fact, without a full rebuild. Sizes reflect the files as written after `build.importMap`/`build.sharedCss` rewrote and renamed them; `build.budgets` is checked against those final, on-disk sizes. A "duplicate package" is one resolved to more than one distinct *version* across `node_modules/<name>` directories — same-version copies hoisted into separate directories (as some pnpm layouts do) aren't flagged.
 
-The terminal summary printed after every build shows a `gzip:` size (level 6, never brotli — too slow to run on every build) next to each `.js`/`.css`/`.html`/`.svg`/`.json` output of at least 1KB, plus a total row for both raw and gzip size.
+The terminal summary printed after every build shows a `gzip:` size (level 9, never brotli — too slow to run on every build) next to each compressible output of at least 1KB (the same extension list `build.precompress` uses), plus a total row for both raw and gzip size. When `build.precompress` already wrote a `.gz` sibling, the summary reports that file's size instead of compressing again.
 
 Under `GITHUB_ACTIONS=true` or `STEAMBUN_CI=1`, a size-budget violation and a `build.outDir`-outside-`root` warning also print a `::error`/`::warning` GitHub Actions workflow command, so they're inlined on a PR's Files Changed view instead of only the raw log.
 

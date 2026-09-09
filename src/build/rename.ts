@@ -9,6 +9,16 @@ export function stripDotSlash(path: string): string {
   return path.startsWith("./") ? path.slice(2) : path;
 }
 
+/** Drops an href's `?query` / `#hash` suffix. */
+export function cleanHref(href: string): string {
+  return href.split("?")[0]!.split("#")[0]!;
+}
+
+/** A `base`-prefixed absolute href → the `outDir`-relative path it names. */
+export function stripBase(href: string, base: string): string {
+  return href.slice(base.length).replace(/^\/+/, "");
+}
+
 /** "/"-separated path relative to `outDir` → filesystem path. */
 export function outPath(outDir: string, rel: string): string {
   return join(outDir, ...rel.split("/"));
@@ -129,13 +139,21 @@ export async function refreshOutputSizes(
   metafile: Bun.BuildMetafile,
   outDir: string,
 ): Promise<Bun.BuildMetafile> {
+  const entries = Object.entries(metafile.outputs);
+  const sizes = await Promise.all(
+    entries.map(([path, output]) =>
+      stat(outPath(outDir, stripDotSlash(path)))
+        .then((s) => s.size)
+        .catch(() => output.bytes),
+    ),
+  );
+
+  // Rebuilt in `entries` order so the metafile's key order survives.
   const outputs: Bun.BuildMetafile["outputs"] = {};
-  for (const [path, output] of Object.entries(metafile.outputs)) {
-    const bytes = await stat(outPath(outDir, stripDotSlash(path)))
-      .then((s) => s.size)
-      .catch(() => output.bytes);
+  entries.forEach(([path, output], i) => {
+    const bytes = sizes[i]!;
     outputs[path] = bytes === output.bytes ? output : { ...output, bytes };
-  }
+  });
   return { ...metafile, outputs };
 }
 

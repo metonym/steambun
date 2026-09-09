@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "../src/build/build";
 import {
+  applyImportMap,
   injectImportMap,
   rewriteChunkSource,
   stableChunkIds,
@@ -274,6 +275,40 @@ async function chunkFileSet(dir: string): Promise<Set<string>> {
   ) as Record<string, string>;
   return new Set(Object.values(chunkMap));
 }
+
+describe("applyImportMap", () => {
+  test("byte-identical chunks are not renamed", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "steambun-importmap-noop-"));
+    mkdirSync(join(outDir, "assets"));
+    // A leaf chunk imports nothing, so rewriting produces the same bytes.
+    writeFileSync(join(outDir, "assets/leaf-aaaaaaaa.js"), "export const a=1;");
+    writeFileSync(
+      join(outDir, "assets/entry-bbbbbbbb.js"),
+      'import"./leaf-aaaaaaaa.js";console.log(1);',
+    );
+
+    const metafile = fakeMetafile({
+      "./assets/leaf-aaaaaaaa.js": { inputs: ["src/leaf.ts"] },
+      "./assets/entry-bbbbbbbb.js": { inputs: ["src/entry.ts"] },
+    });
+    const { renames } = await applyImportMap({
+      outDir,
+      base: "/",
+      metafile,
+      htmlFiles: [],
+    });
+
+    expect(renames.get("assets/leaf-aaaaaaaa.js")).toBe(
+      "assets/leaf-aaaaaaaa.js",
+    );
+    expect(renames.get("assets/entry-bbbbbbbb.js")).not.toBe(
+      "assets/entry-bbbbbbbb.js",
+    );
+    const names = readdirSync(join(outDir, "assets")).sort();
+    expect(names).toContain("leaf-aaaaaaaa.js");
+    expect(names).not.toContain("entry-bbbbbbbb.js");
+  });
+});
 
 describe("import map cascade (integration)", () => {
   test("changing a shared module renames only its own chunk", async () => {

@@ -1,14 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
+import { compress, type Encoding } from "./precompress";
 import { outPath, stripDotSlash } from "./rename";
 
 // Bun's metafile output keys are already relative to `outdir`, just with a
-// "./" prefix for top-level files — strip it so budgets glob against the
-// same shape as `outDir`-relative paths (e.g. "assets/app.js").
-function normalizeOutputPath(path: string): string {
-  return path.replace(/^\.\//, "");
-}
+// "./" prefix for top-level files — `stripDotSlash` gets budgets globbing
+// against the same shape as `outDir`-relative paths (e.g. "assets/app.js").
 
 export interface AnalyzeReport {
   outputs: Array<{
@@ -87,7 +84,7 @@ export function analyzeMetafile(metafile: Bun.BuildMetafile): AnalyzeReport {
       }))
       .sort((a, b) => b.bytes - a.bytes);
     outputs.push({
-      path: normalizeOutputPath(path),
+      path: stripDotSlash(path),
       bytes: output.bytes,
       entryPoint: output.entryPoint,
       inputs,
@@ -128,23 +125,30 @@ export function analyzeMetafile(metafile: Bun.BuildMetafile): AnalyzeReport {
   return { outputs, packages, duplicates, total };
 }
 
+// Parent pointers rather than a queue of whole chains: the path is only
+// materialized for the one node that matches, not copied per pushed edge.
 function bfsChain(
   metafile: Bun.BuildMetafile,
   start: string,
   target: string,
 ): string[] | null {
-  const queue: string[][] = [[start]];
-  const visited = new Set<string>([start]);
-  while (queue.length > 0) {
-    const chain = queue.shift()!;
-    const last = chain[chain.length - 1]!;
-    if (last.includes(target)) return chain;
-    const input = metafile.inputs[last];
+  const queue: string[] = [start];
+  const parent = new Map<string, string | null>([[start, null]]);
+  for (let head = 0; head < queue.length; head++) {
+    const node = queue[head]!;
+    if (node.includes(target)) {
+      const chain: string[] = [];
+      for (let at: string | null | undefined = node; at; at = parent.get(at)) {
+        chain.push(at);
+      }
+      return chain.reverse();
+    }
+    const input = metafile.inputs[node];
     if (!input) continue;
     for (const imp of input.imports) {
-      if (visited.has(imp.path)) continue;
-      visited.add(imp.path);
-      queue.push([...chain, imp.path]);
+      if (parent.has(imp.path)) continue;
+      parent.set(imp.path, node);
+      queue.push(imp.path);
     }
   }
   return null;
@@ -224,11 +228,11 @@ export function compareMetafiles(
 ): CompareRow[] {
   const beforeBytes = new Map<string, number>();
   for (const [path, output] of Object.entries(before.outputs)) {
-    beforeBytes.set(normalizeOutputPath(path), output.bytes);
+    beforeBytes.set(stripDotSlash(path), output.bytes);
   }
   const afterBytes = new Map<string, number>();
   for (const [path, output] of Object.entries(after.outputs)) {
-    afterBytes.set(normalizeOutputPath(path), output.bytes);
+    afterBytes.set(stripDotSlash(path), output.bytes);
   }
 
   const rows: CompareRow[] = [];
@@ -256,28 +260,43 @@ export interface CompressedSizes {
 
 /**
  * Reads each output's on-disk file under `outDir` and compresses it with
- * gzip/zstd (and brotli, opt-in — it's slow). Outputs with no file on disk
- * (e.g. a stale metafile) are skipped, not errored.
+ * gzip/zstd (and brotli, opt-in — it's slow). A `.gz`/`.zst`/`.br` sibling
+ * left by `build.precompress` is used as-is (same codec levels, so the same
+ * bytes). Outputs with no file on disk (e.g. a stale metafile) are skipped,
+ * not errored.
  */
 export async function computeCompressedSizes(
   outputs: AnalyzeReport["outputs"],
   outDir: string,
   opts: { brotli: boolean },
 ): Promise<Map<string, CompressedSizes>> {
-  const sizes = new Map<string, CompressedSizes>();
-  for (const output of outputs) {
-    const file = Bun.file(outPath(outDir, stripDotSlash(output.path)));
-    if (!(await file.exists())) continue;
-    const buf = await file.bytes();
-    sizes.set(output.path, {
-      gzip: Bun.gzipSync(buf, { level: 9 }).length,
-      zstd: Bun.zstdCompressSync(buf, { level: 19 }).length,
-      br: opts.brotli
-        ? brotliCompressSync(buf, {
-            params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
-          }).length
-        : undefined,
-    });
-  }
-  return sizes;
+  const entries = await Promise.all(
+    outputs.map(async (output) => {
+      const path = outPath(outDir, stripDotSlash(output.path));
+      const file = Bun.file(path);
+      if (!(await file.exists())) return null;
+
+      // `build.precompress` may already have written the exact bytes this
+      // function would produce — its levels are the same, so stat the sibling.
+      const sibling = async (ext: string): Promise<number | undefined> => {
+        const s = Bun.file(path + ext);
+        return (await s.exists()) ? s.size : undefined;
+      };
+      const size = async (ext: string, encoding: Encoding): Promise<number> => {
+        const existing = await sibling(ext);
+        return (
+          existing ?? (await compress(await file.bytes(), encoding)).length
+        );
+      };
+
+      const [gzip, zstd, br] = await Promise.all([
+        size(".gz", "gzip"),
+        size(".zst", "zstd"),
+        opts.brotli ? size(".br", "br") : undefined,
+      ]);
+      return [output.path, { gzip, zstd, br }] as const;
+    }),
+  );
+
+  return new Map(entries.filter((entry) => entry !== null));
 }

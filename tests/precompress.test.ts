@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { precompressDir } from "../src/build/precompress";
 
 function tmpDir(): string {
@@ -48,6 +48,20 @@ describe("precompressDir", () => {
 
     const results = await precompressDir(dir, ["gzip"], 1024);
     expect(results).toHaveLength(0);
+  });
+
+  test("results are ordered by path, then by the requested encoding order", async () => {
+    const dir = tmpDir();
+    writeFileSync(join(dir, "b.js"), "x".repeat(5000));
+    writeFileSync(join(dir, "a.css"), "y".repeat(5000));
+
+    const results = await precompressDir(dir, ["zstd", "gzip"], 1024);
+    expect(results.map((r) => `${basename(r.file)}${r.encoding}`)).toEqual([
+      "a.csszstd",
+      "a.cssgzip",
+      "b.jszstd",
+      "b.jsgzip",
+    ]);
   });
 
   test("no encodings configured is a no-op", async () => {

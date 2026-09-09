@@ -1,10 +1,6 @@
-import { normalize } from "node:path";
-
 // Bun's metafile paths carry a "./" prefix (relative to outdir/root); strip
 // it rather than re-deriving relativity, which would break under a different cwd.
-function normalizePath(path: string): string {
-  return normalize(path).replace(/^\.\//, "");
-}
+import { stripDotSlash } from "./rename";
 
 export interface ManifestChunk {
   file: string;
@@ -44,7 +40,7 @@ export function buildManifest(
 
   const manifest: Manifest = {};
   for (const [entryPoint, outputs] of groups) {
-    const src = normalizePath(entryPoint);
+    const src = stripDotSlash(entryPoint);
     const jsOutput = outputs.find(
       (o) => !o.path.endsWith(".css") && !o.path.endsWith(".html"),
     );
@@ -52,13 +48,13 @@ export function buildManifest(
       jsOutput ?? outputs.find((o) => o.path.endsWith(".html")) ?? outputs[0]!;
 
     const chunk: ManifestChunk = {
-      file: normalizePath(primary.path),
+      file: stripDotSlash(primary.path),
       src,
       isEntry: true,
     };
     const cssBundle = outputs.find((o) => o.output.cssBundle)?.output.cssBundle;
-    const css = cssBundle ? [normalizePath(cssBundle)] : [];
-    css.push(...(extraCss?.[entryPoint] ?? []).map(normalizePath));
+    const css = cssBundle ? [stripDotSlash(cssBundle)] : [];
+    css.push(...(extraCss?.[entryPoint] ?? []).map(stripDotSlash));
     if (css.length > 0) chunk.css = css;
 
     manifest[src] = chunk;

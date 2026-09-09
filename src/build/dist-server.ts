@@ -2,8 +2,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BunPlugin, ResolvedConfig } from "../config/types";
 import { toBunEnvPattern } from "../env/loader";
-import { toBunMinify, withBuiltinPlugins } from "./options";
+import { assertBuildSuccess, toBunMinify, withBuiltinPlugins } from "./options";
 import { generateProdServeSource } from "./prod-server";
+
+/** The dist server bundle's filename under `outDir`. */
+export const DIST_SERVER_FILE = "server.js";
 
 /**
  * Writes `outDir/server.js`: a `bun`-target bundle of the same preview
@@ -30,7 +33,7 @@ export async function writeDistServer(
   const result = await Bun.build({
     entrypoints: [distServePath],
     outdir: outDir,
-    naming: "server.js",
+    naming: DIST_SERVER_FILE,
     target: "bun",
     define,
     plugins: withBuiltinPlugins(config, plugins),
@@ -39,8 +42,5 @@ export async function writeDistServer(
     ...(env ? { env } : {}),
   });
 
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error("[steambun] dist/server.js build failed.");
-  }
+  assertBuildSuccess(result, "[steambun] dist/server.js build failed.");
 }

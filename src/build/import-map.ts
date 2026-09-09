@@ -2,10 +2,12 @@ import { basename, dirname, posix, resolve } from "node:path";
 import { escapeRegExp } from "../util/regexp";
 import type { RenameMap } from "./rename";
 import {
+  cleanHref,
   outPath,
   outRel,
   rehashedName,
   relativeHref,
+  stripBase,
   stripDotSlash,
   writeRenamed,
 } from "./rename";
@@ -84,7 +86,7 @@ function rewriteSpecifiers(src: string, ctx: RewriteCtx): string {
       "g",
     );
     out = out.replace(absoluteLiteral, (match, quote: string, spec: string) => {
-      const target = spec.slice(base.length).replace(/^\/+/, "");
+      const target = stripBase(spec, base);
       const id = stable.get(target);
       return id ? `${quote}${chunkKey(base, id)}${quote}` : match;
     });
@@ -109,6 +111,16 @@ function findMatchingBracket(src: string, openIdx: number): number {
 
 function rewriteHelperTokens(src: string, tokens: Map<string, string>): string {
   if (tokens.size === 0) return src;
+  // The global regex below matches every `ident("literal")` call in a
+  // minified bundle; skip it entirely unless some token literal is present.
+  let hasToken = false;
+  for (const token of tokens.keys()) {
+    if (src.includes(`"${token}"`)) {
+      hasToken = true;
+      break;
+    }
+  }
+  if (!hasToken) return src;
 
   let out = src;
   const anchorIdx = out.indexOf(HELPER_ANCHOR);
@@ -151,12 +163,12 @@ function rewriteHref(
   renames: RenameMap,
   base: string,
 ): string | null {
-  const clean = href.split("?")[0]!.split("#")[0]!;
+  const clean = cleanHref(href);
   const isAbsolute = base !== "/" && clean.startsWith(base);
 
   let rel: string;
   if (isAbsolute) {
-    rel = clean.slice(base.length).replace(/^\/+/, "");
+    rel = stripBase(clean, base);
   } else if (clean.startsWith("/")) {
     return null;
   } else {
@@ -184,6 +196,8 @@ export async function injectImportMap(
     renames: RenameMap;
     htmlDirRel: string;
     base: string;
+    /** Called when the page already had an import map that ours merged into. */
+    onMerge?: () => void;
   },
 ): Promise<string> {
   const { imports, renames, htmlDirRel, base } = opts;
@@ -191,6 +205,7 @@ export async function injectImportMap(
   const existingMatch = html.match(IMPORT_MAP_SCRIPT);
   let mergedImports = imports;
   if (existingMatch) {
+    opts.onMerge?.();
     try {
       const existing = JSON.parse(existingMatch[1] ?? "{}") as {
         imports?: Record<string, string>;
@@ -264,10 +279,12 @@ export async function applyImportMap(opts: {
         stable,
         tokens,
       });
+      // A chunk with no inter-chunk imports (a leaf vendor chunk) comes back
+      // byte for byte identical: leave it on disk under its own name rather
+      // than rewriting it to a `Bun.hash`-derived one that means the same thing.
+      if (text === original) return { rel, id, newRel: rel };
       const newRel = rehashedName(rel, text);
-      if (newRel !== rel || text !== original) {
-        await writeRenamed(outDir, rel, newRel, text);
-      }
+      await writeRenamed(outDir, rel, newRel, text);
       return { rel, id, newRel };
     }),
   );
@@ -285,12 +302,14 @@ export async function applyImportMap(opts: {
   await Promise.all(
     htmlFiles.map(async (htmlPath) => {
       const html = await Bun.file(htmlPath).text();
-      if (IMPORT_MAP_SCRIPT.test(html)) mergedExisting = true;
       const updated = await injectImportMap(html, {
         imports,
         renames,
         htmlDirRel: outRel(outDir, dirname(htmlPath)),
         base,
+        onMerge: () => {
+          mergedExisting = true;
+        },
       });
       if (updated !== html) await Bun.write(htmlPath, updated);
     }),
