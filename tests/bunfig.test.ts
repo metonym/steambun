@@ -11,7 +11,6 @@ import {
   stringifyToml,
 } from "../src/config/bunfig";
 import { findConfigFile, loadConfig } from "../src/config/loader";
-import { generateBunfigSource } from "../src/dev/synth";
 
 function tmpProject(): string {
   return mkdtempSync(join(tmpdir(), "steambun-bunfig-"));
@@ -403,9 +402,9 @@ describe("findConfigFile / loadConfig", () => {
   });
 });
 
-describe("generateBunfigSource", () => {
-  test("still writes plugins and a single env glob with no user bunfig", () => {
-    const source = generateBunfigSource(["./env-plugin.ts"], "PUBLIC_*");
+describe("serializeMergedBunfig (no user bunfig)", () => {
+  test("still writes plugins and a single env glob", () => {
+    const source = serializeMergedBunfig({}, ["./env-plugin.ts"], "PUBLIC_*");
     expect(source).toContain('plugins = ["./env-plugin.ts"]');
     expect(source).toContain('env = "PUBLIC_*"');
   });

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "../config/loader";
+import { childEnv } from "../util/server-env";
 import { generateProdServeSource } from "./prod-server";
 
 export interface PreviewOptions {
@@ -39,24 +40,11 @@ export async function preview(opts: PreviewOptions = {}): Promise<void> {
   const servePath = join(serveDir, "prod-serve.ts");
   await writeFile(servePath, generateProdServeSource(config, outDir), "utf8");
 
-  const host = opts.host ?? config.preview?.host;
   const proc = Bun.spawn({
     cmd: ["bun", servePath],
     cwd: config.root,
     stdio: ["inherit", "inherit", "inherit"],
-    env: {
-      ...process.env,
-      PORT: String(opts.port ?? config.preview?.port ?? 4173),
-      ...(host === true
-        ? { HOST: "" }
-        : typeof host === "string"
-          ? { HOST: host }
-          : {}),
-      ...((opts.strictPort ?? config.preview?.strictPort)
-        ? { STRICT_PORT: "1" }
-        : {}),
-      ...(opts.open !== undefined ? { OPEN: opts.open ? "1" : "0" } : {}),
-    },
+    env: { ...process.env, ...childEnv(opts) },
   });
 
   const shutdown = () => proc.kill();

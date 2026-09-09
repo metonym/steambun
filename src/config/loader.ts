@@ -17,7 +17,7 @@ import type {
 } from "./types";
 import { viteConfigToUserConfig } from "./vite";
 
-export const STEAMBUN_CONFIG_NAMES = [
+const STEAMBUN_CONFIG_NAMES = [
   "steambun.config.ts",
   "steambun.config.mts",
   "steambun.config.js",
@@ -52,12 +52,16 @@ export function findConfigFile(root: string): FindConfigResult | null {
   return null;
 }
 
-async function loadConfigExport(path: string): Promise<UserConfigExport> {
-  // Cache-bust so repeated CLI invocations in the same process (tests, watch
-  // mode restarts) pick up edits rather than a stale module cache entry.
-  const mod = await import(`${path}?t=${Date.now()}`);
-  const exported: UserConfigExport = mod.default ?? {};
-  return exported;
+// Bumped by dev() before each restart so an edited config is picked up
+// instead of a stale module cache entry — never by build/doctor/analyze/
+// routes/migrate, which each import their config exactly once per process,
+// so generation 0's plain (uncachebusted) import is all they ever need.
+// Cache-busting unconditionally (the previous `?t=${Date.now()}`) leaked one
+// module instance into the long-lived dev parent's heap per restart.
+let configGeneration = 0;
+
+export function bumpConfigGeneration(): void {
+  configGeneration++;
 }
 
 // Shared by steambun.config.* and vite.config.* — both export either a
@@ -70,7 +74,10 @@ export async function loadRawConfigExport(
 ): Promise<unknown> {
   let exported: UserConfigExport;
   try {
-    exported = await loadConfigExport(path);
+    const specifier =
+      configGeneration === 0 ? path : `${path}?g=${configGeneration}`;
+    const mod = await import(specifier);
+    exported = mod.default ?? {};
   } catch (err) {
     throw new Error(
       `[steambun] Failed to load config at ${path}: ${(err as Error).message}`,
@@ -104,7 +111,11 @@ export interface LoadConfigOptions {
 export async function loadConfig(
   opts: LoadConfigOptions,
 ): Promise<ResolvedConfig> {
-  const root = opts.root ? resolveRoot(opts.root) : process.cwd();
+  const root = opts.root
+    ? isAbsolute(opts.root)
+      ? opts.root
+      : join(process.cwd(), opts.root)
+    : process.cwd();
 
   let found: FindConfigResult | null = null;
   if (opts.configFile) {
@@ -155,10 +166,6 @@ export async function loadConfig(
   }
 
   return config;
-}
-
-function resolveRoot(root: string): string {
-  return isAbsolute(root) ? root : join(process.cwd(), root);
 }
 
 // Exported for the generated prod-serve script (preview/--compile), which

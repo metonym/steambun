@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { asRecord, asStringArray, isPlainObject } from "../util/guards";
 import { isBunPlugin, isSteambunHooks } from "../util/plugins";
 import { toImportSpecifier } from "../util/specifier";
 import type {
@@ -59,29 +60,16 @@ export function bunfigToUserConfig(
 ): UserConfig {
   const root = asRecord(raw) ?? {};
   const native = nativeBunfigToUserConfig(root, warn);
-  const steambun = mapSteambunTable(asRecord(root.steambun) ?? {}, warn);
-  return mergeUserConfig(native, steambun);
-}
-
-export function mergeUserConfig(
-  base: UserConfig,
-  overlay: UserConfig,
-): UserConfig {
-  return {
-    ...base,
-    ...overlay,
-    server: { ...base.server, ...overlay.server },
-    build: { ...base.build, ...overlay.build },
-    preview: { ...base.preview, ...overlay.preview },
-    resolve: {
-      ...base.resolve,
-      ...overlay.resolve,
-      alias: { ...base.resolve?.alias, ...overlay.resolve?.alias },
-    },
-    define: { ...base.define, ...overlay.define },
-    plugins: overlay.plugins ?? base.plugins,
-    middleware: overlay.middleware ?? base.middleware,
-  };
+  const config = mapSteambunTable(asRecord(root.steambun) ?? {}, warn);
+  // nativeBunfigToUserConfig only ever produces define/server.port/envPrefix
+  // (see its own body) — merge just those, [steambun] winning on overlap,
+  // rather than deep-merging every UserConfig key the two sides can never
+  // both populate.
+  if (native.define) config.define = { ...native.define, ...config.define };
+  if (native.server) config.server = { ...native.server, ...config.server };
+  if (native.envPrefix && !config.envPrefix)
+    config.envPrefix = native.envPrefix;
+  return config;
 }
 
 /**
@@ -224,7 +212,7 @@ type Decoder<T> = ((
   value: unknown,
   path: string,
   warn: WarnFn,
-) => T | undefined) & { expected?: string; silent?: boolean };
+) => T | undefined) & { expected?: string };
 
 type KeyTable<T> = { [K in keyof Required<T>]: Decoder<T[K]> };
 
@@ -235,18 +223,6 @@ function withExpected<T>(
   const decoder = fn as Decoder<T>;
   decoder.expected = expected;
   return decoder;
-}
-
-/**
- * Wraps a decoder so `decodeTable` never prints its generic "expected X, got
- * Y" message on rejection — for the rare decoder (just `compile`, so far)
- * that must stay exactly as silent as its hand-written predecessor.
- */
-function silent<T>(decoder: Decoder<T>): Decoder<T> {
-  const wrapped: Decoder<T> = (value, path, warn) => decoder(value, path, warn);
-  wrapped.expected = decoder.expected;
-  wrapped.silent = true;
-  return wrapped;
 }
 
 function describeType(value: unknown): string {
@@ -279,11 +255,9 @@ function decodeTable<T>(
     }
     const decoded = decoder(value, keyPath, warn);
     if (decoded === undefined) {
-      if (!decoder.silent) {
-        warn(
-          `[steambun] bunfig key "${keyPath}" expected ${decoder.expected ?? "a different type"}, got ${describeType(value)} — ignored.`,
-        );
-      }
+      warn(
+        `[steambun] bunfig key "${keyPath}" expected ${decoder.expected ?? "a different type"}, got ${describeType(value)} — ignored.`,
+      );
       continue;
     }
     (out as Record<string, unknown>)[key] = decoded;
@@ -308,20 +282,30 @@ const strArray: Decoder<string[]> = withExpected(
   "string[]",
 );
 
-function oneOf<T>(...values: T[]): Decoder<T> {
+function oneOf<const T extends readonly (string | boolean)[]>(
+  ...values: T
+): Decoder<T[number]> {
   return withExpected(
-    (value) => (values.includes(value as T) ? (value as T) : undefined),
+    (value) =>
+      values.includes(value as T[number]) ? (value as T[number]) : undefined,
     values.map((value) => JSON.stringify(value)).join(" | "),
   );
 }
 
-function union<A, B>(a: Decoder<A>, b: Decoder<B>): Decoder<A | B> {
+function union<T extends unknown[]>(
+  ...decoders: { [K in keyof T]: Decoder<T[K]> }
+): Decoder<T[number]> {
   return withExpected(
     (value, path, warn) => {
-      const decoded = a(value, path, warn);
-      return decoded !== undefined ? decoded : b(value, path, warn);
+      for (const decoder of decoders as Decoder<unknown>[]) {
+        const decoded = decoder(value, path, warn);
+        if (decoded !== undefined) return decoded as T[number];
+      }
+      return undefined;
     },
-    `${a.expected ?? "value"} or ${b.expected ?? "value"}`,
+    (decoders as Decoder<unknown>[])
+      .map((decoder) => decoder.expected ?? "value")
+      .join(" or "),
   );
 }
 
@@ -467,18 +451,12 @@ const BUILD_TABLE: KeyTable<BuildOptions> = {
   outDir: str,
   emptyOutDir: bool,
   assetsDir: str,
-  sourcemap: union(bool, oneOf<"inline" | "external">("inline", "external")),
-  minify: union(
-    bool,
-    union(
-      oneOf<"esbuild" | "terser">("esbuild", "terser"),
-      nested(MINIFY_OBJECT_TABLE),
-    ),
-  ),
+  sourcemap: union(bool, oneOf("inline", "external")),
+  minify: union(bool, oneOf("esbuild", "terser"), nested(MINIFY_OBJECT_TABLE)),
   drop: strArray,
   standalone: bool,
   manifest: bool,
-  target: oneOf<"browser" | "bun" | "node">("browser", "bun", "node"),
+  target: oneOf("browser", "bun", "node"),
   bytecode: bool,
   splitting: bool,
   budgets: record(union(str, num)),
@@ -490,15 +468,9 @@ const BUILD_TABLE: KeyTable<BuildOptions> = {
   precompressMinSize: num,
   server: bool,
   sri: bool,
-  csp: union(oneOf<false | "strict">(false, "strict"), record(strArray)),
+  csp: union(oneOf(false, "strict"), record(strArray)),
   headers: record(strRecord),
-  deploy: oneOf<false | "netlify" | "cloudflare-pages" | "vercel" | "static">(
-    false,
-    "netlify",
-    "cloudflare-pages",
-    "vercel",
-    "static",
-  ),
+  deploy: oneOf(false, "netlify", "cloudflare-pages", "vercel", "static"),
 };
 
 const COMPILE_WINDOWS_TABLE: KeyTable<CompileWindowsOptions> = {
@@ -557,10 +529,10 @@ interface SteambunTopFields {
 
 const STEAMBUN_TABLE: KeyTable<SteambunTopFields> = {
   base: str,
-  publicDir: union(oneOf<false>(false), str),
-  appType: oneOf<AppType>("spa", "mpa"),
+  publicDir: union(oneOf(false), str),
+  appType: oneOf("spa", "mpa"),
   api: str,
-  compile: silent(union(bool, compileTable)),
+  compile: union(bool, compileTable),
   features: strArray,
   envDir: str,
   envPrefix: union(str, strArray),
@@ -678,25 +650,6 @@ function encodeTomlValue(value: unknown): string {
 function escapeTomlKey(key: string): string {
   if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return key;
   return JSON.stringify(key);
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return isPlainObject(value) ? value : undefined;
-}
-
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    return undefined;
-  }
-  return value;
 }
 
 function unique(items: string[]): string[] {

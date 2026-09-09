@@ -2,8 +2,8 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { serializeMergedBunfig } from "../src/config/bunfig";
 import { generateEnvPluginSource } from "../src/dev/env-plugin";
-import { generateBunfigSource } from "../src/dev/synth";
 import {
   corsMiddleware,
   createErrorHandler,
@@ -224,17 +224,17 @@ describe("createAliasPlugin", () => {
   });
 });
 
-describe("generateBunfigSource", () => {
+describe("serializeMergedBunfig", () => {
   test("writes plugins and a single env glob", () => {
-    const source = generateBunfigSource(["./env-plugin.ts"], "PUBLIC_*");
+    const source = serializeMergedBunfig({}, ["./env-plugin.ts"], "PUBLIC_*");
     expect(source).toContain('plugins = ["./env-plugin.ts"]');
     expect(source).toContain('env = "PUBLIC_*"');
   });
 
   test("omits env when there is no single prefix", () => {
-    expect(generateBunfigSource(["./env-plugin.ts"], undefined)).not.toContain(
-      "env =",
-    );
+    expect(
+      serializeMergedBunfig({}, ["./env-plugin.ts"], undefined),
+    ).not.toContain("env =");
   });
 });
 

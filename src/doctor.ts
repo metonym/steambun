@@ -2,14 +2,13 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { projectBunfigPath, readBunfigFile } from "./config/bunfig";
-import {
-  loadConfig,
-  STEAMBUN_CONFIG_NAMES,
-  VITE_CONFIG_NAMES,
-} from "./config/loader";
+import { findConfigFile, loadConfig, VITE_CONFIG_NAMES } from "./config/loader";
 import type { ResolvedConfig } from "./config/types";
 import { discoverHtmlEntries, discoverSkipDirs } from "./dev/discover";
 import { filterPublicEnv, loadEnvFiles } from "./env/loader";
+import { ciAnnotation } from "./util/annotations";
+import { asRecord, asStringArray } from "./util/guards";
+import { STEAMBUN_DIR_NAME } from "./util/paths";
 import {
   fail as failLine,
   ok as okLine,
@@ -27,7 +26,6 @@ export interface DoctorOptions {
   root?: string;
   configFile?: string;
   json?: boolean;
-  ci?: boolean;
 }
 
 export interface DoctorResult {
@@ -36,7 +34,10 @@ export interface DoctorResult {
 }
 
 const SECRET_KEY_PATTERN = /(SECRET|TOKEN|PASSWORD|PRIVATE|API_KEY)/i;
-const GENERATED_TYPE_FILES = [".steambun/env.d.ts", ".steambun/routes.d.ts"];
+const GENERATED_TYPE_FILES = [
+  `${STEAMBUN_DIR_NAME}/env.d.ts`,
+  `${STEAMBUN_DIR_NAME}/routes.d.ts`,
+];
 
 export async function runDoctor(
   opts: DoctorOptions = {},
@@ -95,38 +96,20 @@ function printReport(result: DoctorResult, opts: DoctorOptions): void {
     }
   }
 
-  if (opts.ci || process.env.GITHUB_ACTIONS) {
-    for (const check of result.checks) {
-      if (check.level === "fail") console.log(`::error::${check.message}`);
-      else if (check.level === "warn")
-        console.log(`::warning::${check.message}`);
-    }
+  for (const check of result.checks) {
+    if (check.level === "fail") ciAnnotation("error", check.message);
+    else if (check.level === "warn") ciAnnotation("warning", check.message);
   }
-}
-
-function compareVersions(a: string, b: string): number {
-  const partsA = a.split(".").map(Number);
-  const partsB = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    const diff = (partsA[i] ?? 0) - (partsB[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
 }
 
 function checkBunVersion(checks: Check[]): void {
-  if (compareVersions(Bun.version, "1.4.0") >= 0) {
-    checks.push({
-      id: "bun-version",
-      level: "ok",
-      message: `Bun ${Bun.version}`,
-    });
-    return;
-  }
+  const ok = Bun.semver.satisfies(Bun.version, ">=1.4.0");
   checks.push({
     id: "bun-version",
-    level: "fail",
-    message: `Bun ${Bun.version} is older than the required 1.4.0 — run \`bun upgrade\``,
+    level: ok ? "ok" : "fail",
+    message: ok
+      ? `Bun ${Bun.version}`
+      : `Bun ${Bun.version} is older than the required 1.4.0 — run \`bun upgrade\``,
   });
 }
 
@@ -157,26 +140,14 @@ async function checkHtmlEntries(
   });
 }
 
-function isNonEmptyTable(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.keys(value).length > 0
-  );
-}
-
 async function checkConfigConflicts(
   checks: Check[],
   root: string,
 ): Promise<void> {
-  const hasTsConfig = STEAMBUN_CONFIG_NAMES.some((name) =>
-    existsSync(join(root, name)),
-  );
-  if (!hasTsConfig) return;
+  if (findConfigFile(root)?.kind !== "steambun") return;
 
   const raw = await readBunfigFile(projectBunfigPath(root));
-  if (raw && isNonEmptyTable(raw.steambun)) {
+  if (raw && Object.keys(asRecord(raw.steambun) ?? {}).length > 0) {
     checks.push({
       id: "config-conflict",
       level: "warn",
@@ -198,52 +169,6 @@ async function checkConfigConflicts(
   }
 }
 
-function stripJsonComments(input: string): string {
-  let out = "";
-  let i = 0;
-  const len = input.length;
-  let inString = false;
-  while (i < len) {
-    const ch = input[i];
-    if (inString) {
-      out += ch;
-      if (ch === "\\" && i + 1 < len) {
-        i++;
-        out += input[i];
-      } else if (ch === '"') {
-        inString = false;
-      }
-      i++;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (ch === "/" && input[i + 1] === "/") {
-      i += 2;
-      while (i < len && input[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "/" && input[i + 1] === "*") {
-      i += 2;
-      while (i < len && !(input[i] === "*" && input[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
-
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((item): item is string => typeof item === "string");
-}
-
 function matchesAny(patterns: string[], target: string): boolean {
   return patterns.some((pattern) => new Bun.Glob(pattern).match(target));
 }
@@ -254,7 +179,7 @@ async function checkTsconfig(checks: Check[], root: string): Promise<void> {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripJsonComments(await Bun.file(path).text()));
+    parsed = (await import(path, { with: { type: "jsonc" } })).default;
   } catch {
     checks.push({
       id: "tsconfig-reachability",
@@ -264,10 +189,7 @@ async function checkTsconfig(checks: Check[], root: string): Promise<void> {
     return;
   }
 
-  const obj =
-    typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : {};
+  const obj = asRecord(parsed) ?? {};
   const include = asStringArray(obj.include);
   const exclude = asStringArray(obj.exclude);
 
@@ -294,10 +216,7 @@ async function checkTsconfig(checks: Check[], root: string): Promise<void> {
         },
   );
 
-  const compilerOptions =
-    typeof obj.compilerOptions === "object" && obj.compilerOptions !== null
-      ? (obj.compilerOptions as Record<string, unknown>)
-      : {};
+  const compilerOptions = asRecord(obj.compilerOptions) ?? {};
   const types = asStringArray(compilerOptions.types);
   const hasBunTypes =
     types === undefined ||
@@ -340,7 +259,7 @@ async function checkGitignore(
     checks.push({
       id: "gitignore",
       level: "warn",
-      message: `.gitignore not found — add .steambun and ${outDir}`,
+      message: `.gitignore not found — add ${STEAMBUN_DIR_NAME} and ${outDir}`,
     });
     return;
   }
@@ -349,7 +268,7 @@ async function checkGitignore(
     .split(/\r?\n/)
     .map((line) => line.trim());
 
-  const missing = [".steambun", outDir].filter(
+  const missing = [STEAMBUN_DIR_NAME, outDir].filter(
     (name) => !coversGitignoreEntry(lines, name),
   );
 
@@ -358,7 +277,7 @@ async function checkGitignore(
       ? {
           id: "gitignore",
           level: "ok",
-          message: `.gitignore covers .steambun and ${outDir}`,
+          message: `.gitignore covers ${STEAMBUN_DIR_NAME} and ${outDir}`,
         }
       : {
           id: "gitignore",

@@ -28,7 +28,9 @@ import {
 import { runDoctor } from "./doctor";
 import { writeRoutesDts } from "./routes-dts";
 import { createApp, formatApiRouteCollision } from "./runtime/app";
+import { ciAnnotation } from "./util/annotations";
 import { formatSize } from "./util/format";
+import { STEAMBUN_DIR_NAME } from "./util/paths";
 import { type LogLevel, log, pad, setLogLevel } from "./util/terminal";
 
 const USAGE = `steambun — a Bun-native, Vite-class dev & bundle toolkit
@@ -43,12 +45,12 @@ Usage:
   steambun doctor          Check config conflicts, tsconfig reachability, and secret env keys
 
 Flags:
---port <n>       Port for dev/preview
---host [addr]    Expose on network (dev/preview)
---strictPort     Fail instead of trying the next port (dev, preview)
---open           Open a browser after listen (dev, preview)
---emptyOutDir <true|false>  Empty outDir before building (build)
---logLevel <silent|error|warn|info>  Set log verbosity (default: info)
+  --port <n>       Port for dev/preview
+  --host [addr]    Expose on network (dev/preview)
+  --strictPort     Fail instead of trying the next port (dev, preview)
+  --open           Open a browser after listen (dev, preview)
+  --emptyOutDir <true|false>  Empty outDir before building (build)
+  --logLevel <silent|error|warn|info>  Set log verbosity (default: info)
   --mode <name>    Set mode (default: development for dev, production for build)
   --config <path>  Explicit config file path
   --root <path>    Project root (default: cwd)
@@ -63,25 +65,43 @@ Flags:
 
 const LOG_LEVELS: LogLevel[] = ["silent", "error", "warn", "info"];
 
-function commonOptions() {
+const OPTIONS = {
+  port: { type: "string" },
+  host: { type: "string" },
+  strictPort: { type: "boolean" },
+  open: { type: "boolean" },
+  emptyOutDir: { type: "string" },
+  logLevel: { type: "string" },
+  mode: { type: "string" },
+  config: { type: "string" },
+  root: { type: "string" },
+  json: { type: "boolean" },
+  why: { type: "string" },
+  compare: { type: "string" },
+  ci: { type: "boolean" },
+  md: { type: "boolean" },
+  html: { type: "boolean" },
+  brotli: { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+/** Shared by `dev` and `preview`: `--port`/`--host`/`--strictPort`/`--open`. */
+function serverFlags(values: {
+  port?: string;
+  host?: string;
+  strictPort?: boolean;
+  open?: boolean;
+}): {
+  port: number | undefined;
+  host: string | boolean | undefined;
+  strictPort: boolean | undefined;
+  open: boolean | undefined;
+} {
   return {
-    port: { type: "string" as const },
-    host: { type: "string" as const },
-    strictPort: { type: "boolean" as const },
-    open: { type: "boolean" as const },
-    emptyOutDir: { type: "string" as const },
-    logLevel: { type: "string" as const },
-    mode: { type: "string" as const },
-    config: { type: "string" as const },
-    root: { type: "string" as const },
-    json: { type: "boolean" as const },
-    why: { type: "string" as const },
-    compare: { type: "string" as const },
-    ci: { type: "boolean" as const },
-    md: { type: "boolean" as const },
-    html: { type: "boolean" as const },
-    brotli: { type: "boolean" as const },
-    help: { type: "boolean" as const, short: "h" },
+    port: values.port ? Number(values.port) : undefined,
+    host: values.host !== undefined ? values.host || true : undefined,
+    strictPort: values.strictPort,
+    open: values.open,
   };
 }
 
@@ -100,8 +120,9 @@ export function parseBooleanFlag(
 }
 
 interface AnalyzeCliOptions {
+  json: boolean;
+  why: string | undefined;
   compare: string | undefined;
-  ci: boolean;
   md: boolean;
   html: boolean;
   htmlOut: string | undefined;
@@ -267,16 +288,20 @@ function printCiAnnotations(
   compareRows: CompareRow[] | undefined,
 ): void {
   for (const v of violations) {
-    console.log(
-      `::error file=${v.path}::budget exceeded: ${formatSize(v.bytes)} > ${formatSize(v.limit)} ("${v.glob}")`,
+    ciAnnotation(
+      "error",
+      `budget exceeded: ${formatSize(v.bytes)} > ${formatSize(v.limit)} ("${v.glob}")`,
+      { file: v.path },
     );
   }
   if (!compareRows) return;
   for (const row of compareRows) {
     if (row.status !== "changed" || row.delta / row.before <= 0.1) continue;
     const pct = ((row.delta / row.before) * 100).toFixed(0);
-    console.log(
-      `::warning file=${row.path}::grew ${formatSize(row.delta)} (${pct}%) vs the compared build`,
+    ciAnnotation(
+      "warning",
+      `grew ${formatSize(row.delta)} (${pct}%) vs the compared build`,
+      { file: row.path },
     );
   }
 }
@@ -284,8 +309,6 @@ function printCiAnnotations(
 async function runAnalyze(
   root: string,
   configFile: string | undefined,
-  json: boolean,
-  why: string | undefined,
   opts: AnalyzeCliOptions,
 ): Promise<void> {
   const config = await loadConfig({
@@ -294,7 +317,7 @@ async function runAnalyze(
     mode: "production",
     configFile,
   });
-  const metafilePath = join(config.root, ".steambun", "metafile.json");
+  const metafilePath = join(config.root, STEAMBUN_DIR_NAME, "metafile.json");
   if (!existsSync(metafilePath)) {
     log.error(
       "[steambun] No build metafile found. Run `steambun build` first.",
@@ -306,10 +329,10 @@ async function runAnalyze(
     await Bun.file(metafilePath).text(),
   ) as Bun.BuildMetafile;
 
-  if (why) {
-    const chains = explainImport(metafile, why);
+  if (opts.why) {
+    const chains = explainImport(metafile, opts.why);
     if (chains.length === 0) {
-      log.info(`[steambun] No import chain found to "${why}".`);
+      log.info(`[steambun] No import chain found to "${opts.why}".`);
       return;
     }
     for (const chain of chains) log.info(chain.join(" -> "));
@@ -326,7 +349,7 @@ async function runAnalyze(
     compareRows = compareMetafiles(baseline, metafile);
   }
 
-  if (json) {
+  if (opts.json) {
     console.log(
       JSON.stringify(
         compareRows ? { ...report, compare: compareRows } : report,
@@ -366,9 +389,7 @@ async function runAnalyze(
     printTextReport(report, compressed, violations, compareRows, opts.brotli);
   }
 
-  if (opts.ci || process.env.GITHUB_ACTIONS) {
-    printCiAnnotations(violations, compareRows);
-  }
+  printCiAnnotations(violations, compareRows);
 }
 
 async function runRoutes(
@@ -409,23 +430,68 @@ async function runRoutes(
   }
 }
 
+interface CommandContext {
+  values: {
+    mode?: string;
+    port?: string;
+    host?: string;
+    strictPort?: boolean;
+    open?: boolean;
+    emptyOutDir?: string;
+    json?: boolean;
+    why?: string;
+    compare?: string;
+    md?: boolean;
+    html?: boolean;
+    brotli?: boolean;
+  };
+  positionals: string[];
+  root: string;
+  configFile: string | undefined;
+}
+
+// The single source of truth for both "is this argv[0] a known command" and
+// the dispatch itself — no separate array to keep in sync with a switch.
+const COMMANDS: Record<string, (ctx: CommandContext) => Promise<void>> = {
+  dev: ({ values, root, configFile }) =>
+    dev({ root, configFile, mode: values.mode, ...serverFlags(values) }),
+  build: ({ values, root, configFile }) =>
+    build({
+      root,
+      configFile,
+      mode: values.mode,
+      emptyOutDir: parseBooleanFlag(values.emptyOutDir, "emptyOutDir"),
+    }),
+  preview: ({ values, root, configFile }) =>
+    preview({ root, configFile, mode: values.mode, ...serverFlags(values) }),
+  analyze: ({ values, positionals, root, configFile }) =>
+    runAnalyze(root, configFile, {
+      json: !!values.json,
+      why: values.why,
+      compare: values.compare,
+      md: !!values.md,
+      html: !!values.html,
+      htmlOut: positionals[0],
+      brotli: !!values.brotli,
+    }),
+  routes: ({ values, root, configFile }) =>
+    runRoutes(root, configFile, values.mode, !!values.json),
+  migrate: ({ root }) => migrate(root),
+  doctor: async ({ values, root, configFile }) => {
+    const result = await runDoctor({ root, configFile, json: !!values.json });
+    if (!result.ok) process.exitCode = 1;
+  },
+};
+
 export async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
-  const isKnownCommand = [
-    "dev",
-    "build",
-    "preview",
-    "analyze",
-    "routes",
-    "migrate",
-    "doctor",
-  ].includes(command ?? "");
+  const isKnownCommand = command !== undefined && command in COMMANDS;
   const args = isKnownCommand ? rest : argv;
   const resolvedCommand = isKnownCommand ? command! : "dev";
 
   const { values, positionals } = parseArgs({
     args,
-    options: commonOptions(),
+    options: OPTIONS,
     allowPositionals: true,
   });
 
@@ -444,74 +510,10 @@ export async function main(argv: string[]): Promise<void> {
     }
   }
 
-  const root = values.root;
+  if (values.ci) process.env.STEAMBUN_CI = "1";
+
+  const root = resolve(values.root ?? ".");
   const configFile = values.config;
 
-  switch (resolvedCommand) {
-    case "dev":
-      await dev({
-        root,
-        configFile,
-        mode: values.mode,
-        port: values.port ? Number(values.port) : undefined,
-        host: values.host !== undefined ? values.host || true : undefined,
-        strictPort: values.strictPort,
-        open: values.open,
-      });
-      return;
-    case "build":
-      await build({
-        root,
-        configFile,
-        mode: values.mode,
-        emptyOutDir: parseBooleanFlag(values.emptyOutDir, "emptyOutDir"),
-      });
-      return;
-    case "preview":
-      await preview({
-        root,
-        configFile,
-        mode: values.mode,
-        port: values.port ? Number(values.port) : undefined,
-        host: values.host !== undefined ? values.host || true : undefined,
-        strictPort: values.strictPort,
-        open: values.open,
-      });
-      return;
-    case "analyze":
-      await runAnalyze(
-        root ?? process.cwd(),
-        configFile,
-        !!values.json,
-        values.why,
-        {
-          compare: values.compare,
-          ci: !!values.ci,
-          md: !!values.md,
-          html: !!values.html,
-          htmlOut: positionals[0],
-          brotli: !!values.brotli,
-        },
-      );
-      return;
-    case "routes":
-      await runRoutes(root, configFile, values.mode, !!values.json);
-      return;
-    case "migrate":
-      await migrate(root ?? process.cwd());
-      return;
-    case "doctor": {
-      const result = await runDoctor({
-        root,
-        configFile,
-        json: !!values.json,
-        ci: !!values.ci,
-      });
-      if (!result.ok) process.exitCode = 1;
-      return;
-    }
-    default:
-      log.info(USAGE);
-      process.exitCode = 1;
-  }
+  await COMMANDS[resolvedCommand]!({ values, positionals, root, configFile });
 }

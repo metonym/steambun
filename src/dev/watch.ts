@@ -47,22 +47,20 @@ export function createRestartTrigger(
   debounceMs = 100,
 ): RestartTrigger {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let lastFilename: string | null = null;
   return {
     notify(filename = null) {
-      lastFilename = filename;
       if (timer) clearTimeout(timer);
+      // The newest notify() always replaces the pending timer, so the
+      // filename this closure captures is always the last one notified —
+      // no need to track it separately.
       timer = setTimeout(() => {
         timer = null;
-        const firedFilename = lastFilename;
-        lastFilename = null;
-        onRestart(firedFilename);
+        onRestart(filename);
       }, debounceMs);
     },
     cancel() {
       if (timer) clearTimeout(timer);
       timer = null;
-      lastFilename = null;
     },
   };
 }
@@ -72,10 +70,7 @@ type WatchFn = (
   listener: (eventType: string, filename: string | null) => void,
 ) => Pick<FSWatcher, "close">;
 
-export interface DevWatchOptions {
-  root: string;
-  envDir: string;
-  configFileName: string | null;
+export interface DevWatchOptions extends WatchTargets {
   onRestart: (filename: string | null) => void;
   debounceMs?: number;
   /** Injectable for tests — defaults to `node:fs`'s `watch`, recursive on `root`. */
@@ -100,16 +95,11 @@ const defaultWatchDir: WatchFn = (dir, listener) =>
 export function setupDevWatchers(opts: DevWatchOptions): DevWatchController {
   const watchDir = opts.watchDir ?? defaultWatchDir;
   const trigger = createRestartTrigger(opts.onRestart, opts.debounceMs);
-  const targets: WatchTargets = {
-    root: opts.root,
-    envDir: opts.envDir,
-    configFileName: opts.configFileName,
-  };
 
   const dirs = new Set([opts.root, opts.envDir]);
   const watchers = [...dirs].map((dir) =>
     watchDir(dir, (eventType, filename) => {
-      if (shouldTriggerRestart(eventType, dir, filename, targets)) {
+      if (shouldTriggerRestart(eventType, dir, filename, opts)) {
         trigger.notify(filename);
       }
     }),

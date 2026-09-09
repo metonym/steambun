@@ -1,3 +1,4 @@
+import { asRecord } from "../util/guards";
 import type {
   BuildOptions,
   PreviewOptions,
@@ -38,26 +39,45 @@ const TOP_KEYS = new Set([
   "plugins",
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
 function convertViteAlias(alias: unknown): Record<string, string> | undefined {
   const out: Record<string, string> = {};
   if (Array.isArray(alias)) {
     for (const entry of alias) {
+      const rec = asRecord(entry);
       if (
-        isRecord(entry) &&
-        typeof entry.find === "string" &&
-        typeof entry.replacement === "string"
+        rec &&
+        typeof rec.find === "string" &&
+        typeof rec.replacement === "string"
       ) {
-        out[entry.find] = entry.replacement;
+        out[rec.find] = rec.replacement;
       }
     }
-  } else if (isRecord(alias)) {
-    for (const [key, value] of Object.entries(alias)) {
+  } else {
+    const rec = asRecord(alias);
+    for (const [key, value] of Object.entries(rec ?? {})) {
       if (typeof value === "string") out[key] = value;
     }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Copies `allowed` keys of `raw` into a fresh object, warning (via
+ * `unsupported`) on everything else — the shared "allowlist, warn the rest"
+ * shape behind `server`/`build`/`preview`. Returns `undefined` for a
+ * non-object `raw` or an object with no allowed keys, so callers can
+ * `if (picked) config.x = picked`. */
+function pick(
+  section: string,
+  raw: unknown,
+  allowed: Set<string>,
+  unsupported: (path: string) => void,
+): Record<string, unknown> | undefined {
+  const rec = asRecord(raw);
+  if (!rec) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rec)) {
+    if (allowed.has(key)) out[key] = value;
+    else unsupported(`${section}.${key}`);
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -87,61 +107,37 @@ export function viteConfigToUserConfig(
     if (!TOP_KEYS.has(key)) unsupported(key);
   }
 
-  if (isRecord(vite.server)) {
-    const server: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(vite.server)) {
-      if (SERVER_KEYS.has(key)) server[key] = value;
-      else unsupported(`server.${key}`);
-    }
-    if (Object.keys(server).length > 0) {
-      config.server = server as ServerOptions;
-    }
-  }
+  const server = pick("server", vite.server, SERVER_KEYS, unsupported);
+  if (server) config.server = server as ServerOptions;
 
-  if (isRecord(vite.build)) {
-    const build: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(vite.build)) {
-      if (BUILD_KEYS.has(key)) build[key] = value;
-      else unsupported(`build.${key}`);
-    }
-    if (Object.keys(build).length > 0) {
-      config.build = build as BuildOptions;
-    }
-  }
+  const build = pick("build", vite.build, BUILD_KEYS, unsupported);
+  if (build) config.build = build as BuildOptions;
 
-  if (isRecord(vite.preview)) {
-    const preview: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(vite.preview)) {
-      if (PREVIEW_KEYS.has(key)) preview[key] = value;
-      else unsupported(`preview.${key}`);
-    }
-    if (Object.keys(preview).length > 0) {
-      config.preview = preview as PreviewOptions;
-    }
-  }
+  const preview = pick("preview", vite.preview, PREVIEW_KEYS, unsupported);
+  if (preview) config.preview = preview as PreviewOptions;
 
-  if (isRecord(vite.resolve)) {
+  const viteResolve = asRecord(vite.resolve);
+  if (viteResolve) {
     const resolve: Record<string, unknown> = {};
-    for (const key of Object.keys(vite.resolve)) {
+    for (const key of Object.keys(viteResolve)) {
       if (key !== "alias" && key !== "extensions")
         unsupported(`resolve.${key}`);
     }
-    const alias = convertViteAlias(vite.resolve.alias);
+    const alias = convertViteAlias(viteResolve.alias);
     if (alias) resolve.alias = alias;
     if (
-      Array.isArray(vite.resolve.extensions) &&
-      vite.resolve.extensions.every((ext) => typeof ext === "string")
+      Array.isArray(viteResolve.extensions) &&
+      viteResolve.extensions.every((ext) => typeof ext === "string")
     ) {
-      resolve.extensions = vite.resolve.extensions;
+      resolve.extensions = viteResolve.extensions;
     }
     if (Object.keys(resolve).length > 0) {
       config.resolve = resolve as ResolveOptions;
     }
   }
 
-  if (isRecord(vite.define)) {
-    config.define = vite.define as Record<string, string>;
-  }
+  const define = asRecord(vite.define);
+  if (define) config.define = define as Record<string, string>;
   if (typeof vite.envPrefix === "string" || Array.isArray(vite.envPrefix)) {
     config.envPrefix = vite.envPrefix as string | string[];
   }

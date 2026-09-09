@@ -1,15 +1,5 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import {
-  colorEnabled,
-  fail,
-  getLogLevel,
-  log,
-  ok,
-  pad,
-  paint,
-  setLogLevel,
-  warn,
-} from "../src/util/terminal";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { fail, log, ok, pad, setLogLevel, warn } from "../src/util/terminal";
 
 function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
   const saved: Record<string, string | undefined> = {};
@@ -42,59 +32,59 @@ function withTTY(isTTY: boolean | undefined, fn: () => void) {
   }
 }
 
-describe("colorEnabled", () => {
+// colorEnabled/paint are internal to terminal.ts (no caller outside it); the
+// only public surface that exercises them is ok/warn/fail, which gate on a
+// real, non-"dumb" TTY before ever calling paint — so every case below runs
+// under withTTY(true) + TERM other than "dumb".
+describe("ok/warn/fail color handling (via paint, on a real TTY)", () => {
   test("NO_COLOR set to anything disables color, even an empty string", () => {
-    withEnv({ NO_COLOR: "1", FORCE_COLOR: undefined }, () => {
-      withTTY(true, () => {
-        expect(colorEnabled()).toBe(false);
-      });
-    });
-    withEnv({ NO_COLOR: "", FORCE_COLOR: undefined }, () => {
-      withTTY(true, () => {
-        expect(colorEnabled()).toBe(false);
-      });
-    });
-  });
-
-  test("FORCE_COLOR=1 forces color on a non-TTY", () => {
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: "1" }, () => {
-      withTTY(false, () => {
-        expect(colorEnabled()).toBe(true);
-      });
-    });
+    withEnv(
+      { NO_COLOR: "1", FORCE_COLOR: undefined, TERM: "xterm-256color" },
+      () => {
+        withTTY(true, () => {
+          expect(ok("done")).toBe("✓ done");
+        });
+      },
+    );
+    withEnv(
+      { NO_COLOR: "", FORCE_COLOR: undefined, TERM: "xterm-256color" },
+      () => {
+        withTTY(true, () => {
+          expect(ok("done")).toBe("✓ done");
+        });
+      },
+    );
   });
 
   test("FORCE_COLOR=0 does not force color on", () => {
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: "0" }, () => {
-      withTTY(false, () => {
-        expect(colorEnabled()).toBe(false);
-      });
-      withTTY(true, () => {
-        expect(colorEnabled()).toBe(true);
-      });
-    });
+    withEnv(
+      { NO_COLOR: undefined, FORCE_COLOR: "0", TERM: "xterm-256color" },
+      () => {
+        withTTY(false, () => {
+          expect(ok("done")).toBe("OK done");
+        });
+      },
+    );
+    // TTY fallback still enables color; FORCE_COLOR=0 is not a force-on.
+    // Mock Bun.color: its own FORCE_COLOR detection is fixed at process start.
+    const colorSpy = spyOn(Bun, "color").mockImplementation(
+      (() => "\x1b[32m") as unknown as typeof Bun.color,
+    );
+    try {
+      withEnv(
+        { NO_COLOR: undefined, FORCE_COLOR: "0", TERM: "xterm-256color" },
+        () => {
+          withTTY(true, () => {
+            expect(ok("done")).toBe("\x1b[32m✓\x1b[0m done");
+          });
+        },
+      );
+    } finally {
+      colorSpy.mockRestore();
+    }
   });
 
-  test("falls back to the TTY check", () => {
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: undefined }, () => {
-      withTTY(true, () => {
-        expect(colorEnabled()).toBe(true);
-      });
-      withTTY(false, () => {
-        expect(colorEnabled()).toBe(false);
-      });
-    });
-  });
-});
-
-describe("paint", () => {
-  test("returns plain text when color is disabled", () => {
-    withEnv({ NO_COLOR: "1" }, () => {
-      expect(paint("hello", "green")).toBe("hello");
-    });
-  });
-
-  test("wraps in ANSI codes when color is enabled", () => {
+  test("wraps the glyph in ANSI codes when color is enabled", () => {
     // Bun.color's own TTY/FORCE_COLOR detection is fixed at process start, so
     // mutating process.env mid-test can't move it — mock it instead to
     // exercise paint()'s own colorEnabled() gate deterministically.
@@ -102,10 +92,14 @@ describe("paint", () => {
       (() => "\x1b[32m") as unknown as typeof Bun.color,
     );
     try {
-      withEnv({ NO_COLOR: undefined, FORCE_COLOR: "1" }, () => {
-        const painted = paint("hello", "green");
-        expect(painted).toBe("\x1b[32mhello\x1b[0m");
-      });
+      withEnv(
+        { NO_COLOR: undefined, FORCE_COLOR: "1", TERM: "xterm-256color" },
+        () => {
+          withTTY(true, () => {
+            expect(ok("done")).toBe("\x1b[32m✓\x1b[0m done");
+          });
+        },
+      );
     } finally {
       colorSpy.mockRestore();
     }
@@ -130,11 +124,21 @@ describe("pad", () => {
       (() => "\x1b[32m") as unknown as typeof Bun.color,
     );
     try {
-      withEnv({ NO_COLOR: undefined, FORCE_COLOR: "1" }, () => {
-        const painted = paint("hi", "green");
-        expect(painted).toBe("\x1b[32mhi\x1b[0m");
-        expect(pad(painted, 5)).toBe(`${painted}   `);
-      });
+      withEnv(
+        { NO_COLOR: undefined, FORCE_COLOR: "1", TERM: "xterm-256color" },
+        () => {
+          withTTY(true, () => {
+            const painted = ok("hi");
+            expect(painted).toBe("\x1b[32m✓\x1b[0m hi");
+            // Raw .length includes the ANSI escapes; pad must pad based on
+            // Bun.stringWidth (which ignores them), not painted.length.
+            expect(painted.length).toBeGreaterThan(Bun.stringWidth(painted));
+            expect(pad(painted, Bun.stringWidth(painted) + 3)).toBe(
+              `${painted}   `,
+            );
+          });
+        },
+      );
     } finally {
       colorSpy.mockRestore();
     }
@@ -173,14 +177,8 @@ describe("ok/warn/fail", () => {
 });
 
 describe("log", () => {
-  const originalLevel = getLogLevel();
-
-  beforeEach(() => {
-    setLogLevel("info");
-  });
-
   afterEach(() => {
-    setLogLevel(originalLevel);
+    setLogLevel("info");
   });
 
   test("info fires at the default level", () => {
@@ -196,37 +194,29 @@ describe("log", () => {
   test("silent suppresses everything", () => {
     setLogLevel("silent");
     const logSpy = spyOn(console, "log").mockImplementation(() => {});
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       log.info("a");
-      log.warn("b");
       log.error("c");
       expect(logSpy).not.toHaveBeenCalled();
-      expect(warnSpy).not.toHaveBeenCalled();
       expect(errorSpy).not.toHaveBeenCalled();
     } finally {
       logSpy.mockRestore();
-      warnSpy.mockRestore();
       errorSpy.mockRestore();
     }
   });
 
-  test("warn level allows warn and error but not info", () => {
+  test("warn level allows error but not info", () => {
     setLogLevel("warn");
     const logSpy = spyOn(console, "log").mockImplementation(() => {});
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       log.info("a");
-      log.warn("b");
       log.error("c");
       expect(logSpy).not.toHaveBeenCalled();
-      expect(warnSpy).toHaveBeenCalledWith("b");
       expect(errorSpy).toHaveBeenCalledWith("c");
     } finally {
       logSpy.mockRestore();
-      warnSpy.mockRestore();
       errorSpy.mockRestore();
     }
   });

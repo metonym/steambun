@@ -1,6 +1,8 @@
 import { readdir } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { join } from "node:path";
 import type { AppType } from "../config/types";
+import { STEAMBUN_DIR_NAME } from "../util/paths";
+import { posixRelative, toPosix } from "../util/specifier";
 
 export interface HtmlEntry {
   file: string;
@@ -13,7 +15,13 @@ export interface DiscoverHtmlOptions {
   skipPaths?: Iterable<string>;
 }
 
-const DEFAULT_SKIP = ["node_modules", ".git", ".steambun", "dist", "public"];
+const DEFAULT_SKIP = [
+  "node_modules",
+  ".git",
+  STEAMBUN_DIR_NAME,
+  "dist",
+  "public",
+];
 
 async function collectHtmlFiles(
   root: string,
@@ -27,7 +35,7 @@ async function collectHtmlFiles(
     if (entry.isDirectory()) {
       if (skip.has(entry.name) || entry.name.startsWith(".")) continue;
       const childDir = join(dir, entry.name);
-      const rel = relative(root, childDir).split(sep).join("/");
+      const rel = posixRelative(root, childDir);
       if (skipPaths.has(rel)) continue;
       files.push(...(await collectHtmlFiles(root, childDir, skip, skipPaths)));
     } else if (entry.name.endsWith(".html")) {
@@ -68,7 +76,7 @@ export async function discoverHtmlEntries(
   const skipPaths = new Set(opts.skipPaths ?? []);
   const files = (await collectHtmlFiles(root, root, skip, skipPaths)).sort();
   return files.map((file) => {
-    const rel = relative(root, file).split(sep).join("/");
+    const rel = posixRelative(root, file);
     const { routePath, isCatchAll } = relToRoute(rel);
     return { file, routePath, isCatchAll };
   });
@@ -81,13 +89,13 @@ export function discoverSkipDirs(config: {
   const skipDirs: string[] = [];
   const skipPaths: string[] = [];
   if (config.build?.outDir) {
-    const normalized = config.build.outDir.split(/[/\\]/).join("/");
+    const normalized = toPosix(config.build.outDir);
     const [firstSegment] = normalized.split("/");
     if (firstSegment) skipDirs.push(firstSegment);
     skipPaths.push(normalized);
   }
   if (config.publicDir) {
-    const base = config.publicDir.split(/[/\\]/).pop();
+    const base = toPosix(config.publicDir).split("/").pop();
     if (base) skipDirs.push(base);
   }
   return { skipDirs, skipPaths };

@@ -13,10 +13,6 @@ export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
 }
 
-export function getLogLevel(): LogLevel {
-  return currentLevel;
-}
-
 function logAt(level: LogLevel, print: (msg: string) => void, msg: string) {
   if (LEVEL_RANK[level] <= LEVEL_RANK[currentLevel]) print(msg);
 }
@@ -24,9 +20,6 @@ function logAt(level: LogLevel, print: (msg: string) => void, msg: string) {
 export const log = {
   info(msg: string): void {
     logAt("info", console.log, msg);
-  },
-  warn(msg: string): void {
-    logAt("warn", console.warn, msg);
   },
   error(msg: string): void {
     logAt("error", console.error, msg);
@@ -38,14 +31,14 @@ export const log = {
  * heuristic — `paint()` consults this itself so tests stay deterministic
  * regardless of Bun's implicit check.
  */
-export function colorEnabled(): boolean {
+function colorEnabled(): boolean {
   if (process.env.NO_COLOR !== undefined) return false;
   if (process.env.FORCE_COLOR !== undefined && process.env.FORCE_COLOR !== "0")
     return true;
   return !!process.stdout.isTTY;
 }
 
-export function paint(text: string, color: string): string {
+function paint(text: string, color: string): string {
   if (!colorEnabled()) return text;
   const code = Bun.color(color, "ansi");
   if (!code) return text;

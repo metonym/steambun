@@ -1,10 +1,12 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppType } from "./config/types";
 import type { HtmlEntry } from "./dev/discover";
 import { htmlServePath } from "./dev/discover";
 import { hasWebsocketExport, listApiFileEntries } from "./runtime/api-routes";
+import { STEAMBUN_DIR_NAME } from "./util/paths";
 import { toImportSpecifier } from "./util/specifier";
+import { writeIfChanged } from "./util/write-if-changed";
 
 function paramsTypeFor(path: string): string {
   // Matches Bun's own Serve.ExtractRouteParams: `:name` segments become
@@ -75,7 +77,7 @@ export async function writeRoutesDts(
   htmlEntries: HtmlEntry[],
   appType: AppType,
 ): Promise<string> {
-  const dtsDir = join(root, ".steambun");
+  const dtsDir = join(root, STEAMBUN_DIR_NAME);
   await mkdir(dtsDir, { recursive: true });
   const fileEntries = apiDir ? await listApiFileEntries(apiDir) : [];
   const apiEntries = await Promise.all(
@@ -91,6 +93,6 @@ export async function writeRoutesDts(
     appType,
   });
   const path = join(dtsDir, "routes.d.ts");
-  await writeFile(path, source, "utf8");
+  await writeIfChanged(path, source);
   return path;
 }
