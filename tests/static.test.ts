@@ -97,6 +97,16 @@ describe("createStaticHandler", () => {
     const res = await noSpa(new Request("http://localhost/foo.txt%00.png"));
     expect(res.status).toBe(404);
   });
+
+  test("a sibling `dup.html` file wins over `dup/index.html` for path 'dup'", async () => {
+    const dir = fixtureDir();
+    mkdirSync(join(dir, "dup"));
+    writeFileSync(join(dir, "dup", "index.html"), "<h1>dir-index</h1>");
+    writeFileSync(join(dir, "dup.html"), "<h1>dup-file</h1>");
+    const handler = createStaticHandler({ outDir: dir, spa: false });
+    const res = await handler(new Request("http://localhost/dup"));
+    expect(await res.text()).toContain("dup-file");
+  });
 });
 
 describe("createStaticHandler — headers", () => {
@@ -192,6 +202,19 @@ describe("createStaticHandler — precompressed variants", () => {
       }),
     );
     expect(res.headers.get("content-encoding")).toBeNull();
+  });
+
+  test("Accept-Encoding lists zstd and br first but only the gzip sibling exists", async () => {
+    writeFileSync(join(outDir, "gzip-only.js"), "console.log(2)");
+    writeFileSync(join(outDir, "gzip-only.js.gz"), "gzip-only-bytes");
+    const handler = createStaticHandler({ outDir, spa: false });
+    const res = await handler(
+      new Request("http://localhost/gzip-only.js", {
+        headers: { "accept-encoding": "zstd, br;q=0.9, gzip" },
+      }),
+    );
+    expect(res.headers.get("content-encoding")).toBe("gzip");
+    expect(await res.text()).toBe("gzip-only-bytes");
   });
 });
 
@@ -341,6 +364,42 @@ describe("createStaticHandler — denied build metadata", () => {
     const res = await handler(new Request("http://localhost/manifest.json"));
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('{"ok":true}');
+  });
+});
+
+describe("createStaticHandler — resolution cache", () => {
+  test("cache (default true) reuses the resolved entry across requests", async () => {
+    const outDir = fixtureDir();
+    const file = join(outDir, "cached.txt");
+    writeFileSync(file, "v1");
+    const handler = createStaticHandler({ outDir, spa: false });
+
+    const first = await handler(new Request("http://localhost/cached.txt"));
+    const etag1 = first.headers.get("etag");
+    expect(etag1).toBeTruthy();
+
+    // outDir is documented as immutable for the handler's lifetime: the
+    // etag (derived from a stat taken once, on the first resolution) must
+    // stay the same even though the file on disk changed size and mtime.
+    await new Promise((r) => setTimeout(r, 5));
+    writeFileSync(file, "v1-is-now-a-longer-string");
+    const second = await handler(new Request("http://localhost/cached.txt"));
+    expect(second.headers.get("etag")).toBe(etag1);
+  });
+
+  test("cache: false re-resolves (and re-stats) from disk on every request", async () => {
+    const outDir = fixtureDir();
+    const file = join(outDir, "live.txt");
+    writeFileSync(file, "v1");
+    const handler = createStaticHandler({ outDir, spa: false, cache: false });
+
+    const first = await handler(new Request("http://localhost/live.txt"));
+    const etag1 = first.headers.get("etag");
+
+    await new Promise((r) => setTimeout(r, 5));
+    writeFileSync(file, "v1-is-now-a-longer-string");
+    const second = await handler(new Request("http://localhost/live.txt"));
+    expect(second.headers.get("etag")).not.toBe(etag1);
   });
 });
 
