@@ -1,7 +1,7 @@
 import type { ProxyEntry, ProxyOptions } from "../config/types";
 import type { RouteHandler, ServerLike } from "./middleware";
 
-const HOP_BY_HOP_HEADERS = new Set([
+const HOP_BY_HOP_HEADERS = [
   "connection",
   "keep-alive",
   "proxy-authenticate",
@@ -10,16 +10,16 @@ const HOP_BY_HOP_HEADERS = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
-]);
+];
 
 /**
- * Deletes only the hop-by-hop headers actually present, instead of probing
- * all of them unconditionally. Keys are collected before deleting — mutating
- * a `Headers` while iterating its live `keys()` iterator skips entries.
+ * Deletes the hop-by-hop headers that are present. Eight `has()` probes beat
+ * copying `headers.keys()` into an array, and deleting while iterating the
+ * live iterator would skip entries.
  */
 function stripHopByHopHeaders(headers: Headers): void {
-  for (const name of [...headers.keys()]) {
-    if (HOP_BY_HOP_HEADERS.has(name)) headers.delete(name);
+  for (const name of HOP_BY_HOP_HEADERS) {
+    if (headers.has(name)) headers.delete(name);
   }
 }
 
