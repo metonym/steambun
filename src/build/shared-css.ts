@@ -1,5 +1,5 @@
 import { dirname } from "node:path";
-import type { BunMinify } from "./options";
+import { assertBuildSuccess, type BunMinify } from "./options";
 import type { RenameMap } from "./rename";
 import {
   outPath,
@@ -125,12 +125,10 @@ async function buildSharedText(
     minify,
     target: "browser",
   });
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error(
-      "[steambun] build.sharedCss: failed to build a shared CSS group.",
-    );
-  }
+  assertBuildSuccess(
+    result,
+    "[steambun] build.sharedCss: failed to build a shared CSS group.",
+  );
   const cssOutputs = result.outputs.filter(
     (o) => o.kind !== "sourcemap" && o.path.endsWith(".css"),
   );
@@ -167,6 +165,26 @@ export function reconstructionMatches(
   return reconstructed.trimEnd() === original.trimEnd();
 }
 
+export interface SharedCssResult {
+  renames: RenameMap;
+  sharedFiles: string[];
+  /** entryPoint (e.g. "index.html") → shared files linked into that page, for the manifest. */
+  sharedByPage: Record<string, string[]>;
+  skipped: Array<{ page: string; reason: string }>;
+  savedBytes: number;
+}
+
+/** One page's outcome, aggregated afterwards in `htmlFiles` order. */
+type PageOutcome =
+  | { page: string; skipped: string }
+  | {
+      page: string;
+      cssRel: string;
+      newCssRel: string;
+      cuts: Array<{ rel: string; text: string; position: LinkPosition }>;
+    }
+  | null;
+
 /**
  * Extracts CSS shared by two or more pages into `assetsDir/shared-<hash>.css`
  * files, cutting the matching verbatim span out of each page's own CSS
@@ -182,14 +200,7 @@ export async function extractSharedCss(opts: {
   minSize: number;
   minify: BunMinify;
   htmlFiles: string[];
-}): Promise<{
-  renames: RenameMap;
-  sharedFiles: string[];
-  /** entryPoint (e.g. "index.html") → shared files linked into that page, for the manifest. */
-  sharedByPage: Record<string, string[]>;
-  skipped: Array<{ page: string; reason: string }>;
-  savedBytes: number;
-}> {
+}): Promise<SharedCssResult> {
   const { outDir, assetsDir, base, metafile, minSize, minify, htmlFiles } =
     opts;
 
@@ -228,63 +239,77 @@ export async function extractSharedCss(opts: {
     resolved.push({ group, text, rel });
   }
 
-  for (const htmlPath of htmlFiles) {
-    const page = entryPointByHtmlOutput.get(outRel(outDir, htmlPath));
-    if (!page) continue;
-    const cssRel = cssRelByPage.get(page);
-    if (!cssRel) continue;
+  // Two pages never share a CSS output (Bun emits one per entrypoint), so the
+  // per-page writes are disjoint and can run concurrently. Results are folded
+  // back in `htmlFiles` order so renames/skipped/sharedByPage stay stable.
+  const outcomes: PageOutcome[] = await Promise.all(
+    htmlFiles.map(async (htmlPath): Promise<PageOutcome> => {
+      const page = entryPointByHtmlOutput.get(outRel(outDir, htmlPath));
+      if (!page) return null;
+      const cssRel = cssRelByPage.get(page);
+      if (!cssRel) return null;
 
-    const applicable = resolved.filter((rg) => rg.group.pages.includes(page));
-    if (applicable.length === 0) continue;
+      const applicable = resolved.filter((rg) => rg.group.pages.includes(page));
+      if (applicable.length === 0) return null;
 
-    const original = await Bun.file(outPath(outDir, cssRel)).text();
+      const original = await Bun.file(outPath(outDir, cssRel)).text();
 
-    let rest = original;
-    const cuts: Array<{ rel: string; text: string; position: LinkPosition }> =
-      [];
-    let reason: string | null = null;
+      let rest = original;
+      const cuts: Array<{ rel: string; text: string; position: LinkPosition }> =
+        [];
 
-    for (const rg of applicable) {
-      const cut = cutSpan(rest, rg.text);
-      if (!cut) {
-        reason = `shared block for "${rg.group.key}" is not a contiguous prefix/suffix`;
-        break;
+      for (const rg of applicable) {
+        const cut = cutSpan(rest, rg.text);
+        if (!cut) {
+          return {
+            page,
+            skipped: `shared block for "${rg.group.key}" is not a contiguous prefix/suffix`,
+          };
+        }
+        rest = cut.rest;
+        cuts.push({ rel: rg.rel, text: rg.text, position: cut.position });
       }
-      rest = cut.rest;
-      cuts.push({ rel: rg.rel, text: rg.text, position: cut.position });
-    }
 
-    if (reason) {
-      skipped.push({ page, reason });
-      continue;
-    }
+      if (!reconstructionMatches(cuts, rest, original)) {
+        return {
+          page,
+          skipped: "reconstructed CSS did not match the original byte for byte",
+        };
+      }
 
-    if (!reconstructionMatches(cuts, rest, original)) {
-      skipped.push({
-        page,
-        reason: "reconstructed CSS did not match the original byte for byte",
+      const newCssRel = rehashedName(cssRel, rest);
+      const htmlDirRel = outRel(outDir, dirname(htmlPath));
+      const html = await Bun.file(htmlPath).text();
+      const updated = await insertSharedLinks(html, {
+        pageCssHref: toHref(htmlDirRel, cssRel, base),
+        renamedHref: toHref(htmlDirRel, newCssRel, base),
+        shared: cuts.map((c) => ({
+          href: toHref(htmlDirRel, c.rel, base),
+          position: c.position,
+        })),
       });
+
+      await Promise.all([
+        writeRenamed(outDir, cssRel, newCssRel, rest),
+        updated === html ? undefined : Bun.write(htmlPath, updated),
+      ]);
+
+      return { page, cssRel, newCssRel, cuts };
+    }),
+  );
+
+  for (const outcome of outcomes) {
+    if (!outcome) continue;
+    if ("skipped" in outcome) {
+      skipped.push({ page: outcome.page, reason: outcome.skipped });
       continue;
     }
-
-    const newCssRel = rehashedName(cssRel, rest);
-    renames.set(cssRel, newCssRel);
-    await writeRenamed(outDir, cssRel, newCssRel, rest);
-
-    const htmlDirRel = outRel(outDir, dirname(htmlPath));
-    const html = await Bun.file(htmlPath).text();
-    const updated = await insertSharedLinks(html, {
-      pageCssHref: toHref(htmlDirRel, cssRel, base),
-      renamedHref: toHref(htmlDirRel, newCssRel, base),
-      shared: cuts.map((c) => ({
-        href: toHref(htmlDirRel, c.rel, base),
-        position: c.position,
-      })),
-    });
-    if (updated !== html) await Bun.write(htmlPath, updated);
-
-    sharedByPage[page] = cuts.map((c) => c.rel);
-    savedBytes += cuts.reduce((sum, c) => sum + Buffer.byteLength(c.text), 0);
+    renames.set(outcome.cssRel, outcome.newCssRel);
+    sharedByPage[outcome.page] = outcome.cuts.map((c) => c.rel);
+    savedBytes += outcome.cuts.reduce(
+      (sum, c) => sum + Buffer.byteLength(c.text),
+      0,
+    );
   }
 
   return { renames, sharedFiles, sharedByPage, skipped, savedBytes };

@@ -118,4 +118,24 @@ describe("build() with build.deploy", () => {
     );
     expect(Object.keys(headersJson)).toContain("/**/*.html");
   });
+
+  test("writes vercel.json and no _headers for vercel", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-deploy-vercel-"));
+    writeFileSync(
+      join(dir, "index.html"),
+      `<!doctype html><html><body><script>console.log("hi")</script></body></html>\n`,
+    );
+    writeFileSync(
+      join(dir, "steambun.config.ts"),
+      `export default { build: { deploy: "vercel", server: false } };\n`,
+    );
+
+    await build({ root: dir });
+
+    const vercel = JSON.parse(
+      await Bun.file(join(dir, "dist", "vercel.json")).text(),
+    );
+    expect(vercel.headers.length).toBeGreaterThan(0);
+    expect(await Bun.file(join(dir, "dist", "_headers")).exists()).toBe(false);
+  });
 });

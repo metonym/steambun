@@ -3,7 +3,7 @@ import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { loadBunfigPlugins } from "../config/bunfig";
 import { loadConfig } from "../config/loader";
-import type { BunPlugin, ResolvedConfig } from "../config/types";
+import type { BunPlugin, ResolvedConfig, SteambunHooks } from "../config/types";
 import { discoverHtmlEntries, discoverSkipDirs } from "../dev/discover";
 import {
   buildBundleDefine,
@@ -17,6 +17,7 @@ import { ciAnnotation } from "../util/annotations";
 import { buildFileType, formatSize } from "../util/format";
 import { splitPlugins } from "../util/plugins";
 import { analyzeMetafile, checkBudgets } from "./analyze";
+import { CPU_CONCURRENCY, mapLimit } from "./concurrency";
 import {
   type HeaderRules,
   mergeHeaderRules,
@@ -24,17 +25,18 @@ import {
   toRedirects,
   toVercelJson,
 } from "./deploy";
-import { writeDistServer } from "./dist-server";
+import { DIST_SERVER_FILE, writeDistServer } from "./dist-server";
 import { minifyHtml } from "./html-minify";
 import { applyImportMap } from "./import-map";
 import { buildManifest } from "./manifest";
 import {
+  assertBuildSuccess,
   createCompiledBuildConfig,
   createHtmlBuildConfig,
   shouldMinifyHtml,
   toBunMinify,
 } from "./options";
-import { precompressDir } from "./precompress";
+import { COMPRESSIBLE, compress, precompressDir } from "./precompress";
 import { generateProdServeSource } from "./prod-server";
 import type { RenameMap } from "./rename";
 import {
@@ -43,8 +45,19 @@ import {
   renameArtifacts,
   renameMetafileOutputs,
 } from "./rename";
-import { applySri, buildCspString, collectInlineHashes } from "./security";
-import { extractSharedCss } from "./shared-css";
+import {
+  applySri,
+  buildCspString,
+  collectInlineHashes,
+  createSriHasher,
+} from "./security";
+import { extractSharedCss, type SharedCssResult } from "./shared-css";
+
+/** Inline `<script>`/`<style>` hashes collected across every page, for `build.csp`. */
+interface InlineHashSets {
+  script: Set<string>;
+  style: Set<string>;
+}
 
 export interface BuildOptions {
   root?: string;
@@ -54,13 +67,11 @@ export interface BuildOptions {
 }
 
 const BUILD_FILE_TYPE_RANK: Record<string, number> = { html: 0, css: 1, js: 2 };
-const GZIP_EXTENSIONS = new Set([".js", ".css", ".html", ".svg", ".json"]);
 const GZIP_MIN_SIZE = 1024;
 
 function shouldGzip(name: string, size: number): boolean {
   return (
-    size >= GZIP_MIN_SIZE &&
-    GZIP_EXTENSIONS.has(name.slice(name.lastIndexOf(".")))
+    size >= GZIP_MIN_SIZE && COMPRESSIBLE.has(name.slice(name.lastIndexOf(".")))
   );
 }
 
@@ -69,16 +80,25 @@ async function printBuildSummary(
   outDir: string,
   outputs: Array<{ kind: Bun.BuildArtifact["kind"]; path: string }>,
 ): Promise<void> {
-  const rows: { name: string; size: number; gzip?: number }[] = [];
-  for (const artifact of outputs) {
-    if (artifact.kind === "sourcemap") continue;
-    const { size } = await stat(artifact.path);
-    const name = relative(outDir, artifact.path);
-    const gzip = shouldGzip(name, size)
-      ? Bun.gzipSync(await readFile(artifact.path), { level: 6 }).byteLength
-      : undefined;
-    rows.push({ name, size, gzip });
-  }
+  const rows = await Promise.all(
+    outputs
+      .filter((artifact) => artifact.kind !== "sourcemap")
+      .map(async (artifact) => {
+        const name = relative(outDir, artifact.path);
+        // `build.precompress: ["gzip", ...]` already wrote a level-9 sibling —
+        // stat it instead of gzipping the file a second time.
+        const [own, sibling] = await Promise.all([
+          stat(artifact.path),
+          stat(`${artifact.path}.gz`).catch(() => null),
+        ]);
+        const gzip = sibling
+          ? sibling.size
+          : shouldGzip(name, own.size)
+            ? (await compress(await readFile(artifact.path), "gzip")).length
+            : undefined;
+        return { name, size: own.size, gzip };
+      }),
+  );
   rows.sort((a, b) => {
     const rankA = BUILD_FILE_TYPE_RANK[buildFileType(a.name) ?? ""] ?? 3;
     const rankB = BUILD_FILE_TYPE_RANK[buildFileType(b.name) ?? ""] ?? 3;
@@ -103,6 +123,244 @@ async function printBuildSummary(
   const totalLabel = totalGzip > 0 ? `gzip: ${formatSize(totalGzip)}` : "";
   const total = `  ${"total".padEnd(nameWidth)}  ${formatSize(totalSize).padStart(sizeWidth)}  ${totalLabel}`;
   console.log(total.trimEnd());
+}
+
+/**
+ * Removes `outDir` before a rebuild, but only when it is inside `root` — an
+ * `outDir` pointing anywhere else is warned about and left alone.
+ */
+async function emptyOutDirIfInsideRoot(
+  config: ResolvedConfig,
+  outDir: string,
+): Promise<void> {
+  if (!config.build.emptyOutDir || !existsSync(outDir)) return;
+  const rel = relative(config.root, outDir);
+  if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) {
+    await rm(outDir, { recursive: true, force: true });
+    return;
+  }
+  const message = `[steambun] build.outDir "${rel}" is outside root — not emptying it (set build.emptyOutDir: false to silence)`;
+  console.warn(message);
+  ciAnnotation("warning", message);
+}
+
+/**
+ * The two passes that rewrite emitted chunks and rename them: `build.importMap`
+ * first (it keys JS chunks by content-independent ids), then `build.sharedCss`
+ * (it cuts shared spans out of each page's stylesheet). Both must run before
+ * SRI/CSP, which hash the final bytes.
+ */
+async function rewriteChunks(
+  config: ResolvedConfig,
+  metafile: Bun.BuildMetafile | undefined,
+  outDir: string,
+  base: string,
+  htmlFiles: string[],
+): Promise<{ renames: RenameMap; sharedCss?: SharedCssResult }> {
+  let renames: RenameMap = new Map();
+  if (config.build.standalone || !metafile) return { renames };
+
+  if (config.build.importMap) {
+    if (!config.build.splitting) {
+      console.warn(
+        "[steambun] build.importMap requires build.splitting; skipping.",
+      );
+    } else {
+      const r = await applyImportMap({ outDir, base, metafile, htmlFiles });
+      renames = mergeRenames(renames, r.renames);
+      console.log(
+        `[steambun] import map: ${r.renames.size} chunks keyed by content-independent ids`,
+      );
+    }
+  }
+
+  if (!config.build.sharedCss) return { renames };
+
+  const minSize =
+    typeof config.build.sharedCss === "object"
+      ? (config.build.sharedCss.minSize ?? 2048)
+      : 2048;
+  const sharedCss = await extractSharedCss({
+    outDir,
+    assetsDir: config.build.assetsDir,
+    base,
+    metafile,
+    minSize,
+    minify: toBunMinify(config.build.minify),
+    htmlFiles,
+  });
+  renames = mergeRenames(renames, sharedCss.renames);
+
+  const pageCount = Object.keys(sharedCss.sharedByPage).length;
+  console.log(
+    `[steambun] shared css: ${sharedCss.sharedFiles.length} file${sharedCss.sharedFiles.length === 1 ? "" : "s"}, saved ${formatSize(sharedCss.savedBytes)} across ${pageCount} page${pageCount === 1 ? "" : "s"}`,
+  );
+  for (const skip of sharedCss.skipped) {
+    console.warn(
+      `[steambun] shared css: skipped ${skip.page} (${skip.reason})`,
+    );
+  }
+  return { renames, sharedCss };
+}
+
+/**
+ * Applies `renames` to the metafile, replaces its byte counts with the sizes
+ * actually on disk, enforces `build.budgets` against those, and persists it to
+ * `.steambun/metafile.json` for `steambun analyze`.
+ */
+async function finalizeMetafile(
+  config: ResolvedConfig,
+  metafileIn: Bun.BuildMetafile | undefined,
+  renames: RenameMap,
+  outDir: string,
+): Promise<Bun.BuildMetafile | undefined> {
+  if (!metafileIn) return undefined;
+  const renamed =
+    renames.size > 0 ? renameMetafileOutputs(metafileIn, renames) : metafileIn;
+  const metafile = await refreshOutputSizes(renamed, outDir);
+
+  if (config.build.budgets) {
+    const { outputs } = analyzeMetafile(metafile);
+    const violations = checkBudgets(outputs, config.build.budgets);
+    if (violations.length > 0) {
+      for (const v of violations) {
+        const message = `${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`;
+        console.error(`[steambun] ${message}`);
+        ciAnnotation("error", message, { file: v.path });
+      }
+      throw new Error("[steambun] Size budget exceeded.");
+    }
+  }
+
+  const serveDir = join(config.root, ".steambun");
+  await mkdir(serveDir, { recursive: true });
+  await writeFile(
+    join(serveDir, "metafile.json"),
+    JSON.stringify(metafile),
+    "utf8",
+  );
+  return metafile;
+}
+
+/**
+ * The one read/write per HTML output: `transformHtml` hooks, minification,
+ * SRI, and the inline-script/style hashes `build.csp` needs. Returns those
+ * hashes merged in `htmlFiles` order.
+ */
+async function rewriteHtmlOutputs(
+  config: ResolvedConfig,
+  hooks: SteambunHooks[],
+  htmlFiles: string[],
+  outDir: string,
+  base: string,
+): Promise<InlineHashSets> {
+  const cspHashes: InlineHashSets = {
+    script: new Set<string>(),
+    style: new Set<string>(),
+  };
+  const transformHtmlHooks = hooks.filter((h) => h.transformHtml);
+  const compactHtml = shouldMinifyHtml(config.build.minify);
+  if (
+    transformHtmlHooks.length === 0 &&
+    !compactHtml &&
+    !config.build.sri &&
+    !config.build.csp
+  ) {
+    return cspHashes;
+  }
+
+  // One hasher for the whole build: an asset linked from every page is read
+  // and digested once, not once per page.
+  const sriHasher = createSriHasher(outDir, base);
+  const perPage = await Promise.all(
+    htmlFiles.map(async (path) => {
+      let html = await readFile(path, "utf8");
+      for (const hook of transformHtmlHooks) {
+        if (!hook.transformHtml) continue;
+        html = await hook.transformHtml(html, { path });
+      }
+      if (compactHtml) html = minifyHtml(html);
+      if (config.build.sri) {
+        html = await applySri(
+          html,
+          outDir,
+          dirname(path),
+          base,
+          console.warn,
+          sriHasher,
+        );
+      }
+      const hashes = config.build.csp
+        ? await collectInlineHashes(html)
+        : undefined;
+      await writeFile(path, html, "utf8");
+      return hashes;
+    }),
+  );
+
+  // Merged after the fact, in htmlFiles order, so the CSP header is stable.
+  for (const hashes of perPage) {
+    if (!hashes) continue;
+    for (const h of hashes.script) cspHashes.script.add(h);
+    for (const h of hashes.style) cspHashes.style.add(h);
+  }
+  return cspHashes;
+}
+
+/**
+ * Writes `_headers.json` (read back by preview/`dist/server.js`) and, for
+ * `build.deploy`, the host's own `_headers`/`_redirects`/`vercel.json`.
+ */
+async function writeHeaderAndDeployFiles(
+  config: ResolvedConfig,
+  outDir: string,
+  cspHashes: InlineHashSets,
+): Promise<void> {
+  const cspRules: HeaderRules = config.build.csp
+    ? {
+        "/**/*.html": {
+          "Content-Security-Policy": buildCspString(config.build.csp, {
+            script: [...cspHashes.script],
+            style: [...cspHashes.style],
+          }),
+        },
+      }
+    : {};
+  const headerRules = mergeHeaderRules(cspRules, config.build.headers ?? {});
+  if (Object.keys(headerRules).length > 0) {
+    await writeFile(
+      join(outDir, "_headers.json"),
+      JSON.stringify(headerRules, null, 2),
+      "utf8",
+    );
+  }
+
+  if (!config.build.deploy) return;
+
+  const assetsRule: HeaderRules = {
+    [`/${config.build.assetsDir}/*`]: {
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  };
+  const deployRules = mergeHeaderRules(assetsRule, headerRules);
+  if (config.build.deploy === "vercel") {
+    await writeFile(
+      join(outDir, "vercel.json"),
+      JSON.stringify(toVercelJson(deployRules, config.appType), null, 2),
+      "utf8",
+    );
+  } else {
+    await writeFile(
+      join(outDir, "_headers"),
+      toNetlifyHeaders(deployRules),
+      "utf8",
+    );
+    const redirects = toRedirects(config.appType);
+    if (redirects.length > 0) {
+      await writeFile(join(outDir, "_redirects"), redirects, "utf8");
+    }
+  }
+  console.log(`[steambun] deploy target: ${config.build.deploy}`);
 }
 
 export async function build(opts: BuildOptions = {}): Promise<void> {
@@ -145,17 +403,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   );
 
   const outDir = join(config.root, config.build.outDir);
-  if (config.build.emptyOutDir && existsSync(outDir)) {
-    const rel = relative(config.root, outDir);
-    const insideRoot = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-    if (insideRoot) {
-      await rm(outDir, { recursive: true, force: true });
-    } else {
-      const message = `[steambun] build.outDir "${rel}" is outside root — not emptying it (set build.emptyOutDir: false to silence)`;
-      console.warn(message);
-      ciAnnotation("warning", message);
-    }
-  }
+  await emptyOutDirIfInsideRoot(config, outDir);
 
   const { bunPlugins, hooks } = splitPlugins([
     ...(await loadBunfigPlugins(config.root)),
@@ -177,176 +425,44 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     }),
   );
 
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error("[steambun] Build failed.");
-  }
+  assertBuildSuccess(result, "[steambun] Build failed.");
 
-  let renames: RenameMap = new Map();
+  // Nothing below feeds `dist/server.js`, so start it now and let it bundle
+  // while the main thread rewrites HTML/CSS. `.catch` only marks the
+  // rejection handled; the `await` at the end still throws it.
+  const serverBuild =
+    config.build.server && !config.build.standalone
+      ? writeDistServer(config, define, bunPlugins, outDir)
+      : undefined;
+  serverBuild?.catch(() => {});
+
   const base = config.base.endsWith("/") ? config.base : `${config.base}/`;
   const htmlFiles = result.outputs
     .filter((a) => a.path.endsWith(".html"))
     .map((a) => a.path);
 
-  if (config.build.importMap && !config.build.standalone && result.metafile) {
-    if (!config.build.splitting) {
-      console.warn(
-        "[steambun] build.importMap requires build.splitting; skipping.",
-      );
-    } else {
-      const r = await applyImportMap({
-        outDir,
-        base,
-        metafile: result.metafile,
-        htmlFiles,
-      });
-      renames = mergeRenames(renames, r.renames);
-      console.log(
-        `[steambun] import map: ${r.renames.size} chunks keyed by content-independent ids`,
-      );
-    }
-  }
+  const { renames, sharedCss } = await rewriteChunks(
+    config,
+    result.metafile,
+    outDir,
+    base,
+    htmlFiles,
+  );
+  const metafile = await finalizeMetafile(
+    config,
+    result.metafile,
+    renames,
+    outDir,
+  );
 
-  let sharedCssResult: Awaited<ReturnType<typeof extractSharedCss>> | undefined;
-  if (config.build.sharedCss && !config.build.standalone && result.metafile) {
-    const minSize =
-      typeof config.build.sharedCss === "object"
-        ? (config.build.sharedCss.minSize ?? 2048)
-        : 2048;
-    sharedCssResult = await extractSharedCss({
-      outDir,
-      assetsDir: config.build.assetsDir,
-      base,
-      metafile: result.metafile,
-      minSize,
-      minify: toBunMinify(config.build.minify),
-      htmlFiles,
-    });
-    renames = mergeRenames(renames, sharedCssResult.renames);
-    const pageCount = Object.keys(sharedCssResult.sharedByPage).length;
-    console.log(
-      `[steambun] shared css: ${sharedCssResult.sharedFiles.length} file${sharedCssResult.sharedFiles.length === 1 ? "" : "s"}, saved ${formatSize(sharedCssResult.savedBytes)} across ${pageCount} page${pageCount === 1 ? "" : "s"}`,
-    );
-    for (const skip of sharedCssResult.skipped) {
-      console.warn(
-        `[steambun] shared css: skipped ${skip.page} (${skip.reason})`,
-      );
-    }
-  }
-
-  let metafile = result.metafile;
-  if (renames.size > 0 && metafile) {
-    metafile = renameMetafileOutputs(metafile, renames);
-  }
-
-  if (metafile) {
-    metafile = await refreshOutputSizes(metafile, outDir);
-
-    if (config.build.budgets) {
-      const { outputs } = analyzeMetafile(metafile);
-      const violations = checkBudgets(outputs, config.build.budgets);
-      if (violations.length > 0) {
-        for (const v of violations) {
-          console.error(
-            `[steambun] ${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
-          );
-          ciAnnotation(
-            "error",
-            `${v.path} is ${formatSize(v.bytes)}, exceeds budget ${formatSize(v.limit)} for "${v.glob}"`,
-            { file: v.path },
-          );
-        }
-        throw new Error("[steambun] Size budget exceeded.");
-      }
-    }
-
-    const serveDir = join(config.root, ".steambun");
-    await mkdir(serveDir, { recursive: true });
-    await writeFile(
-      join(serveDir, "metafile.json"),
-      JSON.stringify(metafile),
-      "utf8",
-    );
-  }
-
-  const transformHtmlHooks = hooks.filter((h) => h.transformHtml);
-  const compactHtml = shouldMinifyHtml(config.build.minify);
-  const cspHashes = { script: new Set<string>(), style: new Set<string>() };
-  if (
-    transformHtmlHooks.length > 0 ||
-    compactHtml ||
-    config.build.sri ||
-    config.build.csp
-  ) {
-    for (const artifact of result.outputs) {
-      if (!artifact.path.endsWith(".html")) continue;
-      let html = await readFile(artifact.path, "utf8");
-      for (const hook of transformHtmlHooks) {
-        if (!hook.transformHtml) continue;
-        html = await hook.transformHtml(html, { path: artifact.path });
-      }
-      if (compactHtml) html = minifyHtml(html);
-      if (config.build.sri) {
-        html = await applySri(html, outDir, dirname(artifact.path), base);
-      }
-      if (config.build.csp) {
-        const hashes = await collectInlineHashes(html);
-        for (const h of hashes.script) cspHashes.script.add(h);
-        for (const h of hashes.style) cspHashes.style.add(h);
-      }
-      await writeFile(artifact.path, html, "utf8");
-    }
-  }
-
-  const cspRules: HeaderRules = config.build.csp
-    ? {
-        "/**/*.html": {
-          "Content-Security-Policy": buildCspString(config.build.csp, {
-            script: [...cspHashes.script],
-            style: [...cspHashes.style],
-          }),
-        },
-      }
-    : {};
-  const headerRules = mergeHeaderRules(cspRules, config.build.headers ?? {});
-  if (Object.keys(headerRules).length > 0) {
-    await writeFile(
-      join(outDir, "_headers.json"),
-      JSON.stringify(headerRules, null, 2),
-      "utf8",
-    );
-  }
-
-  if (config.build.deploy) {
-    const assetsRule: HeaderRules = {
-      [`/${config.build.assetsDir}/*`]: {
-        "Cache-Control": "public, max-age=31536000, immutable",
-      },
-    };
-    const deployRules = mergeHeaderRules(assetsRule, headerRules);
-    if (
-      config.build.deploy === "netlify" ||
-      config.build.deploy === "cloudflare-pages" ||
-      config.build.deploy === "static"
-    ) {
-      await writeFile(
-        join(outDir, "_headers"),
-        toNetlifyHeaders(deployRules),
-        "utf8",
-      );
-      const redirects = toRedirects(config.appType);
-      if (redirects.length > 0) {
-        await writeFile(join(outDir, "_redirects"), redirects, "utf8");
-      }
-    } else if (config.build.deploy === "vercel") {
-      await writeFile(
-        join(outDir, "vercel.json"),
-        JSON.stringify(toVercelJson(deployRules, config.appType), null, 2),
-        "utf8",
-      );
-    }
-    console.log(`[steambun] deploy target: ${config.build.deploy}`);
-  }
+  const cspHashes = await rewriteHtmlOutputs(
+    config,
+    hooks,
+    htmlFiles,
+    outDir,
+    base,
+  );
+  await writeHeaderAndDeployFiles(config, outDir, cspHashes);
 
   if (config.publicDir && existsSync(config.publicDir)) {
     await cp(config.publicDir, outDir, { recursive: true });
@@ -357,6 +473,8 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
       outDir,
       config.build.precompress,
       config.build.precompressMinSize,
+      // server.js is executed, never served, and may still be bundling.
+      new Set([join(outDir, DIST_SERVER_FILE)]),
     );
     if (precompressed.length > 0) {
       const encodings = [...new Set(precompressed.map((p) => p.encoding))];
@@ -367,7 +485,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   }
 
   if (config.build.manifest && !config.build.standalone && metafile) {
-    const manifest = buildManifest(metafile, sharedCssResult?.sharedByPage);
+    const manifest = buildManifest(metafile, sharedCss?.sharedByPage);
     await writeFile(
       join(outDir, "manifest.json"),
       JSON.stringify(manifest, null, 2),
@@ -375,9 +493,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
     );
   }
 
-  if (config.build.server && !config.build.standalone) {
-    await writeDistServer(config, define, bunPlugins, outDir);
-  }
+  await serverBuild;
 
   const summaryOutputs =
     renames.size > 0
@@ -426,33 +542,40 @@ async function buildCompiled(
   const targets = compileOptions.targets ?? [undefined];
   const binOutDir = join(config.root, compileOptions.outDir ?? "bin");
 
-  for (const target of targets) {
-    const isWindows = target
-      ? target.startsWith("bun-windows-")
-      : process.platform === "win32";
-    const suffix = isWindows ? ".exe" : "";
-    const name = target ? `server-${target}${suffix}` : `server${suffix}`;
-    const outfile = join(binOutDir, name);
+  // Each compile is CPU-heavy and writes its own outfile, so they overlap,
+  // bounded to half the cores. Logging happens afterwards, in target order.
+  const outfiles = await mapLimit(
+    targets,
+    Math.max(1, Math.floor(CPU_CONCURRENCY / 2)),
+    async (target) => {
+      const isWindows = target
+        ? target.startsWith("bun-windows-")
+        : process.platform === "win32";
+      const suffix = isWindows ? ".exe" : "";
+      const name = target ? `server-${target}${suffix}` : `server${suffix}`;
+      const outfile = join(binOutDir, name);
 
-    const result = await Bun.build(
-      createCompiledBuildConfig({
-        config,
-        prodServePath,
-        define,
-        plugins,
-        outfile,
-        assets,
-        compileTarget: target,
-      }),
-    );
+      const result = await Bun.build(
+        createCompiledBuildConfig({
+          config,
+          prodServePath,
+          define,
+          plugins,
+          outfile,
+          assets,
+          compileTarget: target,
+        }),
+      );
 
-    if (!result.success) {
-      for (const log of result.logs) console.error(log);
-      throw new Error(
+      assertBuildSuccess(
+        result,
         `[steambun] Compiled build failed${target ? ` for ${target}` : ""}.`,
       );
-    }
+      return outfile;
+    },
+  );
 
+  for (const outfile of outfiles) {
     console.log(
       `[steambun] compiled binary: ${relative(config.root, outfile)}`,
     );

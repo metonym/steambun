@@ -1,6 +1,12 @@
 import { readdir } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
-import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
+import { promisify } from "node:util";
+import {
+  brotliCompress,
+  gzip as gzipCb,
+  constants as zlibConstants,
+} from "node:zlib";
+import { CPU_CONCURRENCY, mapLimit } from "./concurrency";
 
 export type Encoding = "gzip" | "br" | "zstd";
 
@@ -33,19 +39,30 @@ const DEPLOY_METADATA_FILES = new Set([
   "vercel.json",
 ]);
 
-function compress(
+const brotliAsync = promisify(brotliCompress);
+const gzipAsync = promisify(gzipCb);
+
+/**
+ * Compresses `bytes` at the levels steambun ships everywhere (gzip 9,
+ * brotli 11, zstd 19). All three run off the main thread, so callers should
+ * fan out with `Promise.all` / `mapLimit` rather than awaiting one at a time.
+ */
+export async function compress(
+  bytes: Uint8Array<ArrayBuffer>,
   encoding: Encoding,
-  buf: Uint8Array<ArrayBuffer>,
-): Uint8Array {
+): Promise<Uint8Array> {
   switch (encoding) {
     case "gzip":
-      return Bun.gzipSync(buf, { level: 9 });
+      return gzipAsync(bytes, { level: 9 });
     case "br":
-      return brotliCompressSync(buf, {
-        params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
+      return brotliAsync(bytes, {
+        params: {
+          [zlibConstants.BROTLI_PARAM_QUALITY]: 11,
+          [zlibConstants.BROTLI_PARAM_SIZE_HINT]: bytes.length,
+        },
       });
     case "zstd":
-      return Bun.zstdCompressSync(buf, { level: 19 });
+      return Bun.zstdCompress(bytes, { level: 19 });
   }
 }
 
@@ -63,40 +80,63 @@ async function collectFiles(dir: string): Promise<string[]> {
   return files;
 }
 
+export interface PrecompressResult {
+  file: string;
+  encoding: Encoding;
+  bytes: number;
+}
+
 /**
  * Writes `.gz` / `.br` / `.zst` siblings for compressible files at least
  * `minSize` bytes, skipping any variant that doesn't beat the original by
  * `MIN_SAVINGS_RATIO`. Files already ending in a compressed suffix are left
- * alone (running this twice, e.g. after a `publicDir` copy, is safe).
+ * alone (running this twice, e.g. after a `publicDir` copy, is safe), as are
+ * deploy metadata files and anything in `exclude`.
+ *
+ * Files are compressed concurrently, so results are sorted by path (then by
+ * the caller's encoding order) to keep the build summary deterministic.
  */
 export async function precompressDir(
   dir: string,
   encodings: Encoding[],
   minSize: number,
-): Promise<Array<{ file: string; encoding: Encoding; bytes: number }>> {
+  /** Absolute paths never to compress, e.g. the `dist/server.js` bundle. */
+  exclude: ReadonlySet<string> = new Set(),
+): Promise<PrecompressResult[]> {
   if (encodings.length === 0) return [];
-  const results: Array<{ file: string; encoding: Encoding; bytes: number }> =
-    [];
-  const files = await collectFiles(dir);
-
-  for (const file of files) {
+  const files = (await collectFiles(dir)).filter((file) => {
     if (file.endsWith(".gz") || file.endsWith(".br") || file.endsWith(".zst")) {
-      continue;
+      return false;
     }
-    if (DEPLOY_METADATA_FILES.has(basename(file))) continue;
-    if (!COMPRESSIBLE.has(extname(file))) continue;
+    if (DEPLOY_METADATA_FILES.has(basename(file)) || exclude.has(file)) {
+      return false;
+    }
+    return COMPRESSIBLE.has(extname(file));
+  });
+  files.sort();
 
+  const perFile = await mapLimit(files, CPU_CONCURRENCY, async (file) => {
     const source = Bun.file(file);
-    if (source.size < minSize) continue;
+    if (source.size < minSize) return [];
     const buf = await source.bytes();
+    const variants = await Promise.all(
+      encodings.map((encoding) => compress(buf, encoding)),
+    );
 
-    for (const encoding of encodings) {
-      const compressed = compress(encoding, buf);
-      if (compressed.length > buf.length * MIN_SAVINGS_RATIO) continue;
-      await Bun.write(`${file}${EXTENSION[encoding]}`, compressed);
-      results.push({ file, encoding, bytes: compressed.length });
-    }
-  }
+    const written: PrecompressResult[] = [];
+    await Promise.all(
+      variants.map(async (compressed, i) => {
+        if (compressed.length > buf.length * MIN_SAVINGS_RATIO) return;
+        const encoding = encodings[i]!;
+        await Bun.write(`${file}${EXTENSION[encoding]}`, compressed);
+        written.push({ file, encoding, bytes: compressed.length });
+      }),
+    );
+    written.sort(
+      (a, b) => encodings.indexOf(a.encoding) - encodings.indexOf(b.encoding),
+    );
+    return written;
+  });
 
-  return results;
+  return perFile.flat();
 }

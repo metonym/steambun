@@ -1,4 +1,5 @@
 import { join, resolve, sep } from "node:path";
+import { cleanHref, stripBase } from "./rename";
 
 function isExternalSrc(src: string): boolean {
   return /^([a-z][a-z0-9+.-]*:)?\/\//i.test(src) || src.startsWith("data:");
@@ -7,21 +8,17 @@ function isExternalSrc(src: string): boolean {
 // Absolute `src` values (e.g. `/mybase/assets/x.js`) are rooted at `base`,
 // not at the HTML file's own directory, so they resolve against `outDir`
 // after stripping the `base` prefix. Relative `src` values resolve against
-// `htmlDir`, matching how a browser would.
-async function sriHashFor(
+// `htmlDir`, matching how a browser would. A path that escapes `outDir` is
+// not hashed.
+function resolveSriPath(
   outDir: string,
   htmlDir: string,
   src: string,
   base: string,
-): Promise<string | null> {
-  const cleanSrc = src.split("?")[0]!.split("#")[0]!;
+): string | null {
+  const cleanSrc = cleanHref(src);
   const filePath = cleanSrc.startsWith("/")
-    ? join(
-        outDir,
-        cleanSrc.startsWith(base)
-          ? cleanSrc.slice(base.length)
-          : cleanSrc.replace(/^\/+/, ""),
-      )
+    ? join(outDir, stripBase(cleanSrc, cleanSrc.startsWith(base) ? base : "/"))
     : join(htmlDir, cleanSrc);
 
   const resolvedOutDir = resolve(outDir);
@@ -32,13 +29,41 @@ async function sriHashFor(
   ) {
     return null;
   }
+  return resolvedFilePath;
+}
 
-  const file = Bun.file(resolvedFilePath);
+async function hashFile(path: string): Promise<string | null> {
+  const file = Bun.file(path);
   if (!(await file.exists())) return null;
 
   const hasher = new Bun.CryptoHasher("sha384");
   hasher.update(await file.bytes());
   return `sha384-${hasher.digest("base64")}`;
+}
+
+/** Resolves an HTML `src`/`href` to its `sha384-...` integrity value, or `null`. */
+export type SriHasher = (
+  htmlDir: string,
+  src: string,
+) => Promise<string | null>;
+
+/**
+ * An `SriHasher` that hashes each resolved file once. A vendor chunk linked
+ * from 20 pages is read and digested once instead of 20 times, so one hasher
+ * should be shared across a build's pages.
+ */
+export function createSriHasher(outDir: string, base: string): SriHasher {
+  const cache = new Map<string, Promise<string | null>>();
+  return (htmlDir, src) => {
+    const path = resolveSriPath(outDir, htmlDir, src, base);
+    if (!path) return Promise.resolve(null);
+    let hash = cache.get(path);
+    if (!hash) {
+      hash = hashFile(path);
+      cache.set(path, hash);
+    }
+    return hash;
+  };
 }
 
 /**
@@ -47,7 +72,7 @@ async function sriHashFor(
  * outside `outDir`, is left untouched). `htmlDir` is the directory the HTML
  * output file lives in — relative `src`/`href` are resolved against it,
  * absolute ones against `outDir` (after stripping `base`), matching how a
- * browser would.
+ * browser would. Pass a shared `hasher` to reuse digests across pages.
  */
 export async function applySri(
   html: string,
@@ -55,12 +80,13 @@ export async function applySri(
   htmlDir: string,
   base = "/",
   warn: (message: string) => void = console.warn,
+  hasher: SriHasher = createSriHasher(outDir, base),
 ): Promise<string> {
   async function addIntegrity(el: HTMLRewriterTypes.Element, attr: string) {
     const src = el.getAttribute(attr);
     if (!src) return;
     if (isExternalSrc(src)) return;
-    const hash = await sriHashFor(outDir, htmlDir, src, base);
+    const hash = await hasher(htmlDir, src);
     if (!hash) {
       warn(
         `[steambun] sri: could not find ${src} for ${htmlDir} — no integrity added`,

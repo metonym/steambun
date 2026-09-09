@@ -11,6 +11,16 @@ import { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 
 export type BunMinify = boolean | MinifyObject;
 
+/** Prints Bun's own logs, then throws `message` — every `Bun.build` call site does this. */
+export function assertBuildSuccess(
+  result: Bun.BuildOutput,
+  message: string,
+): void {
+  if (result.success) return;
+  for (const log of result.logs) console.error(log);
+  throw new Error(message);
+}
+
 let terserWarned = false;
 
 // "terser" is accepted for drop-in Vite configs and warns once; Bun has no
@@ -103,9 +113,10 @@ export function createHtmlBuildConfig(
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,
     sourcemap: toBunSourcemap(config.build.sourcemap),
-    ...(publicPath ? { publicPath } : {}),
-    ...(env ? { env } : {}),
-    ...(features.length > 0 ? { features } : {}),
+    publicPath,
+    env,
+    // `features: []` is not the same as omitting it.
+    features: features.length > 0 ? features : undefined,
     ...(standalone
       ? { compile: true }
       : {
@@ -116,13 +127,11 @@ export function createHtmlBuildConfig(
             chunk: `${config.build.assetsDir}/[name]-[hash].[ext]`,
             asset: `${config.build.assetsDir}/[name]-[hash].[ext]`,
           },
-          ...(config.build.splitting ? { splitting: true } : {}),
-          ...(config.build.splitting && config.build.minChunkSize !== undefined
-            ? { minChunkSize: config.build.minChunkSize }
-            : {}),
-          ...(config.build.cssChunking !== undefined
-            ? { cssChunking: config.build.cssChunking }
-            : {}),
+          splitting: config.build.splitting || undefined,
+          minChunkSize: config.build.splitting
+            ? config.build.minChunkSize
+            : undefined,
+          cssChunking: config.build.cssChunking,
         }),
     metafile: !standalone,
     target: config.build.target ?? "browser",
@@ -171,6 +180,8 @@ export function createCompiledBuildConfig(
       // A compiled server should get its config from real env vars, not
       // files that may not ship with the binary — Bun defaults this true.
       autoloadDotenv: compileOptions.autoloadDotenv ?? false,
+      // Unlike the top-level options, `compile` validates its keys eagerly:
+      // an explicit `target: undefined` is rejected, so these stay spreads.
       ...(compileOptions.autoloadBunfig !== undefined
         ? { autoloadBunfig: compileOptions.autoloadBunfig }
         : {}),
@@ -179,8 +190,9 @@ export function createCompiledBuildConfig(
         ? { target: compileTarget as Bun.Build.CompileTarget }
         : {}),
     },
-    ...(env ? { env } : {}),
-    ...(config.build.bytecode ? { bytecode: true } : {}),
-    ...(features.length > 0 ? { features } : {}),
+    env,
+    bytecode: config.build.bytecode || undefined,
+    // `features: []` is not the same as omitting it.
+    features: features.length > 0 ? features : undefined,
   };
 }

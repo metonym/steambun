@@ -210,6 +210,22 @@ describe("computeCompressedSizes", () => {
 
     expect(sizes.get("entry.js")?.br).toBeLessThan(text.length);
   });
+
+  test("reuses a precompressed sibling instead of compressing again", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-sibling-"));
+    const text = "c".repeat(2000);
+    writeFileSync(join(root, "entry.js"), text);
+    // Deliberately not a real gzip stream: only its size should be read.
+    writeFileSync(join(root, "entry.js.gz"), "x".repeat(7));
+
+    const sizes = await computeCompressedSizes(
+      [{ path: "entry.js", bytes: text.length, inputs: [] }],
+      root,
+      { brotli: false },
+    );
+
+    expect(sizes.get("entry.js")?.gzip).toBe(7);
+  });
 });
 
 describe("compareMetafiles", () => {
