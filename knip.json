@@ -3,7 +3,11 @@
   "ignoreExportsUsedInFile": true,
   "workspaces": {
     ".": {
-      "entry": ["bench/**/*.bench.ts", "tests/types/**/*.test-d.ts"]
+      "entry": [
+        "bench/**/*.bench.ts",
+        "tests/types/**/*.test-d.ts",
+        "ostia.config.ts"
+      ]
     },
     "examples/minimal": {
       "entry": ["src/main.ts", "steambun.config.ts"]

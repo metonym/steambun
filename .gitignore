@@ -5,3 +5,4 @@ package/
 *.tsbuildinfo
 *.log
 .DS_Store
+.ostia/

@@ -32,7 +32,9 @@
     "lint:fix:changed": "biome check --write --unsafe --changed --no-errors-on-unmatched .",
     "knip": "knip-bun",
     "build:package": "bun scripts/build-package.ts",
-    "bench": "ostia bench bench/*.bench.ts"
+    "bench": "ostia bench bench/*.bench.ts",
+    "bench:baseline": "ostia baseline save",
+    "bench:ci": "ostia ci"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",
