@@ -111,7 +111,7 @@ describe("steambun dev --port", () => {
     symlinkSync(repoRoot, join(root, "node_modules", "steambun"));
     const port = await getFreePort();
 
-    const binPath = join(repoRoot, "bin", "steambun.ts");
+    const binPath = join(repoRoot, "src", "bin.ts");
     const proc = Bun.spawn({
       cmd: ["bun", binPath, "dev", "--port", String(port)],
       cwd: root,

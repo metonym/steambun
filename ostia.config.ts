@@ -10,27 +10,15 @@ export default defineConfig({
     { label: "suites", suites: ["bench/*.bench.ts"] },
     {
       label: "build:multi-page",
-      command: [
-        "bun",
-        "bin/steambun.ts",
-        "build",
-        "--root",
-        "examples/multi-page",
-      ],
+      command: ["bun", "src/bin.ts", "build", "--root", "examples/multi-page"],
       timeSource: { pattern: "built .* in (\\d+)ms" },
-      inputs: ["src/**/*.ts", "bin/*.ts", "examples/multi-page/**"],
+      inputs: ["src/**/*.ts", "examples/multi-page/**"],
     },
     {
       label: "build:fullstack",
-      command: [
-        "bun",
-        "bin/steambun.ts",
-        "build",
-        "--root",
-        "examples/fullstack",
-      ],
+      command: ["bun", "src/bin.ts", "build", "--root", "examples/fullstack"],
       timeSource: { pattern: "built .* in (\\d+)ms" },
-      inputs: ["src/**/*.ts", "bin/*.ts", "examples/fullstack/**"],
+      inputs: ["src/**/*.ts", "examples/fullstack/**"],
     },
   ],
 });
