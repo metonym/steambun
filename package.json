@@ -40,7 +40,8 @@
     "@types/bun": "^1.4.2",
     "knip": "^6.35.1",
     "ostia": "^0.2.4",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "zod": "^4.6.5"
   },
   "repository": {
     "type": "git",

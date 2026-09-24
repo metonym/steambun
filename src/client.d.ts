@@ -60,10 +60,30 @@ type HandlerOf<M, K extends Method> =
 /** `Response` → `unknown` (body shape unknown without parsing); anything else (e.g. via `route()`) passes through. */
 type Json<R> = Awaited<R> extends Response ? unknown : Awaited<R>;
 
-export interface ApiOptions<P> {
+type DefaultInput = { query?: Record<string, string>; body?: unknown };
+
+// `route(schemas, fn)` records its schemas' input types on a phantom
+// `__steambun_input` property, the same way `__steambun_return` carries the
+// output type.
+type InputOf<H> = "__steambun_input" extends keyof H
+  ? NonNullable<H["__steambun_input"]>
+  : DefaultInput;
+
+type HandlerInputOf<M, K extends Method> =
+  M extends Record<K, infer H>
+    ? InputOf<H>
+    : M extends { default: infer H }
+      ? InputOf<H>
+      : DefaultInput;
+
+export interface ApiOptions<
+  P,
+  I extends { query?: unknown; body?: unknown } = DefaultInput,
+> {
   params?: P;
-  query?: Record<string, string>;
-  body?: unknown;
+  /** Array values repeat the key; other values are stringified. */
+  query?: I["query"];
+  body?: I["body"];
   init?: RequestInit;
 }
 
@@ -99,7 +119,10 @@ export function api<
 >(
   method: K,
   path: P,
-  opts?: ApiOptions<ParamsOf<P>>,
+  opts?: ApiOptions<
+    ParamsOf<P>,
+    HandlerInputOf<ModuleOf<P>, Uppercase<K> & Method>
+  >,
 ): Promise<ApiReturn<P, Uppercase<K>>>;
 
 /** Typed link builder for a page or API route path, substituting any `:param` segments and appending an optional query string. */
