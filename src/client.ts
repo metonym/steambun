@@ -25,11 +25,17 @@ function substituteParams(
 function buildPath(
   path: string,
   params?: Record<string, string>,
-  query?: Record<string, string>,
+  query?: Record<string, unknown>,
 ): string {
   let resolved = substituteParams(path, params);
   if (query) {
-    const qs = new URLSearchParams(query).toString();
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      for (const item of Array.isArray(value) ? value : [value]) {
+        if (item !== undefined) search.append(key, String(item));
+      }
+    }
+    const qs = search.toString();
     if (qs) resolved += `${resolved.includes("?") ? "&" : "?"}${qs}`;
   }
   return resolved;
@@ -52,7 +58,7 @@ function withBase(path: string): string {
 // with no reader.
 interface ApiOptions {
   params?: Record<string, string>;
-  query?: Record<string, string>;
+  query?: Record<string, unknown>;
   body?: unknown;
   init?: RequestInit;
 }

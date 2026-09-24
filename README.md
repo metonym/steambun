@@ -4,7 +4,7 @@ Steambun is Bun's fullstack dev server plus Vite-style config. `steambun dev` st
 
 - One config file that drives `dev`, `build`, `preview`, and `compile`
 - Vite parity: `server.proxy` (HTTP and WebSocket), `publicDir`, `.env.[mode]` files, `import.meta.env.MODE`/`DEV`/`PROD`/`BASE_URL`, `import.meta.glob`, `base`, `resolve.alias`, `?raw`/`?url`/`?inline`, and `steambun migrate` from a `vite.config.*`
-- File-based API and WebSocket routes, middleware, and a typed `api()` client, served in the same process as the frontend
+- File-based API and WebSocket routes, middleware, schema-validated `route()` handlers, and a typed `api()` client, served in the same process as the frontend
 - A production server (`preview`, `dist/server.js`, or a compiled binary) with cache headers, precompressed assets, and SPA fallback
 
 ## When you don't need steambun
@@ -371,9 +371,39 @@ const link = href("/api/users/:id", { id: "42" }); // "/api/users/42"
 
 `href(path, params?, query?)` also takes an optional third `query` argument, appended as a query string (e.g. `href("/about", undefined, { tab: "info" })` → `"/about?tab=info"`).
 
-`api(method, path, { params?, query?, body?, init? })` substitutes `:param` segments, JSON-encodes `body` (without overriding a caller-set `content-type`), prefixes `import.meta.env.BASE_URL`, and throws a `SteambunApiError` (`status`, `body`, and a message that includes the method and path) on a non-2xx response. On success, a `204`/`205` or empty body resolves `undefined`, a non-JSON response resolves raw text, and anything else resolves parsed JSON. Without `route()`, a handler returning a bare `Response` types as `unknown` — parse it yourself.
+`api(method, path, { params?, query?, body?, init? })` substitutes `:param` segments, appends `query` (array values repeat the key, other values are stringified), JSON-encodes `body` (without overriding a caller-set `content-type`), prefixes `import.meta.env.BASE_URL`, and throws a `SteambunApiError` (`status`, `body`, and a message that includes the method and path) on a non-2xx response. On success, a `204`/`205` or empty body resolves `undefined`, a non-JSON response resolves raw text, and anything else resolves parsed JSON. Without `route()`, a handler returning a bare `Response` types as `unknown` — parse it yourself.
 
-`route()` imports from `"steambun/runtime"`, which a `compile: true` binary can't resolve inside an api route file — `--compile` dynamically imports api routes from its embedded assets, which can only reach Bun/Node builtins. Keep compiled-binary api routes on bare handlers.
+### Validation
+
+Pass [Standard Schema](https://standardschema.dev) validators (zod, valibot, arktype, ...) as `route()`'s first argument to check `params`, `query`, and `body` before the handler runs. The handler receives the parsed output; the schemas' input types become `api()`'s `query`/`body` types.
+
+```ts
+// src/api/users/[id].ts
+import { route } from "steambun/runtime";
+import { z } from "zod";
+
+export const PATCH = route(
+  {
+    params: z.object({ id: z.coerce.number() }),
+    body: z.object({ name: z.string().min(1) }),
+  },
+  ({ params, body }) => ({ id: params.id, name: body.name }),
+);
+```
+
+```ts
+await api("patch", "/api/users/:id", { params: { id: "42" }, body: { name: "" } });
+// throws SteambunApiError, status 400
+await api("patch", "/api/users/:id", { params: { id: "42" }, body: { name: 1 } });
+// type error: name must be a string
+```
+
+- Any failure returns `400` with `{ error: "invalid request", issues: [{ in, path, message }] }` — `in` is `"params"`, `"query"`, or `"body"`, `path` is dotted (`"items.0.id"`). Every location is checked, so one response lists all issues.
+- `query` is the URL's search params as an object; a repeated key becomes an array. Use coercing schemas (`z.coerce.number()`) for non-string values.
+- `body` is parsed from JSON (malformed JSON is a `400`), or from form data for `application/x-www-form-urlencoded`/`multipart/form-data` (repeated keys become arrays). Any other `content-type` is passed as text; an empty body is `undefined`. Without a `body` schema the request body is left unread.
+- steambun has no schema library dependency — it only calls the `~standard.validate` interface.
+
+`route()` imports from `"steambun/runtime"`, which a `compile: true` binary can't resolve inside an api route file — `--compile` dynamically imports api routes from its embedded assets, which can only reach Bun/Node builtins. Keep compiled-binary api routes on bare handlers (the same applies to a schema library import).
 
 ## Middleware
 

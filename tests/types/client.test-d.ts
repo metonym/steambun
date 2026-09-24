@@ -12,6 +12,17 @@ async function check() {
   // @ts-expect-error wrong param name
   await api("get", "/api/users/:id", { params: { wrongName: "1" } });
 
+  // route(schemas, fn)'s input types flow to body/query via __steambun_input.
+  const patched = await api("patch", "/api/users/:id", {
+    params: { id: "1" },
+    query: { notify: true },
+    body: { name: "grace" },
+  });
+  patched satisfies { id: string; name: string };
+
+  // @ts-expect-error body doesn't match the route's schema
+  await api("patch", "/api/users/:id", { body: { name: 1 } });
+
   href("/");
   href("/api/users/:id", { id: "1" });
   href("/about", undefined, { tab: "info" });
