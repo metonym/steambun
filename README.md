@@ -1,8 +1,25 @@
 # steambun
 
-Steambun is a CLI and config for HTML apps that run on Bun. `steambun dev` starts `Bun.serve` with HMR. `steambun build` runs `Bun.build`. Both use the same bundler.
+Steambun is Bun's fullstack dev server plus Vite-style config. `steambun dev` starts `Bun.serve` with HMR. `steambun build` runs `Bun.build`. Both use Bun's bundler; steambun adds only what Bun does not:
 
-Steambun adds what Bun does not: a config file, `import.meta.env` and `.env` loading, file-based API routes, middleware, an HTTP/WebSocket proxy, `publicDir`, `preview`, `analyze`, HTML shell minify, and compile that includes those pieces in the output.
+- One config file that drives `dev`, `build`, `preview`, and `compile`
+- Vite parity: `server.proxy` (HTTP and WebSocket), `publicDir`, `.env.[mode]` files, `import.meta.env.MODE`/`DEV`/`PROD`/`BASE_URL`, `base`, `resolve.alias`, `?raw`/`?url`/`?inline`, and `steambun migrate` from a `vite.config.*`
+- File-based API and WebSocket routes, middleware, and a typed `api()` client, served in the same process as the frontend
+- A production server (`preview`, `dist/server.js`, or a compiled binary) with cache headers, precompressed assets, and SPA fallback
+
+## When you don't need steambun
+
+Bun already covers the core on its own ([docs](https://bun.com/docs/bundler/fullstack)):
+
+| You want | Plain Bun |
+| --- | --- |
+| Serve HTML with bundling and HMR | `bun ./index.html` (or `bun './**/*.html'`) |
+| A production build | `bun build ./index.html --minify --outdir dist` |
+| API routes next to the frontend | `Bun.serve({ routes: { "/": index, "/api/users/:id": handler } })` with `import index from "./index.html"` |
+| Bundler plugins (Tailwind etc.) and public env vars | `[serve.static] plugins` / `env = "PUBLIC_*"` in `bunfig.toml` |
+| A single-binary server | `bun build --compile` on that `Bun.serve` entry |
+
+If that's enough, use Bun directly. Reach for steambun when you're moving off Vite, need a proxy or `publicDir`, want file-based routes instead of a hand-written route table, or want dev and prod driven from one config.
 
 ## Install
 
@@ -441,3 +458,17 @@ bun run test        # bun test
 ```
 
 `file:` installs copy the package into `node_modules/.bun`'s store rather than symlinking it live. Re-run `bun install` after editing `src/` to see the change from an example.
+
+### Scope
+
+Steambun is a thin layer over Bun's fullstack server, not a parallel toolchain. New features must fill a gap Bun leaves (see [When you don't need steambun](#when-you-dont-need-steambun)); build-time extras beyond Vite parity are not being expanded.
+
+When a Bun release ships a native equivalent, delete the steambun version and pass the config through to Bun. Current workarounds to re-check on each Bun upgrade:
+
+| Workaround | Bun gap | Where |
+| --- | --- | --- |
+| Dev-mode `define`/env scanner | Dev bundler has no JS-level `define` | `src/dev/env-plugin.ts` |
+| `features` only from `STEAMBUN_FEATURES` in dev | Dev bundler has no `features` option | `src/dev/dev.ts` |
+| `build.sharedCss` | `cssChunking` ignores HTML entrypoints | `src/build/shared-css.ts` |
+| Middleware wraps only API and proxy routes | Native HTML/asset routes can't be wrapped (oven-sh/bun#17608) | `src/runtime/middleware.ts` |
+| File-based API routes | No route auto-discovery | `src/runtime/api-routes.ts` |

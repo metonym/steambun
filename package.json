@@ -1,7 +1,7 @@
 {
   "name": "steambun",
   "version": "0.1.0",
-  "description": "A Bun-native, Vite-class dev & bundle toolkit",
+  "description": "Vite-style config, proxy, env modes, publicDir, and file-based APIs on top of Bun's fullstack dev server",
   "type": "module",
   "license": "MIT",
   "bin": {
