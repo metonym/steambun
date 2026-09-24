@@ -43,7 +43,7 @@ writeFileSync(
 );
 
 const plugin = (await import(join(dir, "env-plugin.ts"))).default;
-let onLoad!: (args: { path: string }) => Promise<unknown>;
+let onLoad!: (args: { path: string }) => unknown;
 plugin.setup({
   onLoad: (_filter: unknown, cb: typeof onLoad) => {
     onLoad = cb;

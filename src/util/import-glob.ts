@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { BunPlugin } from "../config/types";
 
@@ -10,7 +10,6 @@ import type { BunPlugin } from "../config/types";
 // stack traces and sourcemaps still point at the right line.
 
 const NEEDLE = "import.meta.glob";
-const SOURCE_FILTER = /\.(ts|tsx|js|jsx|mts|mjs)$/;
 const GLOB_CHARS = /[*?[\]{}]/;
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 
@@ -40,74 +39,118 @@ function fail(importer: string, message: string): never {
   throw new Error(`[steambun] import.meta.glob in ${importer}: ${message}`);
 }
 
+// Character codes that can change the scanner's state. The scanner skips
+// everything else in a tight charCodeAt loop, which JITs far better than
+// stepping through each character's branches (or a regex exec per token).
+const SLASH = 47;
+const DQUOTE = 34;
+const SQUOTE = 39;
+const BACKTICK = 96;
+const LBRACE = 123;
+const RBRACE = 125;
+const BACKSLASH = 92;
+const DOLLAR = 36;
+const table = (...codes: number[]) => {
+  const t = new Uint8Array(128);
+  for (const code of codes) t[code] = 1;
+  return t;
+};
+// Brace depth only matters inside a template's `${}`, so top-level code
+// skips braces entirely.
+const TOP_LEVEL = table(SLASH, DQUOTE, SQUOTE, BACKTICK);
+const NESTED = table(SLASH, DQUOTE, SQUOTE, BACKTICK, LBRACE, RBRACE);
+const TEMPLATE = table(BACKSLASH, BACKTICK, DOLLAR);
+const IN_TEMPLATE = -1;
+
 /** Offsets of `import.meta.glob` in code — skipping comments, string
  * literals, and template-literal text, but not `${}` interpolations. Same
  * scanner-not-parser trade-off as the dev env plugin: a regex literal with
  * an unbalanced quote can misparse. */
 function findCallSites(src: string): number[] {
   const hits: number[] = [];
-  // Each code frame counts its open braces; a `}` at depth 0 closes the
-  // `${` that opened it and resumes the enclosing template.
-  const stack: Array<{ template: boolean; depth: number }> = [
-    { template: false, depth: 0 },
-  ];
+  // One entry per nesting level: IN_TEMPLATE for template text, else the
+  // code's open-brace depth. A `}` at depth 0 closes the `${` that opened
+  // it and resumes the enclosing template.
+  const stack: number[] = [0];
+  // Needle positions come from indexOf; the scan only has to decide whether
+  // each one sits in code. Nothing after the last one can be a call site.
+  let needle = src.indexOf(NEEDLE);
   let i = 0;
-  while (i < src.length) {
-    const frame = stack[stack.length - 1]!;
-    const c = src[i]!;
-    if (frame.template) {
-      if (c === "\\") i += 2;
-      else if (c === "`") {
+  while (needle !== -1) {
+    const top = stack.length - 1;
+    const inTemplate = stack[top] === IN_TEMPLATE;
+    const interesting = inTemplate ? TEMPLATE : top === 0 ? TOP_LEVEL : NESTED;
+    let c = src.charCodeAt(i);
+    while (i < needle && (c >= 128 || interesting[c] === 0)) {
+      c = src.charCodeAt(++i);
+    }
+    if (i >= needle) {
+      // Reached the needle in the current state: a call site if in code
+      // at an identifier boundary, template text otherwise.
+      i = needle;
+      if (
+        !inTemplate &&
+        !/[\w$.]/.test(src[i - 1] ?? "") &&
+        !/[\w$]/.test(src[i + NEEDLE.length] ?? "")
+      ) {
+        hits.push(i);
+      }
+      i += NEEDLE.length;
+      needle = src.indexOf(NEEDLE, i);
+      continue;
+    }
+    if (inTemplate) {
+      if (c === BACKSLASH) i += 2;
+      else if (c === BACKTICK) {
         stack.pop();
         i += 1;
-      } else if (c === "$" && src[i + 1] === "{") {
-        stack.push({ template: false, depth: 0 });
+      } else if (src.charCodeAt(i + 1) === LBRACE) {
+        stack.push(0);
         i += 2;
       } else i += 1;
       continue;
     }
-    if (c === "/" && src[i + 1] === "/") {
+    const next = src.charCodeAt(i + 1);
+    if (c === SLASH && next === SLASH) {
       const j = src.indexOf("\n", i);
       i = j === -1 ? src.length : j;
-    } else if (c === "/" && src[i + 1] === "*") {
+    } else if (c === SLASH && next === 42 /* * */) {
       const j = src.indexOf("*/", i + 2);
       i = j === -1 ? src.length : j + 2;
-    } else if (c === '"' || c === "'") {
+    } else if (c === DQUOTE || c === SQUOTE) {
       i = skipString(src, i);
-    } else if (c === "`") {
-      stack.push({ template: true, depth: 0 });
+    } else if (c === BACKTICK) {
+      stack.push(IN_TEMPLATE);
       i += 1;
-    } else if (c === "{") {
-      frame.depth += 1;
+    } else if (c === LBRACE) {
+      stack[top]! += 1;
       i += 1;
-    } else if (c === "}") {
-      if (frame.depth === 0 && stack.length > 1) stack.pop();
-      else frame.depth -= 1;
+    } else if (c === RBRACE) {
+      if (stack[top] === 0 && top > 0) stack.pop();
+      else stack[top]! -= 1;
       i += 1;
-    } else if (
-      c === "i" &&
-      src.startsWith(NEEDLE, i) &&
-      !/[\w$.]/.test(src[i - 1] ?? "") &&
-      !/[\w$]/.test(src[i + NEEDLE.length] ?? "")
-    ) {
-      hits.push(i);
-      i += NEEDLE.length;
     } else {
       i += 1;
     }
+    // A comment or string just skipped may have swallowed the needle.
+    if (needle < i) needle = src.indexOf(NEEDLE, i);
   }
   return hits;
 }
 
+/** End of the string literal opening at `start`: the next matching quote
+ * not escaped by an odd run of backslashes (or end of file). */
 function skipString(src: string, start: number): number {
-  const quote = src[start];
-  let i = start + 1;
-  while (i < src.length) {
-    if (src[i] === "\\") i += 2;
-    else if (src[i] === quote) return i + 1;
-    else i += 1;
+  const quote = src[start]!;
+  let from = start + 1;
+  for (;;) {
+    const end = src.indexOf(quote, from);
+    if (end === -1) return src.length;
+    let backslashes = 0;
+    for (let k = end - 1; k > start && src[k] === "\\"; k--) backslashes++;
+    if (backslashes % 2 === 0) return end + 1;
+    from = end + 1;
   }
-  return i;
 }
 
 /** Recursive-descent reader for the literal arguments Vite also requires. */
@@ -316,11 +359,6 @@ function toPosix(path: string): string {
   return sep === "/" ? path : path.split(sep).join("/");
 }
 
-function relativeSpecifier(fromDir: string, file: string): string {
-  const rel = toPosix(relative(fromDir, file));
-  return rel.startsWith("../") ? rel : `./${rel}`;
-}
-
 type ResolvedPattern =
   | {
       negative: boolean;
@@ -371,27 +409,66 @@ function resolvePattern(
   );
 }
 
-function expand(pattern: { absolute: string }, exhaustive: boolean): string[] {
+interface Match {
+  file: string;
+  /** POSIX path relative to the importer's directory. */
+  fromImporter: string;
+  /** POSIX path relative to the project root. */
+  fromRoot: string;
+}
+
+/** Every match sits under one base directory, so its relative paths are
+ * that base's (computed once) plus the match — not two `path.relative()`
+ * calls per file. */
+function expand(
+  pattern: { absolute: string },
+  exhaustive: boolean,
+  importerDir: string,
+  root: string,
+): Match[] {
   const segments = toPosix(pattern.absolute).split("/");
   const firstGlob = segments.findIndex((s) => GLOB_CHARS.test(s));
   if (firstGlob === -1) {
-    return existsSync(pattern.absolute) ? [pattern.absolute] : [];
+    if (!existsSync(pattern.absolute)) return [];
+    const file = pattern.absolute;
+    return [
+      {
+        file,
+        fromImporter: toPosix(relative(importerDir, file)),
+        fromRoot: toPosix(relative(root, file)),
+      },
+    ];
   }
   const base = segments.slice(0, firstGlob).join("/") || "/";
   const rest = segments.slice(firstGlob).join("/");
   if (!existsSync(base)) return [];
+  const under = (dir: string) => {
+    const rel = toPosix(relative(dir, base));
+    return rel === "" ? "" : `${rel}/`;
+  };
+  const importerPrefix = under(importerDir);
+  const rootPrefix = under(root);
   const skipNodeModules = !exhaustive && !rest.includes("node_modules");
-  const files: string[] = [];
-  for (const match of new Bun.Glob(rest).scanSync({
+  const matches: Match[] = [];
+  for (const raw of new Bun.Glob(rest).scanSync({
     cwd: base,
     onlyFiles: true,
     dot: exhaustive,
   })) {
-    if (skipNodeModules && toPosix(match).split("/").includes("node_modules"))
+    const match = toPosix(raw);
+    if (
+      skipNodeModules &&
+      (match.startsWith("node_modules/") || match.includes("/node_modules/"))
+    ) {
       continue;
-    files.push(join(base, match));
+    }
+    matches.push({
+      file: join(base, match),
+      fromImporter: importerPrefix + match,
+      fromRoot: rootPrefix + match,
+    });
   }
-  return files;
+  return matches;
 }
 
 function generate(
@@ -402,7 +479,8 @@ function generate(
   hoisted: string[],
 ): string {
   const resolved = call.patterns.map((p) => resolvePattern(p, ctx, aliases));
-  const included = new Map<string, boolean>();
+  const importerDir = dirname(ctx.importer);
+  const included = new Map<string, { match: Match; rootKeys: boolean }>();
   const excluded = new Set<string>();
   const bareExclusions: Array<InstanceType<typeof Bun.Glob>> = [];
   for (const pattern of resolved) {
@@ -410,29 +488,36 @@ function generate(
       bareExclusions.push(pattern.bare);
       continue;
     }
-    for (const file of expand(pattern, call.exhaustive)) {
-      if (pattern.negative) excluded.add(file);
-      else if (!included.has(file)) included.set(file, pattern.rootKeys);
+    for (const match of expand(
+      pattern,
+      call.exhaustive,
+      importerDir,
+      ctx.root,
+    )) {
+      if (pattern.negative) excluded.add(match.file);
+      else if (!included.has(match.file)) {
+        included.set(match.file, { match, rootKeys: pattern.rootKeys });
+      }
     }
   }
-  const importerDir = dirname(ctx.importer);
-  const entries = [...included]
+  const entries = [...included.values()]
     .filter(
-      ([file]) =>
-        !excluded.has(file) &&
-        file !== ctx.importer &&
-        !bareExclusions.some((glob) =>
-          glob.match(toPosix(relative(importerDir, file))),
-        ),
+      ({ match }) =>
+        !excluded.has(match.file) &&
+        match.file !== ctx.importer &&
+        !bareExclusions.some((glob) => glob.match(match.fromImporter)),
     )
-    .map(([file, rootKeys]) => {
-      const specifier = relativeSpecifier(importerDir, file) + call.query;
-      const rootRel = toPosix(relative(ctx.root, file));
+    .map(({ match, rootKeys }) => {
+      const relativeKey = match.fromImporter.startsWith("../")
+        ? match.fromImporter
+        : `./${match.fromImporter}`;
       const key =
-        rootKeys && !rootRel.startsWith("../") && !isAbsolute(rootRel)
-          ? `/${rootRel}`
-          : relativeSpecifier(importerDir, file);
-      return { key, specifier };
+        rootKeys &&
+        !match.fromRoot.startsWith("../") &&
+        !isAbsolute(match.fromRoot)
+          ? `/${match.fromRoot}`
+          : relativeKey;
+      return { key, specifier: relativeKey + call.query };
     })
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
@@ -501,18 +586,28 @@ export function transformImportGlobs(
   return output;
 }
 
-function loaderFor(path: string): "ts" | "tsx" | "js" | "jsx" {
+// Bun's default loader for .js parses JSX; an explicit "js" loader doesn't.
+function loaderFor(path: string): "ts" | "tsx" | "jsx" {
   if (path.endsWith(".tsx")) return "tsx";
   if (path.endsWith(".ts") || path.endsWith(".mts")) return "ts";
-  if (path.endsWith(".jsx")) return "jsx";
-  return "js";
+  return "jsx";
 }
+
+// Project sources only: node_modules never reaches the JS callback.
+const PROJECT_SOURCE_FILTER =
+  /^(?!.*[\\/]node_modules[\\/]).*\.(ts|tsx|js|jsx|mts|mjs)$/;
 
 /**
  * Vite's `import.meta.glob` as a Bun `onLoad` plugin for client bundles.
  * `steambun build` adds it automatically; `steambun dev` folds the same
  * transform into its env plugin, since Bun runs only the first `onLoad`
  * that returns contents for a file.
+ *
+ * It returns every file's contents, transformed or not: falling through
+ * with `undefined` makes Bun redo the load, which measured ~4× the cost of
+ * handing back the source it already has (400-module build: +16ms vs
+ * +3.5ms). Since that claims every project source file, it must come after
+ * any other `onLoad` plugin.
  */
 export function createImportGlobPlugin(
   root: string,
@@ -521,16 +616,14 @@ export function createImportGlobPlugin(
   return {
     name: "steambun-import-glob",
     setup(build) {
-      build.onLoad({ filter: SOURCE_FILTER }, async (args) => {
-        if (args.path.includes("/node_modules/")) return undefined;
-        const source = await Bun.file(args.path).text();
+      build.onLoad({ filter: PROJECT_SOURCE_FILTER }, (args) => {
+        const source = readFileSync(args.path, "utf8");
         const contents = transformImportGlobs(source, {
           importer: args.path,
           root,
           alias,
         });
-        if (contents === undefined) return undefined;
-        return { contents, loader: loaderFor(args.path) };
+        return { contents: contents ?? source, loader: loaderFor(args.path) };
       });
     },
   };

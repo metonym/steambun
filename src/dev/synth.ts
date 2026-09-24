@@ -87,12 +87,6 @@ export async function synthesizeDevServer(
     );
   }
 
-  await emitPlugin(
-    pluginPaths,
-    join(dir, "env-plugin.ts"),
-    generateEnvPluginSource(publicEnvDefine, { root: config.root, alias }),
-  );
-
   if (config.configFile && !isTomlConfigPath(config.configFile)) {
     const configSpecifier = toSpecifier(dir, config.configFile);
     for (const [index, plugin] of (config.plugins ?? []).entries()) {
@@ -109,6 +103,13 @@ export async function synthesizeDevServer(
       );
     }
   }
+
+  // Last: it claims every project source file (see env-plugin.ts).
+  await emitPlugin(
+    pluginPaths,
+    join(dir, "env-plugin.ts"),
+    generateEnvPluginSource(publicEnvDefine, { root: config.root, alias }),
+  );
 
   const bunfigPath = join(dir, "bunfig.toml");
   await writeIfChanged(

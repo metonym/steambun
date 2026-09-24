@@ -114,17 +114,16 @@ export function createHtmlBuildConfig(
     // import.meta.glob and the server boundary are client-only: the
     // compiled server loads API routes at runtime rather than through the
     // bundler. The boundary goes first so an alias can't resolve a `.server`
-    // import before it's checked.
+    // import before it's checked; the glob plugin goes last because it
+    // claims every project source file (see createImportGlobPlugin).
     plugins: [
       createServerBoundaryPlugin(
         config.root,
         config.api,
         config.resolve?.alias,
       ),
-      ...withBuiltinPlugins(config, [
-        createImportGlobPlugin(config.root, config.resolve?.alias),
-        ...plugins,
-      ]),
+      ...withBuiltinPlugins(config, plugins),
+      createImportGlobPlugin(config.root, config.resolve?.alias),
     ],
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,

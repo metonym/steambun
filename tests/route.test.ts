@@ -32,6 +32,20 @@ describe("route()", () => {
     });
   });
 
+  test("parses the query like URLSearchParams", async () => {
+    const handler = route(({ query }) => query);
+    const url =
+      "/x?q=hello+world&e=%C3%A9&flag&=v&k=a%2Bb&bad=%E0%A4%A&t=1&t=2";
+    const expected: Record<string, string | string[]> = {};
+    for (const [key, value] of new URL(`http://localhost${url}`).searchParams) {
+      const existing = expected[key];
+      if (existing === undefined) expected[key] = value;
+      else expected[key] = [existing, value].flat();
+    }
+    const res = await handler(request(url));
+    expect(await res.json()).toEqual(expected);
+  });
+
   test("passes a returned Response through", async () => {
     const handler = route(() => new Response("hi", { status: 201 }));
     const res = await handler(request("/x"));
