@@ -5,6 +5,11 @@ export {
   hostnameFromHost,
   localNetworkAddresses,
 } from "../util/hostname";
+export {
+  createImportGlobPlugin,
+  type ImportGlobContext,
+  transformImportGlobs,
+} from "../util/import-glob";
 export { openBrowser, resolveOpenUrl } from "../util/open-browser";
 export { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 export { loadApiRoutes } from "./api-routes";

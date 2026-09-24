@@ -7,6 +7,7 @@ import type {
 import { toBunEnvPattern, toPublicPath } from "../env/loader";
 import { createAliasPlugin } from "../util/alias";
 import { mergeFeatures } from "../util/features";
+import { createImportGlobPlugin } from "../util/import-glob";
 import { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 
 export type BunMinify = boolean | MinifyObject;
@@ -109,7 +110,12 @@ export function createHtmlBuildConfig(
     outdir: outDir,
     root: config.root,
     define,
-    plugins: withBuiltinPlugins(config, plugins),
+    // import.meta.glob is client-only: the compiled server loads API routes
+    // at runtime rather than through the bundler.
+    plugins: withBuiltinPlugins(config, [
+      createImportGlobPlugin(config.root, config.resolve?.alias),
+      ...plugins,
+    ]),
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,
     sourcemap: toBunSourcemap(config.build.sourcemap),
