@@ -47,13 +47,48 @@ export interface RouteValidationIssue extends ValidationIssue {
   in: "params" | "query" | "body";
 }
 
+function addValue(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  const existing = target[key];
+  if (existing === undefined) target[key] = value;
+  else if (Array.isArray(existing)) existing.push(value);
+  else target[key] = [existing, value];
+}
+
+// Same result as URLSearchParams ("+" is a space, percent-escapes decode,
+// malformed ones are kept), about 2x faster on typical API queries: most
+// keys and values need no decoding at all.
+function decodeQueryPart(part: string): string {
+  if (part.indexOf("%") === -1 && part.indexOf("+") === -1) return part;
+  try {
+    return decodeURIComponent(part.replace(/\+/g, " "));
+  } catch {
+    return new URLSearchParams(`x=${part}`).get("x") ?? part;
+  }
+}
+
+// Only the search string, not a full `new URL()` parse: request URLs carry
+// no fragment, so everything after the first "?" is the query.
 function parseQuery(url: string): RouteQuery {
   const query: RouteQuery = {};
-  for (const [key, value] of new URL(url).searchParams) {
-    const existing = query[key];
-    if (existing === undefined) query[key] = value;
-    else if (Array.isArray(existing)) existing.push(value);
-    else query[key] = [existing, value];
+  const start = url.indexOf("?");
+  if (start === -1) return query;
+  for (let i = start + 1; i <= url.length; ) {
+    let end = url.indexOf("&", i);
+    if (end === -1) end = url.length;
+    if (end > i) {
+      const eq = url.indexOf("=", i);
+      const keyEnd = eq === -1 || eq > end ? end : eq;
+      addValue(
+        query,
+        decodeQueryPart(url.slice(i, keyEnd)),
+        keyEnd === end ? "" : decodeQueryPart(url.slice(keyEnd + 1, end)),
+      );
+    }
+    i = end + 1;
   }
   return query;
 }
@@ -68,10 +103,7 @@ async function parseBody(req: Request): Promise<unknown> {
   ) {
     const form: Record<string, unknown> = {};
     for (const [key, value] of await req.formData()) {
-      const existing = form[key];
-      if (existing === undefined) form[key] = value;
-      else if (Array.isArray(existing)) existing.push(value);
-      else form[key] = [existing, value];
+      addValue(form, key, value);
     }
     return form;
   }
@@ -141,43 +173,76 @@ export function route(
 ) => Promise<Response> {
   const schemas = typeof schemasOrFn === "function" ? {} : schemasOrFn;
   const fn = typeof schemasOrFn === "function" ? schemasOrFn : maybeFn!;
+  if (!schemas.params && !schemas.query && !schemas.body) {
+    // The common case: no validation state to set up per request.
+    return async (req, server) => {
+      const value = await fn(
+        new LazyQueryContext(req, req.params, undefined, server),
+      );
+      return value instanceof Response ? value : Response.json(value);
+    };
+  }
   return async (req, server) => {
-    const issues: RouteValidationIssue[] = [];
+    let issues: RouteValidationIssue[] | undefined;
     const check = async (
       where: RouteValidationIssue["in"],
+      schema: StandardSchemaV1,
       raw: unknown,
     ): Promise<unknown> => {
-      const schema = schemas[where];
-      if (!schema) return raw;
       const result = await validateWith(schema, raw);
       if (result.ok) return result.value;
+      issues ??= [];
       for (const issue of result.issues) issues.push({ in: where, ...issue });
       return undefined;
     };
 
-    const params = await check("params", req.params);
-    const query = await check("query", parseQuery(req.url));
+    const params = schemas.params
+      ? await check("params", schemas.params, req.params)
+      : req.params;
+    const query = schemas.query
+      ? await check("query", schemas.query, parseQuery(req.url))
+      : undefined;
     let body: unknown;
     if (schemas.body) {
       let raw: unknown;
+      let parsed = true;
       try {
         raw = await parseBody(req);
       } catch (error) {
         if (!(error instanceof InvalidBody)) throw error;
+        parsed = false;
+        issues ??= [];
         issues.push({ in: "body", path: "", message: "Invalid JSON" });
       }
-      if (issues.every((issue) => issue.in !== "body")) {
-        body = await check("body", raw);
-      }
+      if (parsed) body = await check("body", schemas.body, raw);
     }
-    if (issues.length > 0) {
+    if (issues) {
       return Response.json(
         { error: "invalid request", issues },
         { status: 400 },
       );
     }
 
-    const value = await fn({ req, params, query, body, server });
+    const ctx = schemas.query
+      ? { req, params, query, body, server }
+      : new LazyQueryContext(req, params, body, server);
+    const value = await fn(ctx);
     return value instanceof Response ? value : Response.json(value);
   };
+}
+
+/** A handler that never reads `query` never pays to parse it. A class keeps
+ * the getter on the prototype, so each request only allocates the fields. */
+class LazyQueryContext implements RouteContext<unknown, RouteQuery, unknown> {
+  #query: RouteQuery | undefined;
+  constructor(
+    readonly req: Request,
+    readonly params: unknown,
+    readonly body: unknown,
+    readonly server: unknown,
+  ) {}
+  get query(): RouteQuery {
+    this.#query ??= parseQuery(this.req.url);
+    return this.#query;
+  }
 }

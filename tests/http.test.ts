@@ -240,10 +240,10 @@ describe("serializeMergedBunfig", () => {
 
 describe("generateEnvPluginSource", () => {
   test("replaces user define keys, not only import.meta.env", () => {
-    const source = generateEnvPluginSource({
-      "import.meta.env.FOO": '"bar"',
-      __APP_VERSION__: '"1"',
-    });
+    const source = generateEnvPluginSource(
+      { "import.meta.env.FOO": '"bar"', __APP_VERSION__: '"1"' },
+      { root: "/app" },
+    );
     expect(source).toContain("__APP_VERSION__");
     expect(source).toContain("KEYS = Object.keys(DEFINES)");
   });

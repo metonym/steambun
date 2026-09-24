@@ -5,15 +5,23 @@ import { join } from "node:path";
 import { generateEnvPluginSource } from "../src/dev/env-plugin";
 
 type OnLoadArgs = { path: string };
-type OnLoadResult = { contents: string; loader: string } | undefined;
-type OnLoadCallback = (args: OnLoadArgs) => Promise<OnLoadResult>;
+type OnLoadResult = { contents: string; loader: string };
+type OnLoadCallback = (args: OnLoadArgs) => OnLoadResult;
 
 async function loadTransform(
   defines: Record<string, string>,
 ): Promise<OnLoadCallback> {
   const dir = mkdtempSync(join(tmpdir(), "steambun-env-plugin-"));
   const pluginPath = join(dir, "env-plugin.ts");
-  writeFileSync(pluginPath, generateEnvPluginSource(defines));
+  // Point the plugin's "steambun/runtime" import at this checkout's source,
+  // since a temp dir can't resolve the package.
+  writeFileSync(
+    pluginPath,
+    generateEnvPluginSource(defines, { root: dir }).replace(
+      '"steambun/runtime"',
+      JSON.stringify(join(import.meta.dir, "../src/runtime/index.ts")),
+    ),
+  );
   const plugin = (await import(pluginPath)).default;
   let cb: OnLoadCallback | undefined;
   plugin.setup({
@@ -38,7 +46,7 @@ describe("generated env plugin transform", () => {
       "import.meta.env.API": '"https://api.example.com"',
     });
     const path = writeFixture("const base = import.meta.env.API;\n");
-    const result = await cb({ path });
+    const result = cb({ path });
     expect(result?.contents).toBe('const base = "https://api.example.com";\n');
   });
 
@@ -48,7 +56,7 @@ describe("generated env plugin transform", () => {
     });
     const source = 'const msg = "import.meta.env.API is not a real call";\n';
     const path = writeFixture(source);
-    const result = await cb({ path });
+    const result = cb({ path });
     expect(result?.contents ?? source).toBe(source);
   });
 
@@ -87,16 +95,34 @@ describe("generated env plugin transform", () => {
     });
     // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source, not a real interpolation
     const path = writeFixture("const msg = `base: ${import.meta.env.API}`;\n");
-    const result = await cb({ path });
+    const result = cb({ path });
     // biome-ignore lint/suspicious/noTemplateCurlyInString: expected output, not a real interpolation
     expect(result?.contents).toBe('const msg = `base: ${"X"}`;\n');
   });
 
-  test("returns undefined when the file has no defined key", async () => {
+  test("returns the source unchanged when the file has no defined key", async () => {
     const cb = await loadTransform({
       "import.meta.env.API": '"X"',
     });
     const path = writeFixture("const x = 1;\n");
-    expect(await cb({ path })).toBeUndefined();
+    expect(cb({ path })).toEqual({ contents: "const x = 1;\n", loader: "ts" });
+  });
+
+  test("expands import.meta.glob alongside env keys", async () => {
+    const cb = await loadTransform({ "import.meta.env.API": '"X"' });
+    const path = writeFixture(
+      'const m = import.meta.glob("./*.ts");\nconst a = import.meta.env.API;\n',
+    );
+    // The fixture's own directory holds only the fixture, which a glob
+    // never includes.
+    expect(cb({ path }).contents).toBe('const m = ({});\nconst a = "X";\n');
+  });
+
+  test("uses the jsx loader for .js so JSX in .js still parses", async () => {
+    const cb = await loadTransform({});
+    const dir = mkdtempSync(join(tmpdir(), "steambun-env-fixture-"));
+    const path = join(dir, "view.js");
+    writeFileSync(path, "export const v = <div />;\n");
+    expect(cb({ path }).loader).toBe("jsx");
   });
 });

@@ -57,7 +57,9 @@ export async function validateWith<S extends StandardSchemaV1>(
   | { ok: true; value: StandardSchemaV1.InferOutput<S> }
   | { ok: false; issues: ValidationIssue[] }
 > {
-  const result = await schema["~standard"].validate(value);
+  // Most validators are synchronous; skip the extra await when they are.
+  let result = schema["~standard"].validate(value);
+  if (result instanceof Promise) result = await result;
   if (!result.issues) return { ok: true, value: result.value };
   return {
     ok: false,
