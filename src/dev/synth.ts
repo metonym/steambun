@@ -79,7 +79,7 @@ export async function synthesizeDevServer(
   await emitPlugin(
     pluginPaths,
     join(dir, "env-plugin.ts"),
-    generateEnvPluginSource(publicEnvDefine),
+    generateEnvPluginSource(publicEnvDefine, { root: config.root, alias }),
   );
 
   if (config.configFile && !isTomlConfigPath(config.configFile)) {

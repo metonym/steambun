@@ -21,6 +21,14 @@ async function check() {
 
   // @ts-expect-error not a websocket route
   ws("/api/users/:id", { params: { id: "1" } });
+
+  const lazy = import.meta.glob<{ name: string }>("./pages/*.ts");
+  lazy satisfies Record<string, () => Promise<{ name: string }>>;
+  const eager = import.meta.glob<string>("./icons/*.svg", {
+    eager: true,
+    import: "default",
+  });
+  eager satisfies Record<string, string>;
 }
 
 void check;

@@ -3,7 +3,7 @@
 Steambun is Bun's fullstack dev server plus Vite-style config. `steambun dev` starts `Bun.serve` with HMR. `steambun build` runs `Bun.build`. Both use Bun's bundler; steambun adds only what Bun does not:
 
 - One config file that drives `dev`, `build`, `preview`, and `compile`
-- Vite parity: `server.proxy` (HTTP and WebSocket), `publicDir`, `.env.[mode]` files, `import.meta.env.MODE`/`DEV`/`PROD`/`BASE_URL`, `base`, `resolve.alias`, `?raw`/`?url`/`?inline`, and `steambun migrate` from a `vite.config.*`
+- Vite parity: `server.proxy` (HTTP and WebSocket), `publicDir`, `.env.[mode]` files, `import.meta.env.MODE`/`DEV`/`PROD`/`BASE_URL`, `import.meta.glob`, `base`, `resolve.alias`, `?raw`/`?url`/`?inline`, and `steambun migrate` from a `vite.config.*`
 - File-based API and WebSocket routes, middleware, and a typed `api()` client, served in the same process as the frontend
 - A production server (`preview`, `dist/server.js`, or a compiled binary) with cache headers, precompressed assets, and SPA fallback
 
@@ -194,6 +194,31 @@ If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vit
 `steambun migrate` writes the converted config to `steambun.config.ts` once, so you're not running against a re-parsed `vite.config.*` on every command — it never overwrites an existing steambun config. Functions in the Vite config (`proxy.rewrite`, etc.) are inlined verbatim and listed in a header comment for review; ignored keys are listed in the same header. A function-form Vite config is evaluated for both dev and build, and the production result is written when they differ.
 
 `resolve.viteSuffixes: true` shims Vite's `?raw` / `?url` / `?inline` import suffixes (`import txt from "./file.txt?raw"`) as a Bun plugin, in both `dev` and `build`.
+
+### `import.meta.glob`
+
+Vite's `import.meta.glob` works in client code with no config. Bun has no equivalent, so steambun expands each call at bundle time, in `dev` and `build`:
+
+```ts
+const pages = import.meta.glob("./pages/*.ts");
+// { "./pages/about.ts": () => import("./pages/about.ts"), ... }
+
+const icons = import.meta.glob<string>("@/icons/*.svg", {
+  eager: true,
+  query: "?url",
+  import: "default",
+});
+// { "/src/icons/home.svg": "<hashed asset URL>", ... }
+```
+
+- Patterns start with `./`, `../`, `/` (the project root), or a `resolve.alias` key. An array mixes patterns and `!`-prefixed exclusions; a bare exclusion like `!**/*.test.ts` matches paths relative to the importing file.
+- Keys are importer-relative for `./`/`../` patterns and root-relative (`/src/...`) for `/` and alias patterns, sorted.
+- Options: `eager`, `import` (a named export, or `"*"`), `query` (`?raw`/`?url`/`?inline` need `resolve.viteSuffixes: true`), and `exhaustive` (also match dotfiles and `node_modules`). The removed Vite 4 `as` option is an error.
+- Arguments must be literals. The importing file is never part of its own result.
+- In `dev`, a newly added file that matches a glob appears the next time the importing file is re-bundled (edit it) or the dev server restarts.
+- API routes and the compiled server aren't bundled through this transform, so `import.meta.glob` is client-only there.
+
+`/// <reference types="steambun/client" />` types `import.meta.glob` along with `import.meta.env`.
 
 ## Server and build
 
@@ -472,3 +497,4 @@ When a Bun release ships a native equivalent, delete the steambun version and pa
 | `build.sharedCss` | `cssChunking` ignores HTML entrypoints | `src/build/shared-css.ts` |
 | Middleware wraps only API and proxy routes | Native HTML/asset routes can't be wrapped (oven-sh/bun#17608) | `src/runtime/middleware.ts` |
 | File-based API routes | No route auto-discovery | `src/runtime/api-routes.ts` |
+| `import.meta.glob` | No bundle-time glob imports | `src/util/import-glob.ts` |

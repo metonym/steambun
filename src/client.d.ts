@@ -7,8 +7,26 @@ declare global {
     readonly BASE_URL: string;
   }
 
+  interface ImportGlobOptions {
+    /** Pick one named export (`"default"`, `"setup"`, ...) instead of the module namespace. */
+    import?: string;
+    /** Appended to each import specifier, e.g. `"?raw"` (needs `resolve.viteSuffixes`). */
+    query?: string | Record<string, string | boolean>;
+    /** Also match dotfiles and `node_modules`. Default `false`. */
+    exhaustive?: boolean;
+  }
+
   interface ImportMeta {
     readonly env: ImportMetaEnv;
+    /** Vite's `import.meta.glob`, expanded at bundle time by steambun. */
+    glob<M = Record<string, unknown>>(
+      pattern: string | readonly string[],
+      options?: ImportGlobOptions & { eager?: false },
+    ): Record<string, () => Promise<M>>;
+    glob<M = Record<string, unknown>>(
+      pattern: string | readonly string[],
+      options: ImportGlobOptions & { eager: true },
+    ): Record<string, M>;
   }
 }
 
