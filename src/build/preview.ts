@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { loadConfig } from "../config/loader";
 import { loadEnvFiles, withProcessEnv } from "../env/loader";
 import { validateEnv } from "../env/schema";
+import { prepareDevCert } from "../util/dev-cert";
 import { childEnv } from "../util/server-env";
 import { generateProdServeSource } from "./prod-server";
 
@@ -45,7 +46,14 @@ export async function preview(opts: PreviewOptions = {}): Promise<void> {
   const serveDir = join(config.root, ".steambun");
   await mkdir(serveDir, { recursive: true });
   const servePath = join(serveDir, "prod-serve.ts");
-  await writeFile(servePath, generateProdServeSource(config, outDir), "utf8");
+  if (config.server.https === true) {
+    await prepareDevCert(config, config.preview?.host ?? config.server.host);
+  }
+  await writeFile(
+    servePath,
+    generateProdServeSource(config, outDir, { devCert: true }),
+    "utf8",
+  );
 
   const proc = Bun.spawn({
     cmd: ["bun", servePath],

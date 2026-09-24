@@ -28,8 +28,12 @@ export interface ServerOptions {
   cors?: boolean;
   headers?: Record<string, string>;
   proxy?: Record<string, ProxyEntry>;
-  /** Paths are resolved against `root`. Maps to `Bun.serve({ tls })`. */
-  https?: HttpsOptions;
+  /**
+   * Paths are resolved against `root`. Maps to `Bun.serve({ tls })`. `true`
+   * generates a local certificate for `dev` and `preview` (via mkcert when
+   * installed, else self-signed) under `.steambun/https/`.
+   */
+  https?: HttpsOptions | true;
   /** Seconds of inactivity before Bun closes the connection. Default 10. */
   idleTimeout?: number;
   /** Max request body size in bytes. Bun default is 128MB. */

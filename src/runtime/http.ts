@@ -1,5 +1,6 @@
 import { isAbsolute, join } from "node:path";
 import type { HttpsOptions } from "../config/types";
+import { devCertPaths } from "../util/dev-cert";
 import type { Middleware, RouteHandler } from "./middleware";
 
 const CORS_ALLOW_METHODS = "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS";
@@ -109,10 +110,23 @@ export function composeServerMiddleware(
  * ```
  */
 export function tlsFromHttps(
-  https: HttpsOptions | undefined,
+  https: HttpsOptions | true | undefined,
   root: string,
+  opts: { devCert?: boolean } = {},
 ): Bun.TLSOptions | undefined {
   if (!https) return undefined;
+  if (https === true) {
+    // `true` means the dev certificate `dev`/`preview` wrote before
+    // spawning this server — never a production server's.
+    if (!opts.devCert) {
+      console.warn(
+        "[steambun] server.https: true is a local dev certificate for `dev` and `preview` only — serving plain HTTP. Set server.https to { key, cert } for TLS here.",
+      );
+      return undefined;
+    }
+    const paths = devCertPaths(root);
+    return { key: Bun.file(paths.key), cert: Bun.file(paths.cert) };
+  }
   const resolve = (path: string) =>
     isAbsolute(path) ? path : join(root, path);
   const ca = https.ca
