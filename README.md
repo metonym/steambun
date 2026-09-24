@@ -3,6 +3,7 @@
 Steambun is Bun's fullstack dev server plus Vite-style config. `steambun dev` starts `Bun.serve` with HMR. `steambun build` runs `Bun.build`. Both use Bun's bundler; steambun adds only what Bun does not:
 
 - One config file that drives `dev`, `build`, `preview`, and `compile`
+- Env checked against a Standard Schema (zod, valibot, arktype, ...) at dev, build, and server startup, with typed `import.meta.env`
 - Vite parity: `server.proxy` (HTTP and WebSocket), `publicDir`, `.env.[mode]` files, `import.meta.env.MODE`/`DEV`/`PROD`/`BASE_URL`, `import.meta.glob`, `base`, `resolve.alias`, `?raw`/`?url`/`?inline`, and `steambun migrate` from a `vite.config.*`
 - File-based API and WebSocket routes, middleware, schema-validated `route()` handlers, and a typed `api()` client, served in the same process as the frontend
 - A production server (`preview`, `dist/server.js`, or a compiled binary) with cache headers, precompressed assets, and SPA fallback
@@ -93,6 +94,7 @@ Config is optional. With no config file, `dev`, `build`, and `preview` use the d
 | `tsconfig-types` | `compilerOptions.types` is set but omits both `"bun-types"` and `"@types/bun"` |
 | `gitignore` | `.gitignore` doesn't cover `.steambun` or `build.outDir` |
 | `secret-env-keys` | A public env key (matching `envPrefix`) looks like a secret (`SECRET`, `TOKEN`, `PASSWORD`, `PRIVATE`, `API_KEY`) and would be inlined into client JavaScript |
+| `env-schema` | The merged env for mode `development` fails `envSchema` (one failure per key) |
 | `env-in-public-dir` | A `.env*` file sitting inside `publicDir`, publicly reachable |
 | `outdir-placement` | `build.outDir` resolving to `root` itself, or inside `publicDir` |
 
@@ -299,6 +301,29 @@ Builtins: `MODE`, `DEV`, `PROD`, `BASE_URL`, `SSR`. `dev` and `build` write `.st
 ```ts
 /// <reference types="steambun/client" />
 ```
+
+### Env schema
+
+`envSchema` takes a [Standard Schema](https://standardschema.dev) (zod, valibot, arktype, ...) for the merged `.env*` files and `process.env`:
+
+```ts
+import { defineConfig } from "steambun";
+import { z } from "zod";
+
+export default defineConfig({
+  envSchema: z.object({
+    DATABASE_URL: z.url(),
+    PUBLIC_API_URL: z.url(),
+    PUBLIC_ANALYTICS: z.stringbool().default(false),
+  }),
+});
+```
+
+- `dev`, `build`, and `preview` validate before starting and list every failing key (names and messages only, never values). In `dev`, fixing a `.env*` file or the config restarts the server; `build` fails. `steambun doctor` runs the same check as `env-schema`.
+- `dist/server.js` and a compiled binary check at startup against their own `process.env`, and exit `1` on failure. Public keys come from build time, since they're already inlined into the client.
+- The schema's output is what gets inlined: `import.meta.env.PUBLIC_ANALYTICS` is the boolean `false`, not the string `"false"`, and defaults fill in missing public keys. `process.env.PUBLIC_*` stays the raw string.
+- `.steambun/env.d.ts` types `import.meta.env` from the schema's output type. Public keys the schema doesn't declare stay `string`; server-only keys (no `envPrefix`) are never on `import.meta.env`.
+- TypeScript config only — a schema can't live in `bunfig.toml`. `defineConfig` keeps the schema's type; a plain `export default { ... }` does too.
 
 ## API routes
 

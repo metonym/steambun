@@ -30,6 +30,31 @@ declare global {
   }
 }
 
+type ResolvedConfigExport<C> = Awaited<
+  // biome-ignore lint/suspicious/noExplicitAny: matches config functions of any signature
+  C extends (...args: any[]) => infer R ? R : C>;
+type SchemaOutput<S> = S extends {
+  readonly "~standard": { readonly types?: infer T };
+}
+  ? NonNullable<T> extends { readonly output: infer O }
+    ? O
+    : never
+  : never;
+
+/**
+ * The envPrefix-matched keys of a config's `envSchema` output. Used by the
+ * generated `.steambun/env.d.ts` to type `import.meta.env`.
+ */
+export type PublicEnvOf<C, Prefix extends string> =
+  ResolvedConfigExport<C> extends { envSchema?: infer S }
+    ? {
+        readonly [K in keyof SchemaOutput<S> as K extends `${Prefix}${string}`
+          ? K
+          : never]: SchemaOutput<S>[K];
+      }
+    : // biome-ignore lint/complexity/noBannedTypes: no schema, no keys
+      {};
+
 /** Augmented per-project by the generated `.steambun/routes.d.ts`. */
 // biome-ignore lint/suspicious/noEmptyInterface: augmented via declaration merging
 export interface SteambunRoutes {}

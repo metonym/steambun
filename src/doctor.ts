@@ -5,7 +5,8 @@ import { projectBunfigPath, readBunfigFile } from "./config/bunfig";
 import { findConfigFile, loadConfig, VITE_CONFIG_NAMES } from "./config/loader";
 import type { ResolvedConfig } from "./config/types";
 import { discoverHtmlEntries, discoverSkipDirs } from "./dev/discover";
-import { filterPublicEnv, loadEnvFiles } from "./env/loader";
+import { filterPublicEnv, loadEnvFiles, withProcessEnv } from "./env/loader";
+import { EnvValidationError, validateEnv } from "./env/schema";
 import { ciAnnotation } from "./util/annotations";
 import { asRecord, asStringArray } from "./util/guards";
 import { STEAMBUN_DIR_NAME } from "./util/paths";
@@ -67,6 +68,7 @@ export async function runDoctor(
   await checkTsconfig(checks, config.root);
   await checkGitignore(checks, config.root, config.build.outDir);
   await checkSecretEnvKeys(checks, config);
+  await checkEnvSchema(checks, config);
   await checkEnvInPublicDir(checks, config);
   checkOutdirPlacement(checks, config);
 
@@ -312,6 +314,33 @@ async function checkSecretEnvKeys(
       level: "fail",
       message: `"${key}" looks like a secret but matches envPrefix — it will be inlined into client JavaScript`,
     });
+  }
+}
+
+async function checkEnvSchema(
+  checks: Check[],
+  config: ResolvedConfig,
+): Promise<void> {
+  if (!config.envSchema) return;
+  try {
+    await validateEnv(
+      config.envSchema,
+      withProcessEnv(await loadEnvFiles(config.mode, config.envDir)),
+    );
+    checks.push({
+      id: "env-schema",
+      level: "ok",
+      message: `env matches envSchema (mode: ${config.mode})`,
+    });
+  } catch (error) {
+    if (!(error instanceof EnvValidationError)) throw error;
+    for (const issue of error.issues) {
+      checks.push({
+        id: "env-schema",
+        level: "fail",
+        message: `${issue.path || "(root)"}: ${issue.message}`,
+      });
+    }
   }
 }
 

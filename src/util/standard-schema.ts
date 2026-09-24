@@ -41,6 +41,14 @@ export interface ValidationIssue {
   path: string;
 }
 
+export function isStandardSchema(value: unknown): value is StandardSchemaV1 {
+  return (
+    !!value &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as StandardSchemaV1)["~standard"]?.validate === "function"
+  );
+}
+
 /** Runs a schema and flattens its issues' paths to dotted strings. */
 export async function validateWith<S extends StandardSchemaV1>(
   schema: S,

@@ -11,6 +11,7 @@ import {
   loadEnvFiles,
   withProcessEnv,
 } from "../env/loader";
+import { envSchemaTypes, publicOutput, validateEnv } from "../env/schema";
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
 import { ciAnnotation } from "../util/annotations";
@@ -390,8 +391,17 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
 
   const envDir = config.envDir;
   const fileEnv = await loadEnvFiles(mode, envDir);
-  const publicEnv = filterPublicEnv(withProcessEnv(fileEnv), config.envPrefix);
-  await writeEnvDts(config.root, filterPublicEnv(fileEnv, config.envPrefix));
+  const env = withProcessEnv(fileEnv);
+  const publicEnv = filterPublicEnv(env, config.envPrefix);
+  const typedPublicEnv = publicOutput(
+    await validateEnv(config.envSchema, env),
+    config.envPrefix,
+  );
+  await writeEnvDts(
+    config.root,
+    filterPublicEnv(fileEnv, config.envPrefix),
+    envSchemaTypes(config, typedPublicEnv),
+  );
   const define = buildBundleDefine(
     publicEnv,
     {
@@ -400,6 +410,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
       base: config.base,
     },
     config.define,
+    typedPublicEnv,
   );
 
   const outDir = join(config.root, config.build.outDir);
@@ -432,7 +443,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   // rejection handled; the `await` at the end still throws it.
   const serverBuild =
     config.build.server && !config.build.standalone
-      ? writeDistServer(config, define, bunPlugins, outDir)
+      ? writeDistServer(config, define, bunPlugins, outDir, publicEnv)
       : undefined;
   serverBuild?.catch(() => {});
 
@@ -508,7 +519,7 @@ export async function build(opts: BuildOptions = {}): Promise<void> {
   }
 
   if (config.compile) {
-    await buildCompiled(config, define, bunPlugins, outDir);
+    await buildCompiled(config, define, bunPlugins, outDir, publicEnv);
   }
 
   for (const hook of hooks) {
@@ -525,13 +536,14 @@ async function buildCompiled(
   define: Record<string, string>,
   plugins: BunPlugin[],
   outDir: string,
+  publicEnv: Record<string, string>,
 ): Promise<void> {
   const serveDir = join(config.root, ".steambun");
   await mkdir(serveDir, { recursive: true });
   const prodServePath = join(serveDir, "prod-serve.ts");
   await writeFile(
     prodServePath,
-    generateProdServeSource(config, outDir),
+    generateProdServeSource(config, outDir, { envCheck: publicEnv }),
     "utf8",
   );
 
