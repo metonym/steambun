@@ -5,7 +5,7 @@ Steambun is Bun's fullstack dev server plus Vite-style config. `steambun dev` st
 - One config file that drives `dev`, `build`, `preview`, and `compile`
 - Env checked against a Standard Schema (zod, valibot, arktype, ...) at dev, build, and server startup, with typed `import.meta.env`
 - Vite parity: `server.proxy` (HTTP and WebSocket), `publicDir`, `.env.[mode]` files, `import.meta.env.MODE`/`DEV`/`PROD`/`BASE_URL`, `import.meta.glob`, `base`, `resolve.alias`, `?raw`/`?url`/`?inline`, and `steambun migrate` from a `vite.config.*`
-- File-based API and WebSocket routes, middleware, schema-validated `route()` handlers, and a typed `api()` client, served in the same process as the frontend
+- File-based API and WebSocket routes, middleware, schema-validated `route()` handlers, and a typed `api()` client, served in the same process as the frontend, with a build-time guard that keeps server modules out of client bundles
 - A production server (`preview`, `dist/server.js`, or a compiled binary) with cache headers, precompressed assets, and SPA fallback
 
 ## When you don't need steambun
@@ -340,6 +340,19 @@ lexically-first file. Every collision is printed by `dev`, `preview` (and the co
 `steambun routes`.
 
 Frontend HMR and `bun --hot` reload API modules together.
+
+### Server-only modules
+
+Client bundles in `dev` and `build` fail when they import server code:
+
+- Any `*.server.*` module (`db.server.ts`, `auth.server.tsx`, ...). The error names the importing file and specifier, and is checked before `resolve.alias`, so `@/db.server` is caught too.
+- Any file under `api`, however it's reached.
+
+```text
+[steambun] src/main.ts imports "./db.server", a server-only module (*.server.*), into client code.
+```
+
+`import type` from either is fine; types are erased before bundling, which is how the typed `api()` client reads route modules. A dependency's own `.server` files under `node_modules` are left alone.
 
 ### WebSocket routes
 

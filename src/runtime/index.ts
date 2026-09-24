@@ -11,6 +11,7 @@ export {
   transformImportGlobs,
 } from "../util/import-glob";
 export { openBrowser, resolveOpenUrl } from "../util/open-browser";
+export { createServerBoundaryPlugin } from "../util/server-boundary";
 export type {
   StandardSchemaV1,
   ValidationIssue,

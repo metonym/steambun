@@ -8,6 +8,7 @@ import { toBunEnvPattern, toPublicPath } from "../env/loader";
 import { createAliasPlugin } from "../util/alias";
 import { mergeFeatures } from "../util/features";
 import { createImportGlobPlugin } from "../util/import-glob";
+import { createServerBoundaryPlugin } from "../util/server-boundary";
 import { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 
 export type BunMinify = boolean | MinifyObject;
@@ -110,12 +111,21 @@ export function createHtmlBuildConfig(
     outdir: outDir,
     root: config.root,
     define,
-    // import.meta.glob is client-only: the compiled server loads API routes
-    // at runtime rather than through the bundler.
-    plugins: withBuiltinPlugins(config, [
-      createImportGlobPlugin(config.root, config.resolve?.alias),
-      ...plugins,
-    ]),
+    // import.meta.glob and the server boundary are client-only: the
+    // compiled server loads API routes at runtime rather than through the
+    // bundler. The boundary goes first so an alias can't resolve a `.server`
+    // import before it's checked.
+    plugins: [
+      createServerBoundaryPlugin(
+        config.root,
+        config.api,
+        config.resolve?.alias,
+      ),
+      ...withBuiltinPlugins(config, [
+        createImportGlobPlugin(config.root, config.resolve?.alias),
+        ...plugins,
+      ]),
+    ],
     minify: toBunMinify(config.build.minify),
     drop: config.build.drop,
     sourcemap: toBunSourcemap(config.build.sourcemap),

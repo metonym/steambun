@@ -60,6 +60,17 @@ export async function synthesizeDevServer(
 
   const pluginPaths: string[] = [];
   const alias = config.resolve?.alias;
+  // First, so an alias can't resolve a `.server` import before it's checked.
+  await emitPlugin(
+    pluginPaths,
+    join(dir, "server-boundary-plugin.ts"),
+    runtimePlugin(
+      "createServerBoundaryPlugin",
+      config.root,
+      config.api ?? null,
+      alias ?? {},
+    ),
+  );
   if (alias && Object.keys(alias).length > 0) {
     await emitPlugin(
       pluginPaths,
