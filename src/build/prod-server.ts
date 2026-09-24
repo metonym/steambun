@@ -28,6 +28,8 @@ export interface ProdServeOptions {
    * `build` use.
    */
   envCheck?: Record<string, string>;
+  /** `steambun preview`: `server.https: true` uses the local dev certificate. */
+  devCert?: boolean;
 }
 
 export function generateProdServeSource(
@@ -132,7 +134,7 @@ const server = serveWithPortRetry(
   {
     port,
     hostname: hostnameFromHost(host),
-    tls: tlsFromHttps(config.server.https, config.root),
+    tls: tlsFromHttps(config.server.https, config.root${opts.devCert ? ", { devCert: true }" : ""}),
     ...app.serveOptions,
   },
   { strictPort, label: "preview" },

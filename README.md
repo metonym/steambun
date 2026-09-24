@@ -232,7 +232,7 @@ const icons = import.meta.glob<string>("@/icons/*.svg", {
 | `server.open` | off | Open a browser after listen. `true` opens `/`. A string is a path. If no browser opener is available, a warning is printed and startup continues. Binding `0.0.0.0` prints one `Local:` and one `Network:` line per non-internal IPv4 interface instead of a single ready line |
 | `server.cors` | `false` | CORS middleware |
 | `server.headers` | | Extra response headers |
-| `server.https` | | `{ key, cert, ca?, passphrase? }` paths, resolved against `root`. Maps to `Bun.serve({ tls })` |
+| `server.https` | | `{ key, cert, ca?, passphrase? }` paths, resolved against `root`. Maps to `Bun.serve({ tls })`. `true` generates a local certificate for `dev` and `preview` — see [Local HTTPS](#local-https) |
 | `server.idleTimeout` | Bun default (10s) | Seconds of inactivity before Bun closes the connection. `text/event-stream` responses are exempted automatically — see [Server-Sent Events](#server-sent-events) |
 | `server.maxRequestBodySize` | Bun default (128MB) | Max request body in bytes |
 | `server.strictPort` | `false` | When `port` is taken, `dev` and `preview` try the next port (up to 10) and print a notice; `true` fails instead. `dist/server.js` always fails on a taken port |
@@ -274,6 +274,15 @@ The terminal summary printed after every build shows a `gzip:` size (level 9, ne
 Under `GITHUB_ACTIONS=true` or `STEAMBUN_CI=1`, a size-budget violation and a `build.outDir`-outside-`root` warning also print a `::error`/`::warning` GitHub Actions workflow command, so they're inlined on a PR's Files Changed view instead of only the raw log.
 
 `steambun preview` and `dist/server.js` serve assets under `assetsDir` with `Cache-Control: public, max-age=31536000, immutable` (they're content-hashed) and everything else with a weak `ETag` and `Cache-Control: no-cache` (304 on a matching `If-None-Match`); HTML always gets `no-cache`. When `build.precompress` produced a `.gz`/`.br`/`.zst` sibling, a matching `Accept-Encoding` serves it with `Content-Encoding` set and the original file's `Content-Type`. When `build.csp` wrote `_headers.json`, both also apply its headers to any response whose resolved file path matches one of its globs, so the CSP header applies to every HTML file at any depth. With `build.importMap`, a shared-module change invalidates only that chunk instead of every page that imports it. `_headers.json` and `.steambun-chunks.json` are server-side build inputs and are never served; `manifest.json` is (it's a documented artifact). Request paths are percent-decoded before resolving (a malformed encoding is a `400`; a decoded `..` segment or a NUL byte is a `404`). `HEAD` reports the same `Content-Length` a `GET` would.
+
+### Local HTTPS
+
+`server.https: true` serves `dev` and `preview` over HTTPS with a certificate steambun creates under `.steambun/https/`, for APIs that need a secure context (service workers on a LAN address, WebAuthn, the clipboard):
+
+- With [mkcert](https://github.com/FiloSottile/mkcert) on `PATH`, the certificate comes from mkcert's local CA, which browsers trust once you've run `mkcert -install`.
+- Without it, steambun signs a 30-day self-signed ECDSA certificate itself (no openssl or npm dependency). Browsers show a warning to click through, as with Vite's `@vitejs/plugin-basic-ssl`.
+- It covers `localhost`, `127.0.0.1`, and `::1`, plus `server.host` when that's a name or address, plus every LAN IPv4 address when binding all interfaces. It's reused until it's within a day of expiring, the host list changes, or mkcert becomes available.
+- `dist/server.js` and a compiled binary never use it: `https: true` there prints a warning and serves plain HTTP. Give them `{ key, cert }` for real TLS.
 
 ## publicDir
 

@@ -206,7 +206,7 @@ const server = serveWithPortRetry(
   {
     port,
     hostname: hostnameFromHost(host),
-    tls: tlsFromHttps(config.server.https, config.root),
+    tls: tlsFromHttps(config.server.https, config.root, { devCert: true }),
     ...app.serveOptions,
   },
   { strictPort, label: "dev" },
