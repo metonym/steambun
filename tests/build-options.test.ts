@@ -147,7 +147,7 @@ describe("createHtmlBuildConfig", () => {
     expect(opts.env).toBe("PUBLIC_*");
   });
 
-  test("resolve.alias prepends a steambun-alias plugin", () => {
+  test("resolve.alias adds a steambun-alias plugin right after the server boundary", () => {
     const config = resolveDefaults(
       { resolve: { alias: { "@": "./src" } } },
       ctx("production"),
@@ -159,7 +159,11 @@ describe("createHtmlBuildConfig", () => {
       plugins: [],
       outDir: join(config.root, "dist"),
     });
-    expect(opts.plugins?.[0]?.name).toBe("steambun-alias");
+    expect(opts.plugins?.map((p) => p.name)).toEqual([
+      "steambun-server-boundary",
+      "steambun-alias",
+      "steambun-import-glob",
+    ]);
   });
 
   test("build.target overrides the HTML default", () => {
