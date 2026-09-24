@@ -19,13 +19,17 @@ export async function writeDistServer(
   define: Record<string, string>,
   plugins: BunPlugin[],
   outDir: string,
+  publicEnv: Record<string, string>,
 ): Promise<void> {
   const serveDir = join(config.root, ".steambun");
   await mkdir(serveDir, { recursive: true });
   const distServePath = join(serveDir, "dist-serve.ts");
   await writeFile(
     distServePath,
-    generateProdServeSource(config, outDir, { embedOutDir: true }),
+    generateProdServeSource(config, outDir, {
+      embedOutDir: true,
+      envCheck: publicEnv,
+    }),
     "utf8",
   );
 

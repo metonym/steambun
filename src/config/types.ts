@@ -1,4 +1,5 @@
 import type { App } from "../runtime/app";
+import type { StandardSchemaV1 } from "../util/standard-schema";
 
 export type Command = "dev" | "build" | "preview";
 export type Mode = string;
@@ -200,6 +201,13 @@ export interface UserConfig {
   envPrefix?: string | string[];
   envDir?: string;
   /**
+   * A Standard Schema (zod, valibot, arktype, ...) for the merged `.env*` +
+   * `process.env`. `dev` and `build` fail on invalid env, and the preview
+   * server, `dist/server.js`, and a compiled binary check it at startup.
+   * Its output types `import.meta.env`. TypeScript config only.
+   */
+  envSchema?: StandardSchemaV1;
+  /**
    * After file lookup, unmatched paths get `index.html` (`spa`) or 404 (`mpa`).
    * Applies to `dev`, `preview`, and `compile`. Default `"spa"`.
    */
@@ -238,7 +246,7 @@ export type UserConfigExport = UserConfig | Promise<UserConfig> | UserConfigFn;
  * }));
  * ```
  */
-export function defineConfig(config: UserConfigExport): UserConfigExport {
+export function defineConfig<T extends UserConfigExport>(config: T): T {
   return config;
 }
 

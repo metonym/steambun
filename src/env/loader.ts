@@ -107,9 +107,13 @@ export interface ImportMetaEnvOptions {
 
 // Bun only inlines process.env.* via --env, leaving import.meta.env
 // untouched, so its rewriting goes through this define map instead.
+// `typedPublicEnv` is envSchema's envPrefix-matched output: its values
+// (defaults and transforms applied) replace the raw strings for
+// import.meta.env, while process.env.* stays the raw string.
 export function buildImportMetaEnvDefine(
   publicEnv: Record<string, string>,
   opts: ImportMetaEnvOptions,
+  typedPublicEnv?: Record<string, unknown>,
 ): Record<string, string> {
   const isDev = opts.command === "dev";
   const define: Record<string, string> = {
@@ -123,6 +127,9 @@ export function buildImportMetaEnvDefine(
     const value = JSON.stringify(publicEnv[key]);
     define[`import.meta.env.${key}`] = value;
     define[`process.env.${key}`] = value;
+  }
+  for (const key in typedPublicEnv) {
+    define[`import.meta.env.${key}`] = JSON.stringify(typedPublicEnv[key]);
   }
   return define;
 }
@@ -144,9 +151,10 @@ export function buildBundleDefine(
   publicEnv: Record<string, string>,
   opts: ImportMetaEnvOptions,
   userDefine?: Record<string, string>,
+  typedPublicEnv?: Record<string, unknown>,
 ): Record<string, string> {
   const define = {
-    ...buildImportMetaEnvDefine(publicEnv, opts),
+    ...buildImportMetaEnvDefine(publicEnv, opts, typedPublicEnv),
     ...userDefine,
   };
   if (!("process.env.NODE_ENV" in define)) {

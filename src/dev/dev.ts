@@ -6,6 +6,12 @@ import {
   loadEnvFiles,
   withProcessEnv,
 } from "../env/loader";
+import {
+  EnvValidationError,
+  envSchemaTypes,
+  publicOutput,
+  validateEnv,
+} from "../env/schema";
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
 import { mergeFeatures } from "../util/features";
@@ -51,6 +57,28 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
+  function watch(config: {
+    root: string;
+    envDir: string;
+    configFile: string | null;
+  }): void {
+    watcher?.close();
+    watcher = setupDevWatchers({
+      root: config.root,
+      envDir: config.envDir,
+      configFileName: config.configFile ? basename(config.configFile) : null,
+      onRestart: (filename) => {
+        if (shuttingDown || killedForRestart) return;
+        killedForRestart = true;
+        console.log(
+          `[steambun] ${filename ?? "a watched file"} changed, restarting`,
+        );
+        proc?.kill();
+        resumeAfterCrash?.();
+      },
+    });
+  }
+
   async function startOnce(): Promise<number> {
     if (shuttingDown) return 0;
 
@@ -81,11 +109,33 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
 
     const envDir = config.envDir;
     const fileEnv = await loadEnvFiles(mode, envDir);
-    const publicEnv = filterPublicEnv(
-      withProcessEnv(fileEnv),
-      config.envPrefix,
+    const env = withProcessEnv(fileEnv);
+    const publicEnv = filterPublicEnv(env, config.envPrefix);
+    let typedPublicEnv: Record<string, unknown> | undefined;
+    try {
+      typedPublicEnv = publicOutput(
+        await validateEnv(config.envSchema, env),
+        config.envPrefix,
+      );
+    } catch (error) {
+      if (!(error instanceof EnvValidationError)) throw error;
+      // Same recovery as a crashed server: fixing a .env file (or the
+      // config) is a watched change that restarts from the top.
+      console.error(error.message);
+      console.log("[steambun] waiting for a change to restart");
+      proc = undefined;
+      watch(config);
+      await waitForNextChange();
+      killedForRestart = false;
+      if (shuttingDown) return 0;
+      bumpConfigGeneration();
+      return startOnce();
+    }
+    await writeEnvDts(
+      config.root,
+      filterPublicEnv(fileEnv, config.envPrefix),
+      envSchemaTypes(config, typedPublicEnv),
     );
-    await writeEnvDts(config.root, filterPublicEnv(fileEnv, config.envPrefix));
     const define = buildBundleDefine(
       publicEnv,
       {
@@ -94,6 +144,7 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
         base: config.base,
       },
       config.define,
+      typedPublicEnv,
     );
 
     const { servePath, bunfigPath } = await synthesizeDevServer(
@@ -135,21 +186,7 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       },
     });
 
-    watcher?.close();
-    watcher = setupDevWatchers({
-      root: config.root,
-      envDir,
-      configFileName: config.configFile ? basename(config.configFile) : null,
-      onRestart: (filename) => {
-        if (shuttingDown || killedForRestart) return;
-        killedForRestart = true;
-        console.log(
-          `[steambun] ${filename ?? "a watched file"} changed, restarting`,
-        );
-        proc?.kill();
-        resumeAfterCrash?.();
-      },
-    });
+    watch(config);
 
     const exitCode = await proc.exited;
 

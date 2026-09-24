@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "../config/loader";
+import { loadEnvFiles, withProcessEnv } from "../env/loader";
+import { validateEnv } from "../env/schema";
 import { childEnv } from "../util/server-env";
 import { generateProdServeSource } from "./prod-server";
 
@@ -34,6 +36,11 @@ export async function preview(opts: PreviewOptions = {}): Promise<void> {
       `[steambun] ${config.build.outDir}/ not found. Run \`steambun build\` first.`,
     );
   }
+
+  await validateEnv(
+    config.envSchema,
+    withProcessEnv(await loadEnvFiles(mode, config.envDir)),
+  );
 
   const serveDir = join(config.root, ".steambun");
   await mkdir(serveDir, { recursive: true });

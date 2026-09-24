@@ -6,6 +6,7 @@
       "entry": [
         "bench/**/*.bench.ts",
         "tests/types/**/*.test-d.ts",
+        "tests/fixtures/*/steambun.config.ts",
         "ostia.config.ts"
       ]
     },

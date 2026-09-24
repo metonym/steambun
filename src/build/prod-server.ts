@@ -20,6 +20,14 @@ export interface ProdServeOptions {
    * runs from a different directory in preview/--compile.
    */
   embedOutDir?: boolean;
+  /**
+   * Check `envSchema` at startup against `process.env`, over these
+   * build-time public values (already inlined into the client, so the
+   * server's own environment needn't repeat them). `steambun preview`
+   * checks in the parent instead, with the same `.env*` files `dev` and
+   * `build` use.
+   */
+  envCheck?: Record<string, string>;
 }
 
 export function generateProdServeSource(
@@ -46,9 +54,26 @@ const outDir = outDirCandidates.find(existsSync) ?? outDirCandidates[0];`;
   const configImport = config.configFile
     ? `import configExport from ${JSON.stringify(toImportSpecifier(serveDir, config.configFile))};`
     : `const configExport = {};`;
-  const steambunImports = isToml
-    ? `import { bunfigToUserConfig, resolveBunfigModules, resolveDefaults } from "steambun";`
-    : `import { resolveDefaults } from "steambun";`;
+  const envCheck = opts.envCheck && config.envSchema ? opts.envCheck : null;
+  const steambunNames = [
+    ...(isToml ? ["bunfigToUserConfig", "resolveBunfigModules"] : []),
+    "resolveDefaults",
+    ...(envCheck ? ["validateEnv"] : []),
+  ];
+  const steambunImports = `import { ${steambunNames.join(", ")} } from "steambun";`;
+  const envCheckBlock = envCheck
+    ? `
+try {
+  await validateEnv(config.envSchema, {
+    ...${JSON.stringify(envCheck)},
+    ...process.env,
+  });
+} catch (error) {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+}
+`
+    : "";
   const rawConfigBlock = isToml
     ? `const rawConfig = await resolveBunfigModules(
   bunfigToUserConfig(configExport),
@@ -85,7 +110,7 @@ const config = resolveDefaults(rawConfig ?? {}, {
   mode: ${JSON.stringify(config.mode)},
   configFile: ${JSON.stringify(config.configFile)},
 });
-
+${envCheckBlock}
 const apiDirCandidates = config.api
   ? [config.api, join(import.meta.dir, ${JSON.stringify(apiBasename ?? "")})]
   : [];
