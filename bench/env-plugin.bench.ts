@@ -21,7 +21,16 @@ const defines = buildBundleDefine(
 // existed before this file's own module resolution can return a stale
 // listing for anything written into it afterward.
 const dir = mkdtempSync(join(tmpdir(), "steambun-envplugin-"));
-writeFileSync(join(dir, "env-plugin.ts"), generateEnvPluginSource(defines));
+// The shipped dev plugin also expands import.meta.glob; point its
+// "steambun/runtime" import at this checkout's source so the bench measures
+// the working tree, not an installed copy.
+writeFileSync(
+  join(dir, "env-plugin.ts"),
+  generateEnvPluginSource(defines, { root: dir }).replace(
+    '"steambun/runtime"',
+    JSON.stringify(join(import.meta.dir, "../src/runtime/index.ts")),
+  ),
+);
 
 let body = "";
 for (let i = 0; i < 1200; i++) {
