@@ -10,7 +10,6 @@ import {
 import { envSchemaTypes, publicOutput, validateEnv } from "../env/schema";
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
-import { prepareDevCert } from "../util/dev-cert";
 import { mergeFeatures } from "../util/features";
 import { childEnv } from "../util/server-env";
 import { log } from "../util/terminal";
@@ -115,10 +114,6 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       config.define,
       typedPublicEnv,
     );
-
-    if (config.server.https === true) {
-      await prepareDevCert(config, config.server.host);
-    }
 
     const { servePath, bunfigPath } = await synthesizeDevServer(
       config,

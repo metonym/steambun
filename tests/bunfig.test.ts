@@ -213,6 +213,19 @@ describe("bunfigToUserConfig warnings", () => {
     ]);
   });
 
+  test("warns and drops https = true, keeps an https table", () => {
+    const dropped = capture(`[steambun.server]\nhttps = true\n`);
+    expect(dropped.config.server?.https).toBeUndefined();
+    expect(dropped.warnings).toEqual([
+      '[steambun] bunfig key "steambun.server.https" expected object, got boolean — ignored.',
+    ]);
+    const kept = capture(
+      `[steambun.server.https]\nkey = "k.pem"\ncert = "c.pem"\n`,
+    );
+    expect(kept.config.server?.https).toEqual({ key: "k.pem", cert: "c.pem" });
+    expect(kept.warnings).toEqual([]);
+  });
+
   test("drops an unknown precompress encoding but keeps the valid ones", () => {
     const { config, warnings } = capture(
       `[steambun.build]\nprecompress = ["gzip", "xz"]\n`,

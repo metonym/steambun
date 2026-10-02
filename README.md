@@ -203,7 +203,7 @@ precompress = ["gzip", "br"]
 
 ### Migrating from Vite
 
-If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vite.config.{ts,mts,js,mjs}` and loads it (calling it with the same `{ command, mode, isPreview }` if it exports a function), converting a static allowlist of keys: `server.{port,host,open,cors,headers,proxy,https}`, `build.{outDir,assetsDir,sourcemap,minify,manifest,target}` (`minify: "esbuild"`, `"terser"`, and `"oxc"` become `true`; a `target` other than `"browser"`, `"bun"`, or `"node"`, such as `"esnext"`, is ignored), `resolve.alias` (array or object form; `resolve.extensions` is dropped silently), `define`, `envPrefix`, `envDir`, `base`, `publicDir`, `appType` (`"spa"`/`"mpa"` only), and `plugins` (always warned — Vite plugins can't run under Bun's bundler). `preview` is not converted: `steambun preview` uses `server.*`, so copy over any `preview.port` or `preview.host` you want. Every other key prints one `[steambun] Vite config key "..." is not supported and was ignored.` warning.
+If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vite.config.{ts,mts,js,mjs}` and loads it (calling it with the same `{ command, mode, isPreview }` if it exports a function), converting a static allowlist of keys: `server.{port,host,open,cors,headers,proxy,https}` (`https` only as `{ key, cert }` file paths; `true` and inline PEM values are ignored), `build.{outDir,assetsDir,sourcemap,minify,manifest,target}` (`minify: "esbuild"`, `"terser"`, and `"oxc"` become `true`; a `target` other than `"browser"`, `"bun"`, or `"node"`, such as `"esnext"`, is ignored), `resolve.alias` (array or object form; `resolve.extensions` is dropped silently), `define`, `envPrefix`, `envDir`, `base`, `publicDir`, `appType` (`"spa"`/`"mpa"` only), and `plugins` (always warned — Vite plugins can't run under Bun's bundler). `preview` is not converted: `steambun preview` uses `server.*`, so copy over any `preview.port` or `preview.host` you want. Every other key prints one `[steambun] Vite config key "..." is not supported and was ignored.` warning.
 
 `steambun migrate` writes the converted config to `steambun.config.ts` once, so you're not running against a re-parsed `vite.config.*` on every command — it never overwrites an existing steambun config. Functions in the Vite config (`proxy.rewrite`, etc.) are inlined verbatim and listed in a header comment for review; ignored keys are listed in the same header. A function-form Vite config is evaluated for both dev and build, and the production result is written when they differ.
 
@@ -246,7 +246,7 @@ const icons = import.meta.glob<string>("@/icons/*.svg", {
 | `server.open` | off | Open a browser after listen (`dev` and `preview`). `true` opens `/`. A string is a path. If no browser opener is available, a warning is printed and startup continues. Binding `0.0.0.0` prints one `Local:` and one `Network:` line per non-internal IPv4 interface instead of a single ready line |
 | `server.cors` | `false` | Permissive CORS (`Access-Control-Allow-Origin: *`, preflights answered directly), applied like [`middleware`](#middleware) |
 | `server.headers` | | Extra response headers, applied like [`middleware`](#middleware) |
-| `server.https` | | `{ key, cert, ca?, passphrase? }` paths, resolved against `root`. Maps to `Bun.serve({ tls })`. `true` issues a local certificate with mkcert for `dev` and `preview` — see [Local HTTPS](#local-https) |
+| `server.https` | | `{ key, cert, ca?, passphrase? }` paths, resolved against `root`. Maps to `Bun.serve({ tls })` for `dev`, `preview`, `dist/server.js`, and compiled binaries — see [Local HTTPS](#local-https) |
 | `server.idleTimeout` | Bun default (10s) | Seconds of inactivity before Bun closes the connection. `text/event-stream` responses are exempted automatically — see [Server-Sent Events](#server-sent-events) |
 | `server.maxRequestBodySize` | Bun default (128MB) | Max request body in bytes |
 | `server.strictPort` | `false` for `dev` and `preview`, `true` for `dist/server.js` and compiled binaries | When `port` is taken, a server with `strictPort` off tries the next port (up to 10) and prints a notice; on, it fails instead. Set it explicitly, or use `STRICT_PORT=0`/`1`, to override the default |
@@ -282,10 +282,17 @@ The static handler serves assets under `assetsDir` with `Cache-Control: public, 
 
 ### Local HTTPS
 
-`server.https: true` serves `dev` and `preview` over HTTPS with a certificate issued by [mkcert](https://github.com/FiloSottile/mkcert) into `.steambun/https/`, for APIs that need a secure context (service workers on a LAN address, WebAuthn, the clipboard). Run `mkcert -install` once so browsers trust its local CA. Without mkcert on `PATH`, startup fails with an error; set `server.https` to `{ key, cert }` instead.
+Set `server.https` to `{ key, cert }` to serve `dev`, `preview`, `dist/server.js`, and a compiled binary over HTTPS, for APIs that need a secure context (service workers on a LAN address, WebAuthn, the clipboard). steambun doesn't issue certificates: generate one yourself, for example with [mkcert](https://github.com/FiloSottile/mkcert) (run `mkcert -install` once so browsers trust its local CA):
 
-- It covers `localhost`, `127.0.0.1`, and `::1`, plus `server.host` when that's a name or address, plus every LAN IPv4 address when binding all interfaces. It's reused until it's within a day of expiring or the host list changes.
-- `dist/server.js` and a compiled binary never use it: `https: true` there prints a warning and serves plain HTTP. Give them `{ key, cert }` for real TLS.
+```sh
+mkcert -key-file key.pem -cert-file cert.pem localhost 127.0.0.1 ::1
+```
+
+```ts
+export default defineConfig({ server: { https: { key: "key.pem", cert: "cert.pem" } } });
+```
+
+`server.https: true` is an error in a TypeScript config, and is warned about and dropped from `bunfig.toml` and Vite configs.
 
 ## publicDir
 

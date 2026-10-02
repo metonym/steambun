@@ -62,6 +62,12 @@ function convertViteAlias(alias: unknown): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Only `{ key, cert }` file paths map; Vite's `true` and inline PEM/Buffer values don't. */
+function viteHttps(https: unknown): boolean {
+  const rec = asRecord(https);
+  return typeof rec?.key === "string" && typeof rec.cert === "string";
+}
+
 /** Copies `allowed` keys, warning on the rest. `undefined` for a non-object or when nothing was allowed. */
 function pick(
   section: string,
@@ -93,7 +99,13 @@ export function convertViteConfig(vite: Record<string, unknown>): {
   }
 
   const server = pick("server", vite.server, SERVER_KEYS, unsupported);
-  if (server) config.server = server as ServerOptions;
+  if (server) {
+    if ("https" in server && !viteHttps(server.https)) {
+      delete server.https;
+      unsupported("server.https");
+    }
+    if (Object.keys(server).length > 0) config.server = server as ServerOptions;
+  }
 
   const build = pick("build", vite.build, BUILD_KEYS, unsupported);
   if (build) {

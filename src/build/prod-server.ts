@@ -11,7 +11,7 @@ export interface ProdServeOptions {
   embedOutDir?: boolean;
   /** Check `envSchema` at startup against `process.env` layered over these build-time public values. */
   envCheck?: Record<string, string>;
-  /** `steambun preview`: `server.https: true` uses the local dev certificate, and `strictPort` defaults off. A deployed server defaults it on so it never silently moves ports. */
+  /** `steambun preview`: skips the response cache and `strictPort` defaults off. A deployed server defaults it on so it never silently moves ports. */
   local?: boolean;
 }
 
@@ -137,7 +137,7 @@ const server = serveWithPortRetry(
   {
     port,
     hostname: hostnameFromHost(host),
-    tls: tlsFromHttps(config.server.https, config.root${opts.local ? ", { devCert: true }" : ""}),
+    tls: tlsFromHttps(config.server.https, config.root),
     ...app.serveOptions,
   },
   { strictPort },

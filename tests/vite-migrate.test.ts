@@ -65,6 +65,30 @@ describe("viteConfigToUserConfig", () => {
     expect(config.resolve?.alias).toEqual({ "@": "/src", "~": "/lib" });
   });
 
+  test("server.https maps only as { key, cert } paths", () => {
+    const warnings: string[] = [];
+    const warn = (msg: string) => warnings.push(msg);
+    expect(
+      viteConfigToUserConfig({ server: { https: true } }, warn).server,
+    ).toBeUndefined();
+    expect(
+      viteConfigToUserConfig(
+        { server: { https: { key: Buffer.from("k"), cert: "c.pem" } } },
+        warn,
+      ).server,
+    ).toBeUndefined();
+    expect(warnings).toEqual([
+      '[steambun] Vite config key "server.https" is not supported and was ignored.',
+      '[steambun] Vite config key "server.https" is not supported and was ignored.',
+    ]);
+    expect(
+      viteConfigToUserConfig(
+        { server: { https: { key: "k.pem", cert: "c.pem" } } },
+        warn,
+      ).server?.https,
+    ).toEqual({ key: "k.pem", cert: "c.pem" });
+  });
+
   test("a build.target that is not a Bun target is dropped with a warning", () => {
     const warnings: string[] = [];
     const config = viteConfigToUserConfig(
