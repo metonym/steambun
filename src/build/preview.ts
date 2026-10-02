@@ -6,7 +6,7 @@ import { resolveFrom } from "../util/paths";
 import { childEnv } from "../util/server-env";
 import { writeProdServe } from "./prod-server";
 
-export interface PreviewOptions {
+export interface PreviewCommandOptions {
   root?: string;
   mode?: string;
   configFile?: string;
@@ -16,7 +16,7 @@ export interface PreviewOptions {
   open?: boolean;
 }
 
-export async function preview(opts: PreviewOptions = {}): Promise<void> {
+export async function preview(opts: PreviewCommandOptions = {}): Promise<void> {
   const mode = opts.mode ?? "production";
   const config = await loadConfig({
     root: opts.root,

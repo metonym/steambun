@@ -17,7 +17,7 @@ import { discoverConfigHtmlEntries, discoverSkipDirs } from "./discover";
 import { synthesizeDevServer } from "./synth";
 import { setupDevWatchers } from "./watch";
 
-export interface DevOptions {
+export interface DevCommandOptions {
   root?: string;
   mode?: string;
   configFile?: string;
@@ -27,7 +27,7 @@ export interface DevOptions {
   open?: boolean;
 }
 
-export async function dev(opts: DevOptions = {}): Promise<void> {
+export async function dev(opts: DevCommandOptions = {}): Promise<void> {
   const mode = opts.mode ?? "development";
 
   let shuttingDown = false;

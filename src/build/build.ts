@@ -32,7 +32,7 @@ import { assertBuildSuccess, createHtmlBuildConfig } from "./options";
 import { precompressDir } from "./precompress";
 import { printBuildSummary } from "./summary";
 
-export interface BuildOptions {
+export interface BuildCommandOptions {
   root?: string;
   mode?: string;
   configFile?: string;
@@ -124,7 +124,7 @@ async function closeBundle(
   }
 }
 
-export async function build(opts: BuildOptions = {}): Promise<void> {
+export async function build(opts: BuildCommandOptions = {}): Promise<void> {
   const startedAt = performance.now();
   const mode = opts.mode ?? "production";
   const config = await loadConfig({
