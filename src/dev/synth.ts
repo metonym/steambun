@@ -170,20 +170,22 @@ const config = await loadConfig({
   ${config.configFile ? `configFile: ${JSON.stringify(config.configFile)},` : ""}
 });
 
-const app = await createApp({
-  config,
-  mode: "dev",
-  htmlRoutes: {
-${htmlRouteEntries}
-  },
-});
-
 ${SERVER_ENV_DECODER_SOURCE}
 const { port, host, strictPort, open } = serverOverridesFromEnv(process.env, {
   port: config.server.port,
   host: config.server.host,
   strictPort: config.server.strictPort,
   open: config.server.open,
+});
+// \`HOST\` can name the hostname \`server.allowedHosts\` should accept.
+config.server.host = host;
+
+const app = await createApp({
+  config,
+  mode: "dev",
+  htmlRoutes: {
+${htmlRouteEntries}
+  },
 });
 
 const server = serveWithPortRetry(

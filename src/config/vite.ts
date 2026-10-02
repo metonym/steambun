@@ -15,6 +15,7 @@ const SERVER_KEYS = new Set([
   "headers",
   "proxy",
   "https",
+  "allowedHosts",
 ]);
 const BUILD_KEYS = new Set([
   "outDir",
@@ -104,6 +105,8 @@ export function convertViteConfig(vite: Record<string, unknown>): {
       delete server.https;
       unsupported("server.https");
     }
+    // Vite's legacy spelling of `true`.
+    if (server.allowedHosts === "all") server.allowedHosts = true;
     if (Object.keys(server).length > 0) config.server = server as ServerOptions;
   }
 

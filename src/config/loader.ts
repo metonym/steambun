@@ -265,6 +265,22 @@ export function resolveDefaults(
     throw invalid("server.maxRequestBodySize", "a positive integer", maxBody);
   }
 
+  const allowedHosts: unknown = server.allowedHosts;
+  if (
+    allowedHosts !== undefined &&
+    allowedHosts !== true &&
+    !(
+      Array.isArray(allowedHosts) &&
+      allowedHosts.every((host) => typeof host === "string" && host !== "")
+    )
+  ) {
+    throw invalid(
+      "server.allowedHosts",
+      "true or an array of non-empty hostnames",
+      allowedHosts,
+    );
+  }
+
   checkBudgets(userConfig.build?.budgets);
 
   const build = withDefaults<ResolvedConfig["build"]>(

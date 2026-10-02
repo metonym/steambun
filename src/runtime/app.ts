@@ -2,6 +2,7 @@ import { join, relative } from "node:path";
 import type { ResolvedConfig } from "../config/types";
 import { DIST_SERVER_FILE } from "../util/paths";
 import { splitPlugins } from "../util/plugins";
+import { createHostGuard } from "./allowed-hosts";
 import type { ApiHandler, ApiRouteCollision } from "./api-routes";
 import { API_PREFIX, isApiPath, loadApiRoutes, stemOf } from "./api-routes";
 import {
@@ -34,6 +35,8 @@ export type CreateAppOptions = {
       outDir: string;
       /** Remember each path's resolved file. Default `true`; `steambun preview` sets `false` so a rebuild shows up. */
       cache?: boolean;
+      /** `dist/server.js` and compiled binaries: check `Host` only against an explicit `server.allowedHosts`, not the local defaults. */
+      deployed?: boolean;
     }
 );
 
@@ -112,10 +115,16 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
   const rows: RouteRow[] = [];
   const apiDir = opts.apiDir ?? config.api;
 
+  const hostGuard = createHostGuard(
+    config.server,
+    opts.mode === "dev" || !opts.deployed,
+  );
+  const guarded = hostGuard ? [hostGuard, ...middleware] : middleware;
+
   const wrap = (fn: RouteHandler, label: string): RouteHandler => {
     const handler = withSseTimeout(fn);
     return withMiddleware(
-      middleware,
+      guarded,
       mode === "dev" ? wrapDevErrors(handler, label) : handler,
     );
   };
@@ -197,7 +206,7 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
   if (opts.mode === "preview") {
     const { outDir } = opts;
     // Not Bun's native `{ dir }` route: it can't open a compiled binary's embedded $bunfs.
-    routes["/*"] = createStaticHandler({
+    const serveStatic = createStaticHandler({
       outDir,
       spa: config.appType === "spa",
       immutablePrefix: `/${config.build.assetsDir}/`,
@@ -209,6 +218,9 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
           ? [DIST_SERVER_FILE]
           : [],
     });
+    routes["/*"] = hostGuard
+      ? withMiddleware([hostGuard], serveStatic)
+      : serveStatic;
     rows.push({ path: "/*", kind: "static", methods: ["*"], source: outDir });
   }
 

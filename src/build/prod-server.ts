@@ -122,16 +122,17 @@ const apiDirCandidates = config.api
   : [];
 const apiDir = apiDirCandidates.find(existsSync) ?? config.api;
 
-const app = await createApp({ config, mode: "preview", outDir, apiDir${opts.local ? ", cache: false" : ""} });
-
 ${SERVER_ENV_DECODER_SOURCE}
-const overrides = serverOverridesFromEnv(process.env, {
+const { port, host, strictPort, open } = serverOverridesFromEnv(process.env, {
   port: config.server.port,
   host: config.server.host,
   strictPort: config.server.strictPort ?? ${opts.local !== true},
   open: config.server.open,
 });
-const { port, host, strictPort, open } = overrides;
+// \`HOST\` can name the hostname \`server.allowedHosts\` should accept.
+config.server.host = host;
+
+const app = await createApp({ config, mode: "preview", outDir, apiDir, ${opts.local ? "cache: false" : "deployed: true"} });
 
 const server = serveWithPortRetry(
   {
