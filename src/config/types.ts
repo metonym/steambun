@@ -28,8 +28,8 @@ export interface ServerOptions {
   cors?: boolean;
   headers?: Record<string, string>;
   proxy?: Record<string, ProxyEntry>;
-  /** Paths resolve against `root`. `true` generates a local certificate with mkcert (must be on `PATH`) for `dev` and `preview`. */
-  https?: HttpsOptions | true;
+  /** Certificate files for TLS; paths resolve against `root`. */
+  https?: HttpsOptions;
   /** Seconds of inactivity before Bun closes the connection. Default 10. */
   idleTimeout?: number;
   /** Max request body size in bytes. Bun default is 128MB. */

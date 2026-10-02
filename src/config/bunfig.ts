@@ -332,7 +332,7 @@ const SERVER_TABLE: KeyTable<ServerOptions> = {
   cors: bool,
   headers: strRecord,
   proxy: record(proxyEntry),
-  https: union(oneOf(true), httpsEntry),
+  https: httpsEntry,
   idleTimeout: num,
   maxRequestBodySize: num,
   strictPort: bool,

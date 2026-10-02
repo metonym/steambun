@@ -149,6 +149,23 @@ describe("config validation", () => {
     ).toBe(65535);
   });
 
+  test("rejects server.https: true and malformed https objects", () => {
+    expect(() =>
+      resolveDefaults({ server: { https: true } as never }, ctx()),
+    ).toThrow(
+      "[steambun] server.https: true is not supported; pass { key, cert }",
+    );
+    expect(() =>
+      resolveDefaults({ server: { https: { key: "k.pem" } as never } }, ctx()),
+    ).toThrow("[steambun] server.https must be");
+    expect(
+      resolveDefaults(
+        { server: { https: { key: "k.pem", cert: "c.pem" } } },
+        ctx(),
+      ).server.https,
+    ).toEqual({ key: "k.pem", cert: "c.pem" });
+  });
+
   test.each([0, -5, 1.5])("rejects maxRequestBodySize %p", (size) => {
     expect(() =>
       resolveDefaults({ server: { maxRequestBodySize: size } }, ctx()),

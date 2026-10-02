@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { loadConfig } from "../config/loader";
 import { loadEnvFiles, withProcessEnv } from "../env/loader";
 import { validateEnv } from "../env/schema";
-import { prepareDevCert } from "../util/dev-cert";
 import { resolveFrom } from "../util/paths";
 import { childEnv } from "../util/server-env";
 import { writeProdServe } from "./prod-server";
@@ -40,9 +39,6 @@ export async function preview(opts: PreviewOptions = {}): Promise<void> {
   const env = withProcessEnv(await loadEnvFiles(mode, config.envDir));
   await validateEnv(config.envSchema, env);
 
-  if (config.server.https === true) {
-    await prepareDevCert(config, config.server.host);
-  }
   const servePath = await writeProdServe(config, outDir, "prod-serve.ts", {
     local: true,
   });

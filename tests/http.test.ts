@@ -8,6 +8,7 @@ import {
   createErrorHandler,
   headersMiddleware,
   serveWithPortRetry,
+  tlsFromHttps,
 } from "../src/runtime/http";
 import type { Middleware } from "../src/runtime/middleware";
 import { withMiddleware } from "../src/runtime/middleware";
@@ -287,4 +288,50 @@ describe("listPublicFiles", () => {
       warnSpy.mockRestore();
     }
   });
+});
+
+describe("tlsFromHttps", () => {
+  test("is undefined without server.https", () => {
+    expect(tlsFromHttps(undefined, "/app")).toBeUndefined();
+  });
+
+  const openssl = Bun.which("openssl");
+  test.skipIf(!openssl)(
+    "serves TLS from key/cert files resolved against root",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "steambun-tls-"));
+      const gen = Bun.spawnSync([
+        openssl as string,
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "1",
+        "-subj",
+        "/CN=localhost",
+        "-keyout",
+        join(root, "key.pem"),
+        "-out",
+        join(root, "cert.pem"),
+      ]);
+      expect(gen.exitCode).toBe(0);
+
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        tls: tlsFromHttps({ key: "key.pem", cert: "cert.pem" }, root),
+        fetch: () => new Response("secure"),
+      });
+      try {
+        const res = await fetch(`https://127.0.0.1:${server.port}/`, {
+          tls: { rejectUnauthorized: false },
+        });
+        expect(await res.text()).toBe("secure");
+      } finally {
+        await server.stop(true);
+      }
+    },
+  );
 });

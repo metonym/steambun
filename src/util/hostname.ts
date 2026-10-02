@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import { type NetworkInterfaceInfo, networkInterfaces } from "node:os";
 
 /** `[::1]` as written in URLs and some configs becomes `::1`. */
-export function stripBrackets(host: string): string {
+function stripBrackets(host: string): string {
   return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 }
 

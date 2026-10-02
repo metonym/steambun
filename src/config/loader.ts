@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseSize } from "../build/analyze";
+import { asRecord } from "../util/guards";
 import { isInside, resolveFrom } from "../util/paths";
 import { splitPlugins } from "../util/plugins";
 import {
@@ -246,6 +247,18 @@ export function resolveDefaults(
     server.port > 65535
   ) {
     throw invalid("server.port", "an integer between 0 and 65535", server.port);
+  }
+  const https: unknown = server.https;
+  if (https === true) {
+    throw new Error(
+      "[steambun] server.https: true is not supported; pass { key, cert }",
+    );
+  }
+  if (https !== undefined) {
+    const rec = asRecord(https);
+    if (typeof rec?.key !== "string" || typeof rec.cert !== "string") {
+      throw invalid("server.https", "{ key, cert } file paths", https);
+    }
   }
   const maxBody = server.maxRequestBodySize;
   if (maxBody !== undefined && !(Number.isInteger(maxBody) && maxBody > 0)) {

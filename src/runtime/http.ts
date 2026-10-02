@@ -1,5 +1,4 @@
 import type { HttpsOptions } from "../config/types";
-import { devCertPaths } from "../util/dev-cert";
 import { resolveFrom } from "../util/paths";
 import type { Middleware, RouteHandler, ServerLike } from "./middleware";
 
@@ -107,21 +106,10 @@ export function composeServerMiddleware(
 
 /** Vite-shaped `server.https` (file paths) → `Bun.serve({ tls })` (file handles). */
 export function tlsFromHttps(
-  https: HttpsOptions | true | undefined,
+  https: HttpsOptions | undefined,
   root: string,
-  opts: { devCert?: boolean } = {},
 ): Bun.TLSOptions | undefined {
   if (!https) return undefined;
-  if (https === true) {
-    if (!opts.devCert) {
-      console.warn(
-        "[steambun] server.https: true is a local dev certificate for `dev` and `preview` only — serving plain HTTP. Set server.https to { key, cert } for TLS here.",
-      );
-      return undefined;
-    }
-    const paths = devCertPaths(root);
-    return { key: Bun.file(paths.key), cert: Bun.file(paths.cert) };
-  }
   const resolve = (path: string) => resolveFrom(root, path);
   const ca = https.ca
     ? Array.isArray(https.ca)
