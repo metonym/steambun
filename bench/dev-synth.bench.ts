@@ -8,10 +8,7 @@ import { synthesizeDevServer } from "../src/dev/synth";
 import { writeEnvDts } from "../src/env/types";
 import { writeRoutesDts } from "../src/routes-dts";
 
-// `routes.d.ts`/`env.d.ts` and the synthesized dev server are regenerated on
-// every restart; writeIfChanged (P11) skips the actual write when the
-// content is byte-identical, avoiding an mtime bump that would otherwise
-// trigger an editor's or `tsc --watch`'s re-check for no reason.
+// writeIfChanged skips byte-identical writes so mtime doesn't trigger a re-check.
 function makeFixture(): string {
   const root = mkdtempSync(join(tmpdir(), "steambun-dev-synth-"));
   writeFileSync(
@@ -51,10 +48,7 @@ async function synthAll(root: string): Promise<void> {
 let fixtureRoot: string;
 
 group("dev/synth: synthesizeDevServer + writeRoutesDts + writeEnvDts", () => {
-  // Two calls per trial against the same fixture root: the first is a
-  // cold write only on the very first trial (every later trial's "first"
-  // call already matches what the previous trial wrote), the second is
-  // always the no-change path — the pair this bench exists to measure.
+  // The second call is always the no-change path this bench measures.
   task(
     "write, then write again unchanged",
     async () => {

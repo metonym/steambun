@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -72,12 +72,6 @@ describe("transformImportGlobs", () => {
     ).toBe(
       '({"./mods/a.ts": () => import("./mods/a.ts?x=1").then((m) => m["name"])})',
     );
-    expect(
-      transform(
-        root,
-        'import.meta.glob("./mods/*.txt", { query: { raw: true } })',
-      ),
-    ).toBe('({"./mods/c.txt": () => import("./mods/c.txt?raw=true")})');
   });
 
   test("root-relative and aliased patterns are keyed from root", () => {
@@ -92,23 +86,33 @@ describe("transformImportGlobs", () => {
     ).toBe(expected);
   });
 
-  test("excludes the importer and node_modules unless exhaustive", () => {
+  test("excludes the importer, dotfiles, and node_modules below the pattern's directory", () => {
     const root = project({
       "src/a.ts": "",
       "src/node_modules/dep/index.ts": "",
       "src/.hidden.ts": "",
+      "src/my_node_modules_docs/y.ts": "",
     });
     expect(transform(root, 'import.meta.glob("./**/*.ts")', "src/a.ts")).toBe(
-      "({})",
+      '({"./my_node_modules_docs/y.ts": () => import("./my_node_modules_docs/y.ts")})',
     );
-    expect(
-      transform(
-        root,
-        'import.meta.glob("./**/*.ts", { exhaustive: true })',
-        "src/a.ts",
-      ),
-    ).toBe(
-      '({"./.hidden.ts": () => import("./.hidden.ts"), "./node_modules/dep/index.ts": () => import("./node_modules/dep/index.ts")})',
+    expect(transform(root, 'import.meta.glob("./node_modules/dep/*.ts")')).toBe(
+      '({"./node_modules/dep/index.ts": () => import("./node_modules/dep/index.ts")})',
+    );
+  });
+
+  test("globs under directories whose names contain glob characters", () => {
+    const root = project({ "src/[id]/a.ts": "", "src/[id]/b.ts": "" });
+    expect(transform(root, 'import.meta.glob("./*.ts")', "src/[id]/b.ts")).toBe(
+      '({"./a.ts": () => import("./a.ts")})',
+    );
+  });
+
+  test("a literal pattern matches files, not directories", () => {
+    const root = project(MODS);
+    expect(transform(root, 'import.meta.glob("./mods")')).toBe("({})");
+    expect(transform(root, 'import.meta.glob("./mods/a.ts")')).toBe(
+      '({"./mods/a.ts": () => import("./mods/a.ts")})',
     );
   });
 
@@ -131,11 +135,151 @@ describe("transformImportGlobs", () => {
       /must be literals/,
     );
     expect(() =>
-      transform(root, 'import.meta.glob("./mods/*", { as: "raw" })'),
-    ).toThrow(/`as` was removed/);
+      transform(root, 'import.meta.glob("./mods/*", { nope: true })'),
+    ).toThrow(/unsupported option "nope" \(supported: eager, import, query\)/);
+    for (const option of ["exhaustive", "base", "as", "caseSensitive"]) {
+      expect(() =>
+        transform(root, `import.meta.glob("./mods/*", { ${option}: true })`),
+      ).toThrow(`unsupported option "${option}"`);
+    }
     expect(() => transform(root, 'import.meta.glob("mods/*")')).toThrow(
       /must start with/,
     );
+  });
+});
+
+describe("matching", () => {
+  test("follows symlinked directories like fast-glob", () => {
+    if (process.platform === "win32") return;
+    const root = project({ "src/real/a.ts": "", "src/main.ts": "" });
+    symlinkSync(join(root, "src/real"), join(root, "src/link"));
+    expect(transform(root, 'import.meta.glob("./**/a.ts")')).toBe(
+      '({"./link/a.ts": () => import("./link/a.ts"), "./real/a.ts": () => import("./real/a.ts")})',
+    );
+  });
+
+  test("a pattern that is exactly an alias key resolves like Vite: a file matches, a directory is empty", () => {
+    const root = project({ ...MODS, "src/mods/a.ts": "" });
+    const ctx = (alias: Record<string, string>) => ({
+      importer: join(root, "src/main.ts"),
+      root,
+      alias,
+    });
+    expect(
+      transformImportGlobs(
+        'import.meta.glob("@mod")',
+        ctx({ "@mod": "./src/mods/a.ts" }),
+      ),
+    ).toBe('({"/src/mods/a.ts": () => import("./mods/a.ts")})');
+    expect(
+      transformImportGlobs('import.meta.glob("@")', ctx({ "@": "./src" })),
+    ).toBe("({})");
+    expect(() =>
+      transformImportGlobs('import.meta.glob("@x")', ctx({ "@": "./src" })),
+    ).toThrow(/must start with/);
+  });
+});
+
+describe("string literals", () => {
+  const glob = (root: string, arg: string) =>
+    transform(root, `import.meta.glob(${arg})`);
+
+  test("\\u and \\x escapes are code units", () => {
+    const root = project({ "src/mods/ab.ts": "" });
+    expect(glob(root, String.raw`'./mods/\u0061\x62.ts'`)).toBe(
+      '({"./mods/ab.ts": () => import("./mods/ab.ts")})',
+    );
+    expect(glob(root, String.raw`'./mods/\u{61}b.ts'`)).toBe(
+      '({"./mods/ab.ts": () => import("./mods/ab.ts")})',
+    );
+  });
+
+  test("an escaped quote is the quote, and a line continuation vanishes", () => {
+    const root = project({ "src/mods/q'x.ts": "", "src/mods/ab.ts": "" });
+    expect(glob(root, String.raw`'./mods/q\'x.ts'`)).toBe(
+      `({"./mods/q'x.ts": () => import("./mods/q'x.ts")})`,
+    );
+    expect(glob(root, "'./mods/a\\\nb.ts'")).toBe(
+      '({"./mods/ab.ts": () => import("./mods/ab.ts")})\n',
+    );
+  });
+
+  test("\\n is a newline, not the letter n", () => {
+    const root = project({ "src/mods/anb.ts": "" });
+    expect(glob(root, String.raw`"./mods/a\nb.ts"`)).toBe("({})");
+    expect(glob(root, String.raw`"./mods/a\u006eb.ts"`)).toBe(
+      '({"./mods/anb.ts": () => import("./mods/anb.ts")})',
+    );
+  });
+
+  test("a newline escape matches a file whose name has a newline", () => {
+    if (process.platform === "win32") return;
+    const root = project({ "src/mods/a\nb.ts": "" });
+    expect(glob(root, String.raw`"./mods/a\nb.ts"`)).toBe(
+      '({"./mods/a\\nb.ts": () => import("./mods/a\\nb.ts")})',
+    );
+  });
+
+  test("a backslash escape (\\\\) is one backslash", () => {
+    if (process.platform === "win32") return;
+    const root = project({ "src/mods/a\\b.ts": "" });
+    expect(glob(root, String.raw`"./mods/a\\b.ts"`)).toBe(
+      '({"./mods/a\\\\b.ts": () => import("./mods/a\\\\b.ts")})',
+    );
+  });
+});
+
+describe("call-site scanner", () => {
+  test("a regex literal with an unbalanced quote does not hide a later call", () => {
+    const root = project(MODS);
+    for (const prelude of [
+      'const q = /"/;',
+      "const q = /'/g;",
+      "const q = /[\"']/;",
+      "const q = a.replace(/`/g, '');",
+      'if (x) { y = /"/.test(z); }',
+      "const f = (s) => /'/.test(s);",
+      "return /'/.test(s) && ",
+    ]) {
+      const out = transform(
+        root,
+        `${prelude}\nconst m = import.meta.glob("./mods/a.ts");`,
+      );
+      expect(out).toContain("() => import(");
+    }
+  });
+
+  test("division and JSX closing tags are not mistaken for regexes", () => {
+    const root = project(MODS);
+    expect(
+      transform(
+        root,
+        'const h = a / b / c; const m = import.meta.glob("./mods/a.ts");',
+      ),
+    ).toContain("() => import(");
+    expect(
+      transform(
+        root,
+        'const el = <b>x</b>; const m = import.meta.glob("./mods/a.ts");',
+      ),
+    ).toContain("() => import(");
+  });
+
+  test("an unterminated quote in JSX text only hides the rest of its line", () => {
+    const root = project(MODS);
+    expect(
+      transform(
+        root,
+        "const el = <p>don't</p>;\nconst m = import.meta.glob('./mods/a.ts');",
+      ),
+    ).toContain("() => import(");
+  });
+
+  test("a call text inside a regex is not expanded", () => {
+    const root = project(MODS);
+    expect(
+      transform(root, 'const r = /import.meta.glob("x")/;'),
+    ).toBeUndefined();
   });
 });
 

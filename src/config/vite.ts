@@ -1,7 +1,7 @@
 import { asRecord } from "../util/guards";
+import { log } from "../util/terminal";
 import type {
   BuildOptions,
-  PreviewOptions,
   ResolveOptions,
   ServerOptions,
   UserConfig,
@@ -24,11 +24,12 @@ const BUILD_KEYS = new Set([
   "manifest",
   "target",
 ]);
-const PREVIEW_KEYS = new Set(["port", "host", "open", "strictPort"]);
+const BUN_TARGETS = new Set(["browser", "bun", "node"]);
+// `extensions` is accepted and dropped: Bun already resolves .ts/.tsx/.js/.jsx/.json.
+const RESOLVE_KEYS = new Set(["alias", "extensions"]);
 const TOP_KEYS = new Set([
   "server",
   "build",
-  "preview",
   "resolve",
   "define",
   "envPrefix",
@@ -61,11 +62,7 @@ function convertViteAlias(alias: unknown): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Copies `allowed` keys of `raw` into a fresh object, warning (via
- * `unsupported`) on everything else — the shared "allowlist, warn the rest"
- * shape behind `server`/`build`/`preview`. Returns `undefined` for a
- * non-object `raw` or an object with no allowed keys, so callers can
- * `if (picked) config.x = picked`. */
+/** Copies `allowed` keys, warning on the rest. `undefined` for a non-object or when nothing was allowed. */
 function pick(
   section: string,
   raw: unknown,
@@ -82,26 +79,14 @@ function pick(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/**
- * Converts the static, data-only subset of a Vite config into a steambun
- * `UserConfig`, warning (once per key) for anything not on the allowlist:
- * `server.{port,host,open,cors,headers,proxy,https}`,
- * `build.{outDir,assetsDir,sourcemap,minify,manifest,target}`,
- * `preview.{port,host,open,strictPort}`,
- * `resolve.{alias,extensions}` (alias as array or object form), `define`,
- * `envPrefix`, `envDir`, `base`, `publicDir`, `appType` (`"spa"`/`"mpa"`
- * only), and `plugins` (always warned — Vite plugins can't run under Bun's
- * bundler).
- */
-export function viteConfigToUserConfig(
-  vite: Record<string, unknown>,
-  warn: (msg: string) => void = console.warn,
-): UserConfig {
+/** Converts the static, data-only subset of a Vite config, listing every key that was ignored. */
+export function convertViteConfig(vite: Record<string, unknown>): {
+  config: UserConfig;
+  ignored: string[];
+} {
   const config: UserConfig = {};
-  const unsupported = (path: string) =>
-    warn(
-      `[steambun] Vite config key "${path}" is not supported and was ignored.`,
-    );
+  const ignored: string[] = [];
+  const unsupported = (path: string) => void ignored.push(path);
 
   for (const key of Object.keys(vite)) {
     if (!TOP_KEYS.has(key)) unsupported(key);
@@ -111,33 +96,34 @@ export function viteConfigToUserConfig(
   if (server) config.server = server as ServerOptions;
 
   const build = pick("build", vite.build, BUILD_KEYS, unsupported);
-  if (build) config.build = build as BuildOptions;
-
-  const preview = pick("preview", vite.preview, PREVIEW_KEYS, unsupported);
-  if (preview) config.preview = preview as PreviewOptions;
-
-  const viteResolve = asRecord(vite.resolve);
-  if (viteResolve) {
-    const resolve: Record<string, unknown> = {};
-    for (const key of Object.keys(viteResolve)) {
-      if (key !== "alias" && key !== "extensions")
-        unsupported(`resolve.${key}`);
+  if (build) {
+    // Vite's "esbuild" / "terser" / "oxc" minifiers all become Bun's.
+    if (typeof build.minify === "string") build.minify = true;
+    // Vite's build.target ("esnext", "modules", ...) is a browserslist-style value, not a Bun target.
+    if ("target" in build && !BUN_TARGETS.has(build.target as string)) {
+      delete build.target;
+      unsupported("build.target");
     }
+    config.build = build as BuildOptions;
+  }
+
+  const viteResolve = pick("resolve", vite.resolve, RESOLVE_KEYS, unsupported);
+  if (viteResolve) {
+    const resolve: ResolveOptions = {};
     const alias = convertViteAlias(viteResolve.alias);
     if (alias) resolve.alias = alias;
-    if (
-      Array.isArray(viteResolve.extensions) &&
-      viteResolve.extensions.every((ext) => typeof ext === "string")
-    ) {
-      resolve.extensions = viteResolve.extensions;
-    }
-    if (Object.keys(resolve).length > 0) {
-      config.resolve = resolve as ResolveOptions;
-    }
+    if (Object.keys(resolve).length > 0) config.resolve = resolve;
   }
 
   const define = asRecord(vite.define);
-  if (define) config.define = define as Record<string, string>;
+  if (define) {
+    config.define = Object.fromEntries(
+      Object.entries(define).map(([key, value]) => [
+        key,
+        typeof value === "string" ? value : JSON.stringify(value),
+      ]),
+    );
+  }
   if (typeof vite.envPrefix === "string" || Array.isArray(vite.envPrefix)) {
     config.envPrefix = vite.envPrefix as string | string[];
   }
@@ -149,11 +135,24 @@ export function viteConfigToUserConfig(
   if (vite.appType === "spa" || vite.appType === "mpa") {
     config.appType = vite.appType;
   } else if (vite.appType !== undefined) {
-    unsupported(`appType: ${JSON.stringify(vite.appType)}`);
+    unsupported("appType");
   }
-  if (vite.plugins !== undefined) {
-    warn("[steambun] Vite plugins are ignored; use Bun plugins.");
-  }
+  if (vite.plugins !== undefined) ignored.push("plugins");
 
+  return { config, ignored };
+}
+
+export function viteConfigToUserConfig(
+  vite: Record<string, unknown>,
+  warn: (msg: string) => void = log.warn,
+): UserConfig {
+  const { config, ignored } = convertViteConfig(vite);
+  for (const path of ignored) {
+    warn(
+      path === "plugins"
+        ? "[steambun] Vite plugins are ignored; use Bun plugins."
+        : `[steambun] Vite config key "${path}" is not supported and was ignored.`,
+    );
+  }
   return config;
 }

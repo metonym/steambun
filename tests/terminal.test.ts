@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { fail, log, ok, pad, setLogLevel, warn } from "../src/util/terminal";
 
 function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
@@ -32,10 +32,7 @@ function withTTY(isTTY: boolean | undefined, fn: () => void) {
   }
 }
 
-// colorEnabled/paint are internal to terminal.ts (no caller outside it); the
-// only public surface that exercises them is ok/warn/fail, which gate on a
-// real, non-"dumb" TTY before ever calling paint — so every case below runs
-// under withTTY(true) + TERM other than "dumb".
+// Every case runs on a TTY with TERM != "dumb": ok/warn/fail only call paint() then.
 describe("ok/warn/fail color handling (via paint, on a real TTY)", () => {
   test("NO_COLOR set to anything disables color, even an empty string", () => {
     withEnv(
@@ -65,8 +62,7 @@ describe("ok/warn/fail color handling (via paint, on a real TTY)", () => {
         });
       },
     );
-    // TTY fallback still enables color; FORCE_COLOR=0 is not a force-on.
-    // Mock Bun.color: its own FORCE_COLOR detection is fixed at process start.
+    // Bun.color's own FORCE_COLOR detection is fixed at process start, so mock it.
     const colorSpy = spyOn(Bun, "color").mockImplementation(
       (() => "\x1b[32m") as unknown as typeof Bun.color,
     );
@@ -85,9 +81,7 @@ describe("ok/warn/fail color handling (via paint, on a real TTY)", () => {
   });
 
   test("wraps the glyph in ANSI codes when color is enabled", () => {
-    // Bun.color's own TTY/FORCE_COLOR detection is fixed at process start, so
-    // mutating process.env mid-test can't move it — mock it instead to
-    // exercise paint()'s own colorEnabled() gate deterministically.
+    // Bun.color's own detection is fixed at process start, so mock it.
     const colorSpy = spyOn(Bun, "color").mockImplementation(
       (() => "\x1b[32m") as unknown as typeof Bun.color,
     );
@@ -130,8 +124,7 @@ describe("pad", () => {
           withTTY(true, () => {
             const painted = ok("hi");
             expect(painted).toBe("\x1b[32m✓\x1b[0m hi");
-            // Raw .length includes the ANSI escapes; pad must pad based on
-            // Bun.stringWidth (which ignores them), not painted.length.
+            // pad must measure with Bun.stringWidth, which ignores ANSI escapes.
             expect(painted.length).toBeGreaterThan(Bun.stringWidth(painted));
             expect(pad(painted, Bun.stringWidth(painted) + 3)).toBe(
               `${painted}   `,
@@ -177,10 +170,6 @@ describe("ok/warn/fail", () => {
 });
 
 describe("log", () => {
-  afterEach(() => {
-    setLogLevel("info");
-  });
-
   test("info fires at the default level", () => {
     const spy = spyOn(console, "log").mockImplementation(() => {});
     try {

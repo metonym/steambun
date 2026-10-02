@@ -1,69 +1,23 @@
-import { readFileSync, type Stats, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
-import { escapeRegExp } from "../util/regexp";
+import { type Stats, statSync } from "node:fs";
+import { join } from "node:path";
 
 export interface StaticHandlerOptions {
   outDir: string;
   spa: boolean;
   /** Path prefix (e.g. "/assets/") whose files get immutable caching. */
   immutablePrefix?: string;
-  /** Serve .br/.zst/.gz siblings when Accept-Encoding allows. Default true. */
+  /** Serve `.br`/`.zst`/`.gz` siblings when `Accept-Encoding` allows. Default `true`. */
   precompressed?: boolean;
-  /**
-   * Path to a `_headers.json` (glob, relative to `outDir` with a leading
-   * `/` — e.g. `"/*.html"` — → extra headers). Read once at startup;
-   * matched against the resolved file's path, merged into the response.
-   */
-  headersFile?: string;
-  /**
-   * Path to `.steambun-chunks.json` (`build.importMap`'s id → renamed-file
-   * map). Read once at startup; a request for `${base}@chunk/<id>.js` (the
-   * dynamic-import preload helper's stable-id URL, which import maps don't
-   * apply to) 308-redirects to the current hashed file. Missing file or
-   * unknown id → no match / 404.
-   */
-  chunkMapFile?: string;
-  /** Path prefix requests are served under. Default `"/"`. */
+  /** Path prefix requests are served under (stripped before lookup). Default `"/"`. */
   base?: string;
   /**
-   * Cache resolved paths (file, stat-derived etag/size, precompressed
-   * variants, matched `_headers.json` rules) per decoded pathname, bounded
-   * to 10,000 entries. Default `true`.
-   *
-   * Safe because `outDir` is immutable for the entire lifetime of the
-   * process that serves it: `steambun preview`, the generated
-   * `dist/server.js`, and a `--compile`d binary all serve a build that was
-   * produced once and never changes underneath the running server (a
-   * rebuild restarts the process). `steambun dev` never calls
-   * `createStaticHandler` at all. Set `cache: false` only if you are
-   * calling this handler yourself against a directory that can change
-   * while the process is alive.
+   * Cache stat results per decoded pathname (bounded to 10,000). Default `true`.
+   * Safe for `dist/server.js` and compiled binaries, whose `outDir` never
+   * changes while serving; set `false` for a directory that does (`preview`).
    */
   cache?: boolean;
-}
-
-interface HeadersRule {
-  matcher: InstanceType<typeof Bun.Glob>;
-  headers: Record<string, string>;
-}
-
-/** Parses a JSON file; a missing path, unreadable file, or bad JSON yields `undefined`. */
-function readJsonFile<T>(file: string | undefined): T | undefined {
-  if (!file) return undefined;
-  try {
-    return JSON.parse(readFileSync(file, "utf8")) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-function loadHeadersRules(headersFile: string | undefined): HeadersRule[] {
-  const raw = readJsonFile<Record<string, Record<string, string>>>(headersFile);
-  if (!raw) return [];
-  return Object.entries(raw).map(([glob, headers]) => ({
-    matcher: new Bun.Glob(glob),
-    headers,
-  }));
+  /** Root-relative paths that are never served, compared case-insensitively (some filesystems are). */
+  exclude?: readonly string[];
 }
 
 type EncodingName = "zstd" | "br" | "gzip";
@@ -78,13 +32,18 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 const ACCEPT_ENCODING_CACHE_LIMIT = 64;
 const acceptEncodingCache = new Map<string, ReadonlySet<string>>();
 
+const Q_ZERO = /;\s*q=0(?:\.0*)?\s*$/i;
+
 /** Memoized by raw header string — browsers send a handful of distinct values. */
 function acceptedEncodings(header: string | null): ReadonlySet<string> {
   if (!header) return EMPTY_SET;
   let accepted = acceptEncodingCache.get(header);
   if (!accepted) {
     accepted = new Set(
-      header.split(",").map((part) => part.split(";")[0]!.trim().toLowerCase()),
+      header
+        .split(",")
+        .filter((part) => !Q_ZERO.test(part))
+        .map((part) => part.split(";")[0]!.trim().toLowerCase()),
     );
     if (acceptEncodingCache.size >= ACCEPT_ENCODING_CACHE_LIMIT) {
       acceptEncodingCache.clear();
@@ -94,11 +53,15 @@ function acceptedEncodings(header: string | null): ReadonlySet<string> {
   return accepted;
 }
 
-/** Server-side build inputs, never served even though they live in outDir. */
-const DENIED_METADATA_FILES = new Set([
-  "_headers.json",
-  ".steambun-chunks.json",
-]);
+/** RFC 9110 weak comparison of `If-None-Match` (`*`, comma list, `W/` prefixes) against our weak ETag. */
+function etagMatches(header: string | null, etag: string): boolean {
+  if (!header) return false;
+  if (header.trim() === "*") return true;
+  const bare = etag.replace(/^W\//, "");
+  return header
+    .split(",")
+    .some((candidate) => candidate.trim().replace(/^W\//, "") === bare);
+}
 
 interface EncodingVariant {
   file: ReturnType<typeof Bun.file>;
@@ -106,26 +69,25 @@ interface EncodingVariant {
 }
 
 interface Entry {
-  filePath: string;
   file: ReturnType<typeof Bun.file>;
   size: number;
   etag: string;
   type: string;
   immutable: boolean;
   variants: Partial<Record<EncodingName, EncodingVariant>>;
-  extraHeaders: [string, string][];
+}
+
+interface ResolveContext {
+  outDir: string;
+  excluded: ReadonlySet<string>;
+  spa: boolean;
+  immutablePrefix: string | undefined;
+  precompressed: boolean;
 }
 
 const RESOLVE_CACHE_LIMIT = 10_000;
 
-/**
- * Candidate file paths for `safePath`, in resolution order: the exact path,
- * then `<path>.html` (when the last segment has no extension), then
- * `<path>/index.html`, then (spa only) `outDir/index.html`. Checking
- * `<path>/index.html` directly makes a separate `isDirectory()` probe on
- * `<path>` redundant — if that candidate is a file, `<path>` was a
- * directory.
- */
+/** In order: the path, `<path>.html` (extensionless last segment), `<path>/index.html`, then (spa) `index.html`. */
 function candidatePaths(
   outDir: string,
   safePath: string,
@@ -136,7 +98,8 @@ function candidatePaths(
   const candidates = [filePath];
   if (last && !last.includes(".")) candidates.push(`${filePath}.html`);
   candidates.push(join(filePath, "index.html"));
-  if (spa) candidates.push(join(outDir, "index.html"));
+  // A missing asset (`/assets/x.js`) is a 404, not the app shell.
+  if (spa && !last.includes(".")) candidates.push(join(outDir, "index.html"));
   return candidates;
 }
 
@@ -168,42 +131,17 @@ function resolveVariants(
   return variants;
 }
 
-function resolveExtraHeaders(
-  outDir: string,
-  filePath: string,
-  headersRules: HeadersRule[],
-): [string, string][] {
-  if (headersRules.length === 0) return [];
-  const matchPath = `/${relative(outDir, filePath).split(sep).join("/")}`;
-  const extraHeaders: [string, string][] = [];
-  for (const rule of headersRules) {
-    if (!rule.matcher.match(matchPath)) continue;
-    for (const [key, value] of Object.entries(rule.headers)) {
-      extraHeaders.push([key, value]);
-    }
-  }
-  return extraHeaders;
-}
-
-/**
- * Resolves `decoded` (a decoded pathname) to a fully-populated `Entry`: the
- * `BunFile`, stat-derived etag/size, pre-stat'd precompressed siblings, and
- * pre-matched `_headers.json` rules. Runs the filesystem probes exactly
- * once per pathname; callers are expected to cache the result (see
- * `StaticHandlerOptions.cache`).
- */
+/** Does all filesystem probing for a decoded pathname once, so the result can be cached. */
 function resolveEntry(
-  outDir: string,
+  { outDir, excluded, spa, immutablePrefix, precompressed }: ResolveContext,
   decoded: string,
-  spa: boolean,
-  immutablePrefix: string | undefined,
-  precompressed: boolean,
-  headersRules: HeadersRule[],
 ): Entry | null {
   if (decoded.includes("\0")) return null;
   const safePath = decoded.replace(/^\/+|\/+$/g, "");
-  if (safePath.split("/").some((segment) => segment === "..")) return null;
-  if (DENIED_METADATA_FILES.has(safePath)) return null;
+  // `\` separates segments on Windows, so `..\..\x` is a traversal there.
+  if (safePath.split(/[\\/]/).some((segment) => segment === "..")) return null;
+
+  if (excluded.has(safePath.toLowerCase())) return null;
 
   const found = findFile(outDir, safePath, spa);
   if (!found) return null;
@@ -216,14 +154,12 @@ function resolveEntry(
   const etag = `W/"${stat.size}-${Math.trunc(stat.mtimeMs).toString(16)}"`;
 
   return {
-    filePath,
     file,
     size: stat.size,
     etag,
     type: file.type,
     immutable,
     variants: resolveVariants(filePath, precompressed),
-    extraHeaders: resolveExtraHeaders(outDir, filePath, headersRules),
   };
 }
 
@@ -242,10 +178,15 @@ function buildResponse(
   } else {
     headers.set("cache-control", "no-cache");
     headers.set("etag", entry.etag);
-    if (req.headers.get("if-none-match") === entry.etag) {
+    if (etagMatches(req.headers.get("if-none-match"), entry.etag)) {
       status = 304;
       body = null;
     }
+  }
+
+  // Also on the uncompressed and 304 responses, so a cache never serves one encoding for another.
+  if (precompressed && Object.keys(entry.variants).length > 0) {
+    headers.set("vary", "Accept-Encoding");
   }
 
   if (status === 200 && precompressed) {
@@ -255,15 +196,12 @@ function buildResponse(
       const variant = entry.variants[name];
       if (!variant) continue;
       headers.set("content-encoding", name);
-      headers.set("vary", "Accept-Encoding");
       if (entry.type) headers.set("content-type", entry.type);
       body = variant.file;
       size = variant.size;
       break;
     }
   }
-
-  for (const [key, value] of entry.extraHeaders) headers.set(key, value);
 
   if (status === 200 && body) headers.set("content-length", String(size));
   if (req.method === "HEAD") body = null;
@@ -272,16 +210,12 @@ function buildResponse(
 }
 
 /**
- * Preview / --compile catch-all for files outside the native assetsDir
- * route: publicDir copies, directory index.html, and SPA fallback.
- * Precompressed `.br`/`.zst`/`.gz` siblings are served when the request's
- * `Accept-Encoding` allows, with conditional-GET (weak ETag) for everything
- * else and immutable caching under `immutablePrefix`.
+ * Preview / `--compile` catch-all for built files, directory
+ * `index.html`, and the SPA fallback. Serves precompressed siblings,
+ * conditional GETs (weak ETag), and immutable caching under `immutablePrefix`.
  *
  * @example
  * ```ts
- * import { createStaticHandler } from "steambun/runtime";
- *
  * Bun.serve({
  *   routes: { "/*": createStaticHandler({ outDir: "dist", spa: true }) },
  * });
@@ -297,55 +231,34 @@ export function createStaticHandler(
     precompressed = true,
     base = "/",
     cache: cacheEnabled = true,
+    exclude = [],
   } = opts;
-  const headersRules = loadHeadersRules(opts.headersFile);
-  const chunkMap =
-    readJsonFile<Record<string, string>>(opts.chunkMapFile) ?? {};
-  const chunkPattern = new RegExp(
-    `^${escapeRegExp(base)}@chunk/([a-z0-9]+)\\.js$`,
-  );
-  const resolveCache: Map<string, Entry | null> | null = cacheEnabled
-    ? new Map()
-    : null;
+  const context: ResolveContext = {
+    outDir,
+    excluded: new Set(exclude.map((path) => path.toLowerCase())),
+    spa,
+    immutablePrefix,
+    precompressed,
+  };
+  const basePrefix = base.endsWith("/") ? base : `${base}/`;
+  const stripBase = basePrefix.startsWith("/") && basePrefix !== "/";
+  const resolveCache = cacheEnabled
+    ? new Map<string, Entry | null>()
+    : undefined;
 
   function lookup(decoded: string): Entry | null {
-    if (!resolveCache) {
-      return resolveEntry(
-        outDir,
-        decoded,
-        spa,
-        immutablePrefix,
-        precompressed,
-        headersRules,
-      );
+    if (!resolveCache) return resolveEntry(context, decoded);
+    let entry = resolveCache.get(decoded);
+    if (entry === undefined) {
+      entry = resolveEntry(context, decoded);
+      if (resolveCache.size >= RESOLVE_CACHE_LIMIT) resolveCache.clear();
+      resolveCache.set(decoded, entry);
     }
-    const cached = resolveCache.get(decoded);
-    if (cached !== undefined) return cached;
-    const entry = resolveEntry(
-      outDir,
-      decoded,
-      spa,
-      immutablePrefix,
-      precompressed,
-      headersRules,
-    );
-    if (resolveCache.size >= RESOLVE_CACHE_LIMIT) resolveCache.clear();
-    resolveCache.set(decoded, entry);
     return entry;
   }
 
   return (req: Request) => {
     const pathname = new URL(req.url).pathname;
-
-    const chunkMatch = pathname.match(chunkPattern);
-    if (chunkMatch) {
-      const target = chunkMap[chunkMatch[1]!];
-      if (!target) return new Response("Not Found", { status: 404 });
-      return new Response(null, {
-        status: 308,
-        headers: { location: `${base}${target}`, "cache-control": "no-cache" },
-      });
-    }
 
     let decoded: string;
     try {
@@ -354,6 +267,13 @@ export function createStaticHandler(
         : pathname;
     } catch {
       return new Response("Bad Request", { status: 400 });
+    }
+    if (stripBase) {
+      if (decoded.startsWith(basePrefix)) {
+        decoded = decoded.slice(basePrefix.length - 1);
+      } else if (decoded === basePrefix.slice(0, -1)) {
+        decoded = "/";
+      }
     }
 
     const entry = lookup(decoded);

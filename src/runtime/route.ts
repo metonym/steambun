@@ -3,6 +3,7 @@ import {
   type ValidationIssue,
   validateWith,
 } from "../util/standard-schema";
+import { errorResponse } from "./http";
 
 /** Repeated keys (`?tag=a&tag=b`) become arrays. */
 export type RouteQuery = Record<string, string | string[]>;
@@ -13,7 +14,7 @@ export interface RouteContext<P, Q = RouteQuery, B = undefined> {
   query: Q;
   /** The validated body. `undefined` unless `route()` was given a `body` schema. */
   body: B;
-  server: unknown;
+  server: Bun.Server<unknown>;
 }
 
 export interface RouteSchemas {
@@ -29,21 +30,19 @@ type InputOr<S, Fallback> = S extends StandardSchemaV1
   ? StandardSchemaV1.InferInput<S>
   : Fallback;
 
-type RouteHandler<P, R, I> = ((
+type RouteFn<P, R, I> = ((
   req: Request & { params: P },
-  server?: unknown,
+  server?: Bun.Server<unknown>,
 ) => Promise<Response>) & {
   __steambun_return?: R;
   __steambun_input?: I;
 };
 
-// Each overload narrows the context differently; the implementation only
-// forwards it.
-// biome-ignore lint/suspicious/noExplicitAny: see above
+// biome-ignore lint/suspicious/noExplicitAny: each overload narrows the context differently
 type AnyRouteFn = (ctx: RouteContext<any, any, any>) => unknown;
 
-/** Where a failed schema check came from, alongside its issues. */
-export interface RouteValidationIssue extends ValidationIssue {
+/** A schema issue tagged with the request part it came from. */
+interface RouteValidationIssue extends ValidationIssue {
   in: "params" | "query" | "body";
 }
 
@@ -52,15 +51,23 @@ function addValue(
   key: string,
   value: unknown,
 ): void {
-  const existing = target[key];
-  if (existing === undefined) target[key] = value;
-  else if (Array.isArray(existing)) existing.push(value);
+  // Own keys only: `?constructor=a` must not see `Object.prototype.constructor`.
+  const existing = Object.hasOwn(target, key) ? target[key] : undefined;
+  if (existing === undefined) {
+    // Plain assignment of `__proto__` would set the prototype instead of a key.
+    if (key === "__proto__") {
+      Object.defineProperty(target, key, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    } else target[key] = value;
+  } else if (Array.isArray(existing)) existing.push(value);
   else target[key] = [existing, value];
 }
 
-// Same result as URLSearchParams ("+" is a space, percent-escapes decode,
-// malformed ones are kept), about 2x faster on typical API queries: most
-// keys and values need no decoding at all.
+// Same result as URLSearchParams, ~2x faster on typical queries (most parts need no decoding).
 function decodeQueryPart(part: string): string {
   if (part.indexOf("%") === -1 && part.indexOf("+") === -1) return part;
   try {
@@ -70,8 +77,7 @@ function decodeQueryPart(part: string): string {
   }
 }
 
-// Only the search string, not a full `new URL()` parse: request URLs carry
-// no fragment, so everything after the first "?" is the query.
+// Skips a full `new URL()` parse: request URLs carry no fragment, so everything after "?" is the query.
 function parseQuery(url: string): RouteQuery {
   const query: RouteQuery = {};
   const start = url.indexOf("?");
@@ -102,33 +108,52 @@ async function parseBody(req: Request): Promise<unknown> {
     type.includes("multipart/form-data")
   ) {
     const form: Record<string, unknown> = {};
-    for (const [key, value] of await req.formData()) {
-      addValue(form, key, value);
+    try {
+      for (const [key, value] of await req.formData()) {
+        addValue(form, key, value);
+      }
+    } catch {
+      throw new InvalidBody("Invalid form data");
     }
     return form;
   }
   const text = await req.text();
-  if (type && !type.includes("json")) return text;
   if (text === "") return undefined;
+  if (type && !type.includes("json")) return text;
   try {
     return JSON.parse(text);
   } catch {
-    throw new InvalidBody();
+    throw new InvalidBody("Invalid JSON");
   }
 }
 
+async function check(
+  issues: RouteValidationIssue[],
+  where: RouteValidationIssue["in"],
+  schema: StandardSchemaV1,
+  raw: unknown,
+): Promise<unknown> {
+  const result = await validateWith(schema, raw);
+  if (result.ok) return result.value;
+  for (const issue of result.issues) issues.push({ in: where, ...issue });
+  return undefined;
+}
+
+function toResponse(value: unknown): Response {
+  if (value instanceof Response) return value;
+  return value === undefined
+    ? new Response(null, { status: 204 })
+    : Response.json(value);
+}
+
 /**
- * Wraps a handler so its return value becomes `Response.json(value)`
- * (unless it's already a `Response`), and its declared return type carries
- * the original value type via a phantom `__steambun_return` property so
- * `steambun/client`'s `api()` can infer it. Without `route()`, `api()`'s
- * return type falls back to `unknown` for a route returning a bare `Response`.
+ * Wraps a handler so its return value becomes `Response.json(value)` (`204` for
+ * `undefined`, unchanged if already a `Response`) and its type reaches `steambun/client`'s `api()` via
+ * phantom `__steambun_return`/`__steambun_input` properties.
  *
- * Pass [Standard Schema](https://standardschema.dev) validators (zod,
- * valibot, arktype, ...) first to validate `params`, `query`, and `body`
- * before the handler runs. A failure returns `400` with
- * `{ error: "invalid request", issues: [{ in, path, message }] }`; the
- * schemas' input types also flow to `api()`'s `body` and `query` options.
+ * Optional first-argument [Standard Schema](https://standardschema.dev)
+ * validators check `params`, `query`, and `body` before the handler runs; a
+ * failure returns `400` with `{ error: "invalid request", issues: [{ in, path, message }] }`.
  *
  * @example
  * ```ts
@@ -146,7 +171,7 @@ async function parseBody(req: Request): Promise<unknown> {
  */
 export function route<P extends Record<string, string>, R>(
   fn: (ctx: RouteContext<P>) => R | Promise<R>,
-): RouteHandler<P, R, { query?: Record<string, string>; body?: unknown }>;
+): RouteFn<P, R, { query?: Record<string, string>; body?: unknown }>;
 export function route<S extends RouteSchemas, R>(
   schemas: S,
   fn: (
@@ -156,7 +181,7 @@ export function route<S extends RouteSchemas, R>(
       OutputOr<S["body"], undefined>
     >,
   ) => R | Promise<R>,
-): RouteHandler<
+): RouteFn<
   Record<string, string>,
   R,
   {
@@ -169,77 +194,53 @@ export function route(
   maybeFn?: AnyRouteFn,
 ): (
   req: Request & { params: Record<string, string> },
-  server?: unknown,
+  server?: Bun.Server<unknown>,
 ) => Promise<Response> {
   const schemas = typeof schemasOrFn === "function" ? {} : schemasOrFn;
   const fn = typeof schemasOrFn === "function" ? schemasOrFn : maybeFn!;
   if (!schemas.params && !schemas.query && !schemas.body) {
-    // The common case: no validation state to set up per request.
     return async (req, server) => {
-      const value = await fn(
-        new LazyQueryContext(req, req.params, undefined, server),
+      return toResponse(
+        await fn(new LazyQueryContext(req, req.params, undefined, server!)),
       );
-      return value instanceof Response ? value : Response.json(value);
     };
   }
   return async (req, server) => {
-    let issues: RouteValidationIssue[] | undefined;
-    const check = async (
-      where: RouteValidationIssue["in"],
-      schema: StandardSchemaV1,
-      raw: unknown,
-    ): Promise<unknown> => {
-      const result = await validateWith(schema, raw);
-      if (result.ok) return result.value;
-      issues ??= [];
-      for (const issue of result.issues) issues.push({ in: where, ...issue });
-      return undefined;
-    };
-
+    const issues: RouteValidationIssue[] = [];
     const params = schemas.params
-      ? await check("params", schemas.params, req.params)
+      ? await check(issues, "params", schemas.params, req.params)
       : req.params;
     const query = schemas.query
-      ? await check("query", schemas.query, parseQuery(req.url))
+      ? await check(issues, "query", schemas.query, parseQuery(req.url))
       : undefined;
     let body: unknown;
     if (schemas.body) {
-      let raw: unknown;
-      let parsed = true;
       try {
-        raw = await parseBody(req);
+        body = await check(issues, "body", schemas.body, await parseBody(req));
       } catch (error) {
         if (!(error instanceof InvalidBody)) throw error;
-        parsed = false;
-        issues ??= [];
-        issues.push({ in: "body", path: "", message: "Invalid JSON" });
+        issues.push({ in: "body", path: "", message: error.message });
       }
-      if (parsed) body = await check("body", schemas.body, raw);
     }
-    if (issues) {
-      return Response.json(
-        { error: "invalid request", issues },
-        { status: 400 },
-      );
+    if (issues.length > 0) {
+      return errorResponse(400, "invalid request", { issues });
     }
 
     const ctx = schemas.query
-      ? { req, params, query, body, server }
-      : new LazyQueryContext(req, params, body, server);
-    const value = await fn(ctx);
-    return value instanceof Response ? value : Response.json(value);
+      ? { req, params, query, body, server: server! }
+      : new LazyQueryContext(req, params, body, server!);
+    return toResponse(await fn(ctx));
   };
 }
 
-/** A handler that never reads `query` never pays to parse it. A class keeps
- * the getter on the prototype, so each request only allocates the fields. */
+/** Parses `query` only if the handler reads it; the prototype getter keeps per-request allocation to the fields. */
 class LazyQueryContext implements RouteContext<unknown, RouteQuery, unknown> {
   #query: RouteQuery | undefined;
   constructor(
     readonly req: Request,
     readonly params: unknown,
     readonly body: unknown,
-    readonly server: unknown,
+    readonly server: Bun.Server<unknown>,
   ) {}
   get query(): RouteQuery {
     this.#query ??= parseQuery(this.req.url);

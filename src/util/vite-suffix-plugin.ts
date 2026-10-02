@@ -1,84 +1,74 @@
+import { join } from "node:path";
 import type { BunPlugin } from "../config/types";
+import { aliasEntries, matchAlias, VITE_SUFFIX } from "./alias";
 
-const SUFFIX_RE = /^(.*)\?(raw|url|inline)$/;
-const NAMESPACE_PREFIX = "steambun-vite-suffix-";
-// Bun's bundler dedupes resolved modules by path alone, ignoring namespace —
-// two suffixes on the same file (e.g. `?raw` and `?url`) would otherwise
-// collapse into one binding (one onLoad result reused for both, or a
-// self-referencing `var x = x` when `?url`'s re-export targets the same
-// clean path as another suffix's virtual module). A per-suffix marker
-// keeps every resolved path unique; onLoad strips it back off.
-const MARKERS: Record<string, string> = {
-  raw: "\0steambun-vite-raw:",
-  url: "\0steambun-vite-url:",
-  inline: "\0steambun-vite-inline:",
+const VIRTUAL = /^\0steambun-vite-(raw|url|inline):(.*)$/s;
+const NAMESPACE = "steambun-vite-suffix";
+
+type Suffix = "raw" | "url" | "inline";
+
+const loaders: Record<Suffix, (path: string) => Promise<string> | string> = {
+  raw: async (path) =>
+    `export default ${JSON.stringify(await Bun.file(path).text())};`,
+  url: (path) =>
+    `import u from ${JSON.stringify(path)} with { type: "file" };\nexport default u;\n`,
+  inline: async (path) => {
+    const file = Bun.file(path);
+    const mime = file.type || "application/octet-stream";
+    const base64 = Buffer.from(await file.bytes()).toString("base64");
+    return `export default ${JSON.stringify(`data:${mime};base64,${base64}`)};`;
+  },
 };
 
-function realPathOf(markedPath: string, suffix: string): string {
-  return markedPath.slice(MARKERS[suffix]!.length);
+/** Vite's precedence for combined queries: `?raw` beats `?inline` beats `?url` (so `?url&inline` is a data URL). */
+function suffixOf(query: string): Suffix {
+  const params = query.split("&");
+  if (params.includes("raw")) return "raw";
+  return params.includes("inline") ? "inline" : "url";
 }
 
 /**
- * Vite's `?raw` / `?url` / `?inline` import-suffix convention, shimmed as a
- * Bun plugin. Enabled by `resolve.viteSuffixes: true` — applies in both
- * `dev` (through a `.steambun/plugin-*.ts` wrapper) and `build`.
- *
- * - `?raw` — the file's contents as a string export.
- * - `?url` — a `type: "file"` re-export (a hashed asset URL at build time).
- * - `?inline` — a `data:` URL of the file's contents.
+ * Vite's `?raw` / `?url` / `?inline` import suffixes as a Bun plugin.
+ * `?raw` is the file's text, `?url` a `type: "file"` re-export (a hashed asset URL in builds), and
+ * `?inline` a base64 `data:` URL. The suffix may sit among other params (`?raw&x`). Pass `alias`
+ * so `@/file.txt?raw` resolves.
  */
-export function createViteSuffixPlugin(): BunPlugin {
+export function createViteSuffixPlugin(
+  alias: Record<string, string> | undefined,
+  root: string,
+): BunPlugin {
+  const aliases = aliasEntries(alias, root);
   return {
     name: "steambun-vite-suffixes",
     setup(build) {
-      build.onResolve({ filter: SUFFIX_RE }, (args) => {
-        const match = args.path.match(SUFFIX_RE);
+      build.onResolve({ filter: VITE_SUFFIX }, (args) => {
+        const match = VITE_SUFFIX.exec(args.path);
         if (!match) return undefined;
-        const [, specifier, suffix] = match as [string, string, string];
-        const resolved = Bun.resolveSync(specifier, args.resolveDir);
+        const aliased = matchAlias(match[1]!, aliases);
+        const target = aliased ? join(aliased.to, aliased.rest) : match[1]!;
+        let resolved: string;
+        try {
+          resolved = Bun.resolveSync(target, args.resolveDir);
+        } catch (cause) {
+          throw new Error(
+            `[steambun] cannot resolve "${args.path}" from ${args.resolveDir}: ${(cause as Error).message}`,
+            { cause },
+          );
+        }
+        // Bun dedupes modules by path alone, so each suffix needs its own path prefix or two suffixes on one file collapse into one binding.
         return {
-          path: `${MARKERS[suffix]}${resolved}`,
-          namespace: `${NAMESPACE_PREFIX}${suffix}`,
+          path: `\0steambun-vite-${suffixOf(match[2]!)}:${resolved}`,
+          namespace: NAMESPACE,
         };
       });
 
-      build.onLoad(
-        { filter: /.*/, namespace: `${NAMESPACE_PREFIX}raw` },
-        async (args) => {
-          const text = await Bun.file(realPathOf(args.path, "raw")).text();
-          return {
-            contents: `export default ${JSON.stringify(text)};`,
-            loader: "js",
-          };
-        },
-      );
-
-      build.onLoad(
-        { filter: /.*/, namespace: `${NAMESPACE_PREFIX}url` },
-        (args) => {
-          const realPath = realPathOf(args.path, "url");
-          return {
-            contents: `import u from ${JSON.stringify(realPath)} with { type: "file" };\nexport default u;\n`,
-            loader: "js",
-          };
-        },
-      );
-
-      build.onLoad(
-        { filter: /.*/, namespace: `${NAMESPACE_PREFIX}inline` },
-        async (args) => {
-          const realPath = realPathOf(args.path, "inline");
-          const file = Bun.file(realPath);
-          const bytes = await file.bytes();
-          const mime = file.type || "application/octet-stream";
-          const base64 = Buffer.from(bytes).toString("base64");
-          const dataUrl = `data:${mime};base64,${base64}`;
-          return {
-            contents: `export default ${JSON.stringify(dataUrl)};`,
-            loader: "js",
-          };
-        },
-      );
+      build.onLoad({ filter: /.*/, namespace: NAMESPACE }, async (args) => {
+        const [, suffix, path] = VIRTUAL.exec(args.path)!;
+        return {
+          contents: await loaders[suffix as Suffix](path!),
+          loader: "js",
+        };
+      });
     },
   };
 }

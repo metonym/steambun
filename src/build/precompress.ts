@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   brotliCompress,
@@ -29,25 +29,16 @@ export const COMPRESSIBLE = new Set([
   ".wasm",
 ]);
 
-// A variant only pays off if it beats the original by a meaningful margin —
-// otherwise it's wasted disk and a wasted branch in the static handler.
-const MIN_SAVINGS_RATIO = 0.95;
+/** Files smaller than this are neither precompressed nor gzip-measured for the build summary. */
+export const MIN_COMPRESS_SIZE = 1024;
 
-const DEPLOY_METADATA_FILES = new Set([
-  "_headers",
-  "_redirects",
-  "vercel.json",
-]);
+const MIN_SAVINGS_RATIO = 0.95;
 
 const brotliAsync = promisify(brotliCompress);
 const gzipAsync = promisify(gzipCb);
 
-/**
- * Compresses `bytes` at the levels steambun ships everywhere (gzip 9,
- * brotli 11, zstd 19). All three run off the main thread, so callers should
- * fan out with `Promise.all` / `mapLimit` rather than awaiting one at a time.
- */
-export async function compress(
+/** gzip 9, brotli 11, zstd 19 — the levels steambun uses everywhere. All run off the main thread. */
+async function compress(
   bytes: Uint8Array<ArrayBuffer>,
   encoding: Encoding,
 ): Promise<Uint8Array> {
@@ -66,18 +57,24 @@ export async function compress(
   }
 }
 
-async function collectFiles(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await collectFiles(path)));
-    } else {
-      files.push(path);
-    }
-  }
-  return files;
+/** Size of `path`'s `.gz`/`.br`/`.zst` sibling written by `precompressDir`, if any. */
+export async function precompressedSize(
+  path: string,
+  encoding: Encoding,
+): Promise<number | undefined> {
+  const sibling = Bun.file(path + EXTENSION[encoding]);
+  return (await sibling.exists()) ? sibling.size : undefined;
+}
+
+/** Reuses a precompressed sibling (same codec levels, so same bytes) before compressing. */
+export async function compressedSize(
+  path: string,
+  encoding: Encoding,
+): Promise<number> {
+  return (
+    (await precompressedSize(path, encoding)) ??
+    (await compress(await Bun.file(path).bytes(), encoding)).length
+  );
 }
 
 export interface PrecompressResult {
@@ -87,37 +84,27 @@ export interface PrecompressResult {
 }
 
 /**
- * Writes `.gz` / `.br` / `.zst` siblings for compressible files at least
- * `minSize` bytes, skipping any variant that doesn't beat the original by
- * `MIN_SAVINGS_RATIO`. Files already ending in a compressed suffix are left
- * alone (running this twice, e.g. after a `publicDir` copy, is safe), as are
- * deploy metadata files and anything in `exclude`.
- *
- * Files are compressed concurrently, so results are sorted by path (then by
- * the caller's encoding order) to keep the build summary deterministic.
+ * Writes `.gz`/`.br`/`.zst` siblings for compressible files of at least
+ * `MIN_COMPRESS_SIZE` bytes, skipping variants that don't beat the original by
+ * `MIN_SAVINGS_RATIO`. Existing compressed files and `exclude` are left alone.
+ * Results are sorted by path, then `encodings` order.
  */
 export async function precompressDir(
   dir: string,
   encodings: Encoding[],
-  minSize: number,
-  /** Absolute paths never to compress, e.g. the `dist/server.js` bundle. */
   exclude: ReadonlySet<string> = new Set(),
 ): Promise<PrecompressResult[]> {
   if (encodings.length === 0) return [];
-  const files = (await collectFiles(dir)).filter((file) => {
-    if (file.endsWith(".gz") || file.endsWith(".br") || file.endsWith(".zst")) {
-      return false;
-    }
-    if (DEPLOY_METADATA_FILES.has(basename(file)) || exclude.has(file)) {
-      return false;
-    }
-    return COMPRESSIBLE.has(extname(file));
-  });
-  files.sort();
+  const entries = await readdir(dir, { recursive: true, withFileTypes: true });
+  const files = entries
+    .filter((e) => e.isFile())
+    .map((e) => join(e.parentPath, e.name))
+    .filter((file) => COMPRESSIBLE.has(extname(file)) && !exclude.has(file))
+    .sort();
 
   const perFile = await mapLimit(files, CPU_CONCURRENCY, async (file) => {
     const source = Bun.file(file);
-    if (source.size < minSize) return [];
+    if (source.size < MIN_COMPRESS_SIZE) return [];
     const buf = await source.bytes();
     const variants = await Promise.all(
       encodings.map((encoding) => compress(buf, encoding)),

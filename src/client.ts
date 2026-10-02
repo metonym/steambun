@@ -14,14 +14,21 @@ function substituteParams(
   path: string,
   params?: Record<string, string>,
 ): string {
-  if (!params) return path;
-  return path.replace(/:([^/]+)/g, (segment, name: string) =>
-    name in params ? encodeURIComponent(params[name]!) : segment,
+  const resolved = path.replace(/\/:([^/?#]+)/g, (segment, name: string) =>
+    params && name in params
+      ? `/${encodeURIComponent(params[name]!)}`
+      : segment,
   );
+  const missing = resolved.match(/\/:([^/?#]+)/);
+  if (missing) {
+    throw new Error(
+      `steambun: missing value for ":${missing[1]}" in "${path}"`,
+    );
+  }
+  return resolved;
 }
 
-/** Substitutes `:param` segments and appends a query string — shared by
- * `api`, `href`, and `ws`. */
+/** Shared by `api`, `href`, and `ws`. */
 function buildPath(
   path: string,
   params?: Record<string, string>,
@@ -41,21 +48,14 @@ function buildPath(
   return resolved;
 }
 
-// A plain member-expression chain (no `?.`/fallback) so both Bun's
-// build-time `define` and the dev-mode textual substitution — which matches
-// "import.meta.env.BASE_URL" verbatim — can replace it. Like Vite,
-// import.meta.env only resolves inside a bundled/dev-served module.
+// Must stay a plain `import.meta.env.BASE_URL` chain: both Bun's `define` and dev-mode substitution match it verbatim.
 function withBase(path: string): string {
   const base: string = import.meta.env.BASE_URL;
   if (base === "/" || !path.startsWith("/")) return path;
   return `${base.replace(/\/$/, "")}${path}`;
 }
 
-// Not exported: consumers always see the generic ApiOptions<P>/WsOptions<P>/
-// SteambunSocket declared in client.d.ts (package.json's "./client" export
-// maps `types` there, independent of this file's own exports) — exporting
-// these non-generic copies too would just be a second, drifting definition
-// with no reader.
+// Consumers see the generic versions of these in client.d.ts.
 interface ApiOptions {
   params?: Record<string, string>;
   query?: Record<string, unknown>;
@@ -63,17 +63,13 @@ interface ApiOptions {
   init?: RequestInit;
 }
 
-/**
- * Typed fetch against a file-based API route — see `steambun/client`'s
- * ambient types for the generic signature checked against
- * `.steambun/routes.d.ts`.
- */
 export async function api(
   method: string,
   path: string,
   opts: ApiOptions = {},
 ): Promise<unknown> {
   const resolved = buildPath(path, opts.params, opts.query);
+  const verb = method.toUpperCase();
 
   const headers = new Headers(opts.init?.headers);
   let body = opts.init?.body;
@@ -85,51 +81,43 @@ export async function api(
 
   const res = await fetch(withBase(resolved), {
     ...opts.init,
-    method: method.toUpperCase(),
+    method: verb,
     headers,
     body,
   });
 
   if (!res.ok) {
-    let errorBody: unknown;
+    const text = await res.text().catch(() => undefined);
+    let errorBody: unknown = text;
     try {
-      errorBody = await res.clone().json();
+      errorBody = JSON.parse(text ?? "");
     } catch {
-      errorBody = await res.text().catch(() => undefined);
+      // not JSON: keep the raw text
     }
-    throw new SteambunApiError(
-      method.toUpperCase(),
-      resolved,
-      res.status,
-      errorBody,
-    );
+    throw new SteambunApiError(verb, resolved, res.status, errorBody);
   }
 
-  if (res.status === 204 || res.status === 205) return undefined;
   const text = await res.text();
-  if (text === "") return undefined;
-  const contentType = res.headers.get("content-type") ?? "";
-  return contentType.includes("json") ? JSON.parse(text) : text;
+  if (!text) return undefined;
+  return res.headers.get("content-type")?.includes("json")
+    ? JSON.parse(text)
+    : text;
 }
 
-/** Typed link builder — substitutes `:param` segments, appends a query string, and prefixes `import.meta.env.BASE_URL`. */
 export function href(
   path: string,
-  params?: Record<string, string>,
-  query?: Record<string, string>,
+  opts: Pick<WsOptions, "params" | "query"> = {},
 ): string {
-  return withBase(buildPath(path, params, query));
+  return withBase(buildPath(path, opts.params, opts.query));
 }
 
-// Not exported — see the comment on ApiOptions above.
 interface WsOptions {
   params?: Record<string, string>;
-  query?: Record<string, string>;
+  query?: Record<string, string | string[]>;
   protocols?: string | string[];
   reconnect?: boolean | { maxAttempts?: number; baseDelayMs?: number };
 }
 
-// Not exported — see the comment on ApiOptions above.
 interface SteambunSocket {
   readonly socket: WebSocket;
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
@@ -137,27 +125,17 @@ interface SteambunSocket {
   on(
     event: "open" | "message" | "close" | "error",
     fn: (ev: Event) => void,
-  ): void;
+  ): () => void;
 }
 
 function toWsUrl(path: string): string {
-  const absolute = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(path)
-    ? path
-    : new URL(path, location.href).href;
-  const url = new URL(absolute);
+  const url = new URL(path, location.href);
   if (url.protocol === "http:") url.protocol = "ws:";
   else if (url.protocol === "https:") url.protocol = "wss:";
   return url.toString();
 }
 
-/**
- * Typed WebSocket client against a file-based `export const websocket`
- * route — see `steambun/client`'s ambient types for the generic signature
- * checked against `.steambun/routes.d.ts`. Reconnect uses capped
- * exponential backoff (`baseDelayMs * 2 ** attempts`, capped at 30s);
- * calling the returned `close()` sets a flag so a subsequent `close` event
- * never reconnects.
- */
+/** Reconnect backs off exponentially from `baseDelayMs`, capped at 30s; `close()` stops it for good. `send()` throws while a reconnect is pending. */
 export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
   const url = toWsUrl(withBase(buildPath(path, opts.params, opts.query)));
   const reconnect = opts.reconnect;
@@ -172,6 +150,7 @@ export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
   let socket: WebSocket;
   let attempts = 0;
   let userClosed = false;
+  let reconnectPending = false;
   const connect = (): WebSocket => {
     const s = new WebSocket(url, opts.protocols);
     s.onopen = (ev) => {
@@ -183,9 +162,11 @@ export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
     s.onclose = (ev) => {
       fanOut("close", ev);
       if (userClosed || !reconnect || attempts >= maxAttempts) return;
+      reconnectPending = true;
       setTimeout(
         () => {
-          socket = connect();
+          reconnectPending = false;
+          if (!userClosed) socket = connect();
         },
         Math.min(baseDelayMs * 2 ** attempts++, 30_000),
       );
@@ -197,14 +178,24 @@ export function ws(path: string, opts: WsOptions = {}): SteambunSocket {
     get socket() {
       return socket;
     },
-    send: (data) => socket.send(data as never),
+    send: (data) => {
+      if (reconnectPending) {
+        throw new Error("steambun: ws send() while a reconnect is pending");
+      }
+      socket.send(data as never);
+    },
     close: (code, reason) => {
       userClosed = true;
       socket.close(code, reason);
     },
     on: (event, fn) => {
-      if (!listeners[event]) listeners[event] = [];
-      listeners[event].push(fn);
+      const list = listeners[event] ?? [];
+      listeners[event] = list;
+      list.push(fn);
+      return () => {
+        const i = list.indexOf(fn);
+        if (i >= 0) list.splice(i, 1);
+      };
     },
   };
 }

@@ -46,6 +46,17 @@ describe("route()", () => {
     expect(await res.json()).toEqual(expected);
   });
 
+  test("an undefined return value is a 204 with no body", async () => {
+    const res = await route(() => {})(request("/x"));
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe("");
+    const withSchema = await route(
+      { query: z.object({}) },
+      () => undefined,
+    )(request("/x"));
+    expect(withSchema.status).toBe(204);
+  });
+
   test("passes a returned Response through", async () => {
     const handler = route(() => new Response("hi", { status: 201 }));
     const res = await handler(request("/x"));
@@ -136,5 +147,110 @@ describe("route()", () => {
     );
     const res = await handler(request("/x", { method: "POST" }));
     expect(await res.json()).toEqual({ present: false });
+  });
+
+  test("a non-JSON content-type with an empty body is undefined", async () => {
+    const handler = route({ body: z.string().optional() }, ({ body }) => ({
+      present: body !== undefined,
+    }));
+    const res = await handler(
+      request("/x", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+    expect(await res.json()).toEqual({ present: false });
+  });
+
+  test("a malformed multipart body is a 400, not a 500", async () => {
+    const handler = route({ body: z.object({}).passthrough() }, () => ({}));
+    const res = await handler(
+      request("/x", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=x" },
+        body: "not multipart",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "invalid request",
+      issues: [{ in: "body", path: "", message: "Invalid form data" }],
+    });
+  });
+
+  test("a text body reaches a string schema as raw text", async () => {
+    const handler = route({ body: z.string() }, ({ body }) => ({ body }));
+    const res = await handler(
+      request("/x", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "{not json}",
+      }),
+    );
+    expect(await res.json()).toEqual({ body: "{not json}" });
+  });
+
+  test("percent-escapes and + in the query decode, and a malformed escape does not throw", async () => {
+    const handler = route(({ query }) => query);
+    const res = await handler(request("/x?q=a%20b+c&bad=%E0%A4%A&flag"));
+    expect(await res.json()).toEqual({
+      q: "a b c",
+      bad: new URLSearchParams("bad=%E0%A4%A").get("bad"),
+      flag: "",
+    });
+  });
+
+  test("an async schema is awaited, and a handler error propagates", async () => {
+    const slow = z.object({ n: z.coerce.number() }).refine(async () => true);
+    const ok = route({ query: slow }, ({ query }) => query);
+    expect(await (await ok(request("/x?n=3"))).json()).toEqual({ n: 3 });
+
+    const boom = route({ query: slow }, () => {
+      throw new Error("handler failed");
+    });
+    await expect(boom(request("/x?n=3"))).rejects.toThrow("handler failed");
+  });
+
+  test("keys that exist on Object.prototype are plain query values", async () => {
+    const handler = route(({ query }) => ({
+      query,
+      proto: Object.getPrototypeOf(query) === Object.prototype,
+    }));
+    const res = await handler(
+      request("/x?constructor=a&toString=b&__proto__=c&__proto__=d"),
+    );
+    const body = (await res.json()) as {
+      query: Record<string, unknown>;
+      proto: boolean;
+    };
+    expect(body.proto).toBe(true);
+    const own = (key: string) =>
+      Object.getOwnPropertyDescriptor(body.query, key)?.value;
+    expect(own("constructor")).toBe("a");
+    expect(own("toString")).toBe("b");
+    expect(
+      Object.getOwnPropertyDescriptor(body.query, "__proto__")?.value,
+    ).toEqual(["c", "d"]);
+  });
+
+  test("a validated query and form body treat prototype keys as data", async () => {
+    let seen: { query: unknown; body: unknown } | undefined;
+    const handler = route(
+      { query: z.looseObject({}), body: z.looseObject({}) },
+      ({ query, body }) => {
+        seen = { query, body };
+      },
+    );
+    await handler(
+      request("/x?hasOwnProperty=1", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "constructor=a&constructor=b",
+      }),
+    );
+    expect(seen).toEqual({
+      query: { hasOwnProperty: "1" },
+      body: { constructor: ["a", "b"] },
+    });
   });
 });

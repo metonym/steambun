@@ -1,18 +1,17 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import type { Middleware } from "../runtime/middleware";
 import { asRecord, asStringArray, isPlainObject } from "../util/guards";
-import { isBunPlugin, isSteambunHooks } from "../util/plugins";
+import { isBunPlugin } from "../util/plugins";
 import { toImportSpecifier } from "../util/specifier";
+import { log } from "../util/terminal";
 import type {
-  AppType,
   BuildOptions,
+  BunPlugin,
   CompileOptions,
   CompileWindowsOptions,
   HttpsOptions,
   MinifyObject,
-  Plugin,
-  PreviewOptions,
   ProxyEntry,
   ProxyOptions,
   ResolveOptions,
@@ -20,15 +19,19 @@ import type {
   UserConfig,
 } from "./types";
 
-export const BUNFIG_FILENAME = "bunfig.toml";
+type WarnFn = (message: string) => void;
 
 export function isTomlConfigPath(path: string): boolean {
   return path.endsWith(".toml");
 }
 
 export function projectBunfigPath(root: string): string {
-  return join(root, BUNFIG_FILENAME);
+  return join(root, "bunfig.toml");
 }
+
+const steambunTable = (raw: unknown) => asRecord(asRecord(raw)?.steambun) ?? {};
+const staticTable = (raw: unknown) =>
+  asRecord(asRecord(asRecord(raw)?.serve)?.static) ?? {};
 
 export async function readBunfigFile(
   path: string,
@@ -42,29 +45,15 @@ export function parseBunfigToml(text: string): Record<string, unknown> {
   return asRecord(parsed) ?? {};
 }
 
-/**
- * Data-only mapping. Plugin objects and middleware factories cannot live in
- * TOML — see {@link resolveBunfigModules} for those.
- *
- * @example
- * ```ts
- * import { bunfigToUserConfig } from "steambun";
- *
- * const raw = Bun.TOML.parse(await Bun.file("bunfig.toml").text());
- * const config = bunfigToUserConfig(raw); // { server: { port: 3000 }, ... }
- * ```
- */
+/** Data-only mapping; middleware specifiers are loaded by {@link resolveBunfigModules}. */
 export function bunfigToUserConfig(
   raw: unknown,
-  warn: WarnFn = console.warn,
+  warn: WarnFn = log.warn,
 ): UserConfig {
   const root = asRecord(raw) ?? {};
   const native = nativeBunfigToUserConfig(root, warn);
-  const config = mapSteambunTable(asRecord(root.steambun) ?? {}, warn);
-  // nativeBunfigToUserConfig only ever produces define/server.port/envPrefix
-  // (see its own body) — merge just those, [steambun] winning on overlap,
-  // rather than deep-merging every UserConfig key the two sides can never
-  // both populate.
+  const config = mapSteambunTable(steambunTable(root), warn);
+  // The native keys only populate define/server.port/envPrefix; [steambun] wins on overlap.
   if (native.define) config.define = { ...native.define, ...config.define };
   if (native.server) config.server = { ...native.server, ...config.server };
   if (native.envPrefix && !config.envPrefix)
@@ -72,54 +61,49 @@ export function bunfigToUserConfig(
   return config;
 }
 
-/**
- * Loads the middleware modules referenced by `[steambun] middleware = [...]`
- * in a legacy `bunfig.toml` and prepends them to `config.middleware`.
- *
- * @example
- * ```ts
- * const raw = Bun.TOML.parse(await Bun.file("bunfig.toml").text());
- * const config = await resolveBunfigModules(bunfigToUserConfig(raw), raw, process.cwd());
- * ```
- */
+/** Imports `[steambun] middleware` specifiers and prepends them to `config.middleware`. */
 export async function resolveBunfigModules(
   config: UserConfig,
   raw: unknown,
   root: string,
 ): Promise<UserConfig> {
-  const specs = bunfigMiddlewareSpecifiers(raw);
+  const specs = asStringArray(steambunTable(raw).middleware) ?? [];
   if (specs.length === 0) return config;
-  const middleware = [];
-  for (const spec of specs) {
-    const loaded = await importDefault(root, spec);
-    if (typeof loaded === "function") middleware.push(loaded);
-  }
+  const middleware = await importDefaults(
+    root,
+    specs,
+    "middleware",
+    (value): value is Middleware => typeof value === "function",
+  );
   return {
     ...config,
     middleware: [...middleware, ...(config.middleware ?? [])],
   };
 }
 
-export async function loadBunfigPlugins(root: string): Promise<Plugin[]> {
-  const raw = await readBunfigFile(projectBunfigPath(root));
-  if (!raw) return [];
-  const plugins: Plugin[] = [];
-  for (const spec of bunfigPluginSpecifiers(raw)) {
-    const loaded = await importDefault(root, spec);
-    if (isBunPlugin(loaded) || isSteambunHooks(loaded)) plugins.push(loaded);
-  }
-  return plugins;
+/** The bunfig Bun itself reads alongside steambun: `--config x.toml`, else the project's. */
+export async function readUserBunfig(
+  root: string,
+  configFile: string | null,
+): Promise<Record<string, unknown> | null> {
+  const tomlConfig =
+    configFile && isTomlConfigPath(configFile) ? configFile : null;
+  return readBunfigFile(tomlConfig ?? projectBunfigPath(root));
 }
 
-export function bunfigPluginSpecifiers(raw: unknown): string[] {
-  const root = asRecord(raw) ?? {};
-  const serve = asRecord(root.serve) ?? {};
-  const staticTable = asRecord(serve.static) ?? {};
-  const steambun = asRecord(root.steambun) ?? {};
-  return unique([
-    ...(asStringArray(staticTable.plugins) ?? []),
-    ...(asStringArray(steambun.plugins) ?? []),
-  ]);
+/** Bun plugins named by `[serve.static] plugins`, which Bun itself loads in `dev`. */
+export async function loadBunfigPlugins(
+  root: string,
+  configFile: string | null,
+): Promise<BunPlugin[]> {
+  const raw = await readUserBunfig(root, configFile);
+  if (!raw) return [];
+  return importDefaults(
+    root,
+    asStringArray(staticTable(raw).plugins) ?? [],
+    "plugin",
+    isBunPlugin,
+  );
 }
 
 export function relocateBunfigPaths(
@@ -128,62 +112,42 @@ export function relocateBunfigPaths(
   toDir: string,
 ): Record<string, unknown> {
   const out = structuredClone(raw);
-  const relocate = (spec: string) => relocateSpecifier(spec, fromRoot, toDir);
-
-  const preload = asStringArray(out.preload);
-  if (preload) out.preload = preload.map(relocate);
-
-  const test = asRecord(out.test);
-  if (test) {
-    const testPreload = asStringArray(test.preload);
-    if (testPreload) test.preload = testPreload.map(relocate);
-    out.test = test;
-  }
-
-  const serve = asRecord(out.serve);
-  if (serve) {
-    const staticTable = asRecord(serve.static);
-    if (staticTable) {
-      const plugins = asStringArray(staticTable.plugins);
-      if (plugins) staticTable.plugins = plugins.map(relocate);
-      serve.static = staticTable;
+  const relocateIn = (
+    table: Record<string, unknown> | undefined,
+    key: string,
+  ) => {
+    const specs = asStringArray(table?.[key]);
+    if (table && specs) {
+      table[key] = specs.map((spec) =>
+        relocateSpecifier(spec, fromRoot, toDir),
+      );
     }
-    out.serve = serve;
-  }
+  };
 
-  const steambun = asRecord(out.steambun);
-  if (steambun) {
-    const plugins = asStringArray(steambun.plugins);
-    if (plugins) steambun.plugins = plugins.map(relocate);
-    out.steambun = steambun;
-  }
-
+  relocateIn(out, "preload");
+  relocateIn(asRecord(out.test), "preload");
+  relocateIn(asRecord(asRecord(out.serve)?.static), "plugins");
   return out;
 }
 
 export function serializeMergedBunfig(
   userRaw: Record<string, unknown>,
   generatedPlugins: string[],
-  envPattern: `${string}*` | undefined,
 ): string {
-  const steambun = asRecord(userRaw.steambun) ?? {};
-  const extraPlugins = asStringArray(steambun.plugins) ?? [];
-  const merged: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(userRaw)) {
-    if (key === "steambun") continue;
-    merged[key] = value;
-  }
-
-  const serve = { ...(asRecord(merged.serve) ?? {}) };
-  const staticTable = { ...(asRecord(serve.static) ?? {}) };
-  staticTable.plugins = unique([
-    ...(asStringArray(staticTable.plugins) ?? []),
-    ...extraPlugins,
-    ...generatedPlugins,
-  ]);
-  if (envPattern !== undefined) staticTable.env = envPattern;
-  serve.static = staticTable;
-  merged.serve = serve;
+  const { steambun: _steambun, ...merged } = userRaw;
+  const serve = asRecord(merged.serve) ?? {};
+  merged.serve = {
+    ...serve,
+    static: {
+      ...staticTable(userRaw),
+      plugins: [
+        ...new Set([
+          ...(asStringArray(staticTable(userRaw).plugins) ?? []),
+          ...generatedPlugins,
+        ]),
+      ],
+    },
+  };
   return stringifyToml(merged);
 }
 
@@ -194,20 +158,7 @@ export function stringifyToml(root: Record<string, unknown>): string {
   return `${lines.join("\n")}\n`;
 }
 
-function bunfigMiddlewareSpecifiers(raw: unknown): string[] {
-  const steambun = asRecord(asRecord(raw)?.steambun) ?? {};
-  return asStringArray(steambun.middleware) ?? [];
-}
-
-type WarnFn = (message: string) => void;
-
-/**
- * A decoder validates one raw TOML value into `T`, returning `undefined`
- * (and warning through `warn`, for container decoders that check each of
- * their own entries) when the value doesn't fit. `decodeTable` uses
- * `.expected` to report a decoder's expected shape when it rejects a value
- * outright.
- */
+/** Returns `undefined` when the value doesn't fit; container decoders warn per rejected entry themselves. */
 type Decoder<T> = ((
   value: unknown,
   path: string,
@@ -231,13 +182,21 @@ function describeType(value: unknown): string {
   return typeof value;
 }
 
-/**
- * Decodes every key of `raw` against `table`, warning once per key that is
- * either absent from `table` (`Unknown bunfig key`) or rejected by its
- * decoder (`expected X, got Y`). Container decoders (`nested`, `record`)
- * recurse into this for their own tables, so warnings carry the full
- * dotted path.
- */
+function decodeEntry<T>(
+  decoder: Decoder<T>,
+  value: unknown,
+  path: string,
+  warn: WarnFn,
+): T | undefined {
+  const decoded = decoder(value, path, warn);
+  if (decoded === undefined) {
+    warn(
+      `[steambun] bunfig key "${path}" expected ${decoder.expected ?? "a different type"}, got ${describeType(value)} — ignored.`,
+    );
+  }
+  return decoded;
+}
+
 function decodeTable<T>(
   raw: Record<string, unknown>,
   table: KeyTable<T>,
@@ -248,19 +207,13 @@ function decodeTable<T>(
   const decoders = table as Record<string, Decoder<unknown>>;
   for (const [key, value] of Object.entries(raw)) {
     const keyPath = `${path}.${key}`;
-    const decoder = decoders[key];
+    const decoder = Object.hasOwn(decoders, key) ? decoders[key] : undefined;
     if (!decoder) {
       warn(`[steambun] Unknown bunfig key "${keyPath}" was ignored.`);
       continue;
     }
-    const decoded = decoder(value, keyPath, warn);
-    if (decoded === undefined) {
-      warn(
-        `[steambun] bunfig key "${keyPath}" expected ${decoder.expected ?? "a different type"}, got ${describeType(value)} — ignored.`,
-      );
-      continue;
-    }
-    (out as Record<string, unknown>)[key] = decoded;
+    const decoded = decodeEntry(decoder, value, keyPath, warn);
+    if (decoded !== undefined) (out as Record<string, unknown>)[key] = decoded;
   }
   return out;
 }
@@ -309,26 +262,15 @@ function union<T extends unknown[]>(
   );
 }
 
-/**
- * A record whose keys are unknown ahead of time (`define`, `headers`,
- * `alias`, ...): every entry is decoded with `valueDecoder`, warning and
- * dropping only the entries that don't fit rather than the whole table.
- */
+/** Open-keyed table (`define`, `headers`, ...): entries that don't fit are dropped individually. */
 function record<V>(valueDecoder: Decoder<V>): Decoder<Record<string, V>> {
   return withExpected((value, path, warn) => {
     const rec = asRecord(value);
     if (!rec) return undefined;
     const out: Record<string, V> = {};
     for (const [key, item] of Object.entries(rec)) {
-      const keyPath = `${path}.${key}`;
-      const decoded = valueDecoder(item, keyPath, warn);
-      if (decoded === undefined) {
-        warn(
-          `[steambun] bunfig key "${keyPath}" expected ${valueDecoder.expected ?? "a different type"}, got ${describeType(item)} — ignored.`,
-        );
-        continue;
-      }
-      out[key] = decoded;
+      const decoded = decodeEntry(valueDecoder, item, `${path}.${key}`, warn);
+      if (decoded !== undefined) out[key] = decoded;
     }
     return out;
   }, "object");
@@ -336,12 +278,7 @@ function record<V>(valueDecoder: Decoder<V>): Decoder<Record<string, V>> {
 
 const strRecord: Decoder<Record<string, string>> = record(str);
 
-/**
- * A nested `[steambun.*]` table, decoded with its own `KeyTable`. Returns
- * `{}` (not `undefined`) when every entry was rejected — those entries
- * already warned individually, so the caller shouldn't warn again about the
- * table itself being the wrong shape.
- */
+/** Returns `{}` (not `undefined`) when every entry was rejected, since each already warned. */
 function nested<T>(table: KeyTable<T>): Decoder<T> {
   return withExpected((value, path, warn) => {
     const rec = asRecord(value);
@@ -401,17 +338,8 @@ const SERVER_TABLE: KeyTable<ServerOptions> = {
   strictPort: bool,
 };
 
-const PREVIEW_TABLE: KeyTable<PreviewOptions> = {
-  port: num,
-  host: union(bool, str),
-  open: union(bool, str),
-  strictPort: bool,
-};
-
 const RESOLVE_TABLE: KeyTable<ResolveOptions> = {
   alias: strRecord,
-  extensions: strArray,
-  viteSuffixes: bool,
 };
 
 const MINIFY_OBJECT_TABLE: KeyTable<MinifyObject> = {
@@ -419,10 +347,6 @@ const MINIFY_OBJECT_TABLE: KeyTable<MinifyObject> = {
   syntax: bool,
   identifiers: bool,
   keepNames: bool,
-};
-
-const SHARED_CSS_TABLE: KeyTable<{ minSize: number }> = {
-  minSize: num,
 };
 
 const PRECOMPRESS_ENCODINGS = ["gzip", "br", "zstd"] as const;
@@ -452,25 +376,16 @@ const BUILD_TABLE: KeyTable<BuildOptions> = {
   emptyOutDir: bool,
   assetsDir: str,
   sourcemap: union(bool, oneOf("inline", "external")),
-  minify: union(bool, oneOf("esbuild", "terser"), nested(MINIFY_OBJECT_TABLE)),
+  minify: union(bool, nested(MINIFY_OBJECT_TABLE)),
   drop: strArray,
   standalone: bool,
   manifest: bool,
   target: oneOf("browser", "bun", "node"),
-  bytecode: bool,
   splitting: bool,
   budgets: record(union(str, num)),
-  cssChunking: bool,
-  minChunkSize: num,
-  importMap: bool,
-  sharedCss: union(bool, nested(SHARED_CSS_TABLE)),
   precompress,
-  precompressMinSize: num,
   server: bool,
-  sri: bool,
-  csp: union(oneOf(false, "strict"), record(strArray)),
-  headers: record(strRecord),
-  deploy: oneOf(false, "netlify", "cloudflare-pages", "vercel", "static"),
+  features: strArray,
 };
 
 const COMPILE_WINDOWS_TABLE: KeyTable<CompileWindowsOptions> = {
@@ -488,63 +403,44 @@ const COMPILE_TABLE: KeyTable<CompileOptions> = {
   outDir: str,
   autoloadDotenv: bool,
   autoloadBunfig: bool,
+  bytecode: bool,
   windows: nested(COMPILE_WINDOWS_TABLE),
 };
 
-/**
- * `resolveDefaults` treats an empty `{}` as "compile enabled with defaults",
- * unlike other nested tables, so — unlike `nested()` — an empty
- * `[steambun.compile]` (no keys, or every key rejected) must decode to
- * `undefined` rather than `{}`.
- */
+// `{}` means "compile enabled" (like TS `compile: {}`), but a table whose keys were all rejected
+// must not silently enable it.
 const compileTable: Decoder<CompileOptions> = withExpected(
   (value, path, warn) => {
     const rec = asRecord(value);
     if (!rec) return undefined;
     const decoded = decodeTable(rec, COMPILE_TABLE, path, warn);
-    return Object.keys(decoded).length > 0
+    return Object.keys(decoded).length > 0 || Object.keys(rec).length === 0
       ? (decoded as CompileOptions)
       : undefined;
   },
   "object",
 );
 
-interface SteambunTopFields {
-  base: string;
-  publicDir: string | false;
-  appType: AppType;
-  api: string;
-  compile: boolean | CompileOptions;
-  features: string[];
-  envDir: string;
-  envPrefix: string | string[];
-  define: Record<string, string>;
-  server: ServerOptions;
-  build: BuildOptions;
-  preview: PreviewOptions;
-  resolve: ResolveOptions;
-  middleware: string[];
-  plugins: string[];
-}
+// Keys a TOML file can't express: `envSchema` and `plugins` are runtime values, and `middleware` is a list of module specifiers.
+type SteambunTableFields = Omit<
+  UserConfig,
+  "envSchema" | "plugins" | "middleware"
+> & { middleware: string[] };
 
-const STEAMBUN_TABLE: KeyTable<SteambunTopFields> = {
+const STEAMBUN_TABLE: KeyTable<SteambunTableFields> = {
   base: str,
   publicDir: union(oneOf(false), str),
   appType: oneOf("spa", "mpa"),
   api: str,
   compile: union(bool, compileTable),
-  features: strArray,
   envDir: str,
   envPrefix: union(str, strArray),
   define: strRecord,
   server: nested(SERVER_TABLE),
   build: nested(BUILD_TABLE),
-  preview: nested(PREVIEW_TABLE),
   resolve: nested(RESOLVE_TABLE),
-  // Specifiers only — resolved to plugins/functions by loadBunfigPlugins /
-  // resolveBunfigModules, not part of the decoded UserConfig itself.
+  // Specifiers, imported by resolveBunfigModules rather than decoded into UserConfig.
   middleware: strArray,
-  plugins: strArray,
 };
 
 function nativeBunfigToUserConfig(
@@ -557,12 +453,10 @@ function nativeBunfigToUserConfig(
     if (define) config.define = define;
   }
 
-  const serve = asRecord(root.serve) ?? {};
-  if (typeof serve.port === "number") {
-    config.server = { ...config.server, port: serve.port };
-  }
+  const port = asRecord(root.serve)?.port;
+  if (typeof port === "number") config.server = { port };
 
-  const env = asRecord(serve.static)?.env;
+  const env = staticTable(root).env;
   if (typeof env === "string" && env.endsWith("*") && env.length > 1) {
     config.envPrefix = [env.slice(0, -1)];
   }
@@ -574,7 +468,7 @@ function mapSteambunTable(
   warn: WarnFn,
 ): UserConfig {
   const decoded = decodeTable(raw, STEAMBUN_TABLE, "steambun", warn);
-  const { plugins: _plugins, middleware: _middleware, ...config } = decoded;
+  const { middleware: _middleware, ...config } = decoded;
   return config;
 }
 
@@ -588,12 +482,31 @@ function relocateSpecifier(
   return toImportSpecifier(toDir, abs);
 }
 
-async function importDefault(root: string, spec: string): Promise<unknown> {
-  if (isAbsolute(spec) || spec.startsWith(".")) {
-    const abs = isAbsolute(spec) ? spec : join(root, spec);
-    return (await import(pathToFileURL(abs).href)).default;
+async function importDefaults<T>(
+  root: string,
+  specs: string[],
+  kind: string,
+  isValid: (value: unknown) => value is T,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (const spec of specs) {
+    let loaded: unknown;
+    try {
+      // Resolve from the project, not from steambun's own install location.
+      loaded = (await import(Bun.resolveSync(spec, root))).default;
+    } catch (err) {
+      throw new Error(
+        `[steambun] Failed to load bunfig ${kind} "${spec}": ${(err as Error).message}`,
+      );
+    }
+    if (isValid(loaded)) out.push(loaded);
+    else {
+      log.warn(
+        `[steambun] bunfig ${kind} "${spec}" has no valid default export — ignored.`,
+      );
+    }
   }
-  return (await import(spec)).default;
+  return out;
 }
 
 function writeTable(
@@ -606,25 +519,16 @@ function writeTable(
 
   for (const [key, value] of Object.entries(obj)) {
     if (value === undefined || value === null) continue;
-    if (isPlainObject(value)) {
-      tables.push([key, value]);
-      continue;
-    }
-    scalars.push([key, value]);
+    if (isPlainObject(value)) tables.push([key, value]);
+    else scalars.push([key, value]);
   }
 
-  if (path.length === 0) {
-    for (const [key, value] of scalars) {
-      lines.push(`${escapeTomlKey(key)} = ${encodeTomlValue(value)}`);
-    }
-  } else if (scalars.length > 0) {
-    lines.push("");
-    lines.push(`[${path.map(escapeTomlKey).join(".")}]`);
-    for (const [key, value] of scalars) {
-      lines.push(`${escapeTomlKey(key)} = ${encodeTomlValue(value)}`);
-    }
+  if (scalars.length > 0 && path.length > 0) {
+    lines.push("", `[${path.map(escapeTomlKey).join(".")}]`);
   }
-
+  for (const [key, value] of scalars) {
+    lines.push(`${escapeTomlKey(key)} = ${encodeTomlValue(value)}`);
+  }
   for (const [key, value] of tables) {
     writeTable(lines, [...path, key], value);
   }
@@ -650,8 +554,4 @@ function encodeTomlValue(value: unknown): string {
 function escapeTomlKey(key: string): string {
   if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return key;
   return JSON.stringify(key);
-}
-
-function unique(items: string[]): string[] {
-  return [...new Set(items)];
 }

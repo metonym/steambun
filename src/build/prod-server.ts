@@ -1,47 +1,40 @@
-import { basename } from "node:path";
-import { isTomlConfigPath } from "../config/bunfig";
+import { basename, join } from "node:path";
+import { configKindOf } from "../config/loader";
 import type { ResolvedConfig } from "../config/types";
+import { GENERATED_HEADER, STEAMBUN_DIR_NAME } from "../util/paths";
 import { SERVER_ENV_DECODER_SOURCE } from "../util/server-env";
 import { posixRelative, toImportSpecifier } from "../util/specifier";
+import { writeIfChanged } from "../util/write-if-changed";
 
-const DEFAULT_PREVIEW_PORT = 4173;
-
-// Backs both `steambun preview` and the `--compile` single-binary output.
-// Asset paths resolve relative to import.meta.dir so the same script works
-// run directly or compiled with the dist directory embedded via `assets`.
-// The config is statically imported (not loadConfig's dynamic import(path))
-// so --compile can bundle it — a compiled binary can't resolve an external
-// path at runtime.
 export interface ProdServeOptions {
-  /**
-   * The generated file will itself live inside `outDir` (steambun build's
-   * `dist/server.js`), so `import.meta.dir` at runtime already *is* `outDir` —
-   * skip the candidate-guessing used for `.steambun/prod-serve.ts`, which
-   * runs from a different directory in preview/--compile.
-   */
+  /** The script is bundled into `outDir` (`dist/server.js`), so `import.meta.dir` is `outDir`. */
   embedOutDir?: boolean;
-  /**
-   * Check `envSchema` at startup against `process.env`, over these
-   * build-time public values (already inlined into the client, so the
-   * server's own environment needn't repeat them). `steambun preview`
-   * checks in the parent instead, with the same `.env*` files `dev` and
-   * `build` use.
-   */
+  /** Check `envSchema` at startup against `process.env` layered over these build-time public values. */
   envCheck?: Record<string, string>;
-  /** `steambun preview`: `server.https: true` uses the local dev certificate. */
-  devCert?: boolean;
+  /** `steambun preview`: `server.https: true` uses the local dev certificate, and `strictPort` defaults off. A deployed server defaults it on so it never silently moves ports. */
+  local?: boolean;
 }
 
-export function generateProdServeSource(
+/** Writes the serve script under `.steambun/` and returns its path. */
+export async function writeProdServe(
+  config: ResolvedConfig,
+  outDir: string,
+  file: "prod-serve.ts" | "dist-serve.ts",
+  opts: ProdServeOptions = {},
+): Promise<string> {
+  const path = join(config.root, STEAMBUN_DIR_NAME, file);
+  await writeIfChanged(path, generateProdServeSource(config, outDir, opts));
+  return path;
+}
+
+function generateProdServeSource(
   config: ResolvedConfig,
   outDir: string,
   opts: ProdServeOptions = {},
 ): string {
-  const serveDir = `${config.root}/.steambun`;
+  const serveDir = join(config.root, STEAMBUN_DIR_NAME);
   const outDirRelative = posixRelative(serveDir, outDir);
-  // A compiled binary's --asset-embedded directories are only reachable by
-  // basename under the virtual /$bunfs/root — leading path segments are
-  // dropped — so try both layouts.
+  // A compiled binary's embedded `assets` dirs are only reachable by basename under /$bunfs/root.
   const outDirBasename = basename(outDir);
   const apiBasename = config.api ? basename(config.api) : null;
   const outDirBlock = opts.embedOutDir
@@ -52,17 +45,20 @@ export function generateProdServeSource(
 ];
 const outDir = outDirCandidates.find(existsSync) ?? outDirCandidates[0];`;
 
-  const isToml = !!config.configFile && isTomlConfigPath(config.configFile);
+  const kind = config.configFile ? configKindOf(config.configFile) : null;
   const configImport = config.configFile
     ? `import configExport from ${JSON.stringify(toImportSpecifier(serveDir, config.configFile))};`
     : `const configExport = {};`;
   const envCheck = opts.envCheck && config.envSchema ? opts.envCheck : null;
-  const steambunNames = [
-    ...(isToml ? ["bunfigToUserConfig", "resolveBunfigModules"] : []),
+  const internalNames = [
+    ...(kind === "bunfig"
+      ? ["bunfigToUserConfig", "resolveBunfigModules"]
+      : []),
+    ...(kind === "vite" ? ["viteConfigToUserConfig"] : []),
+    ...(kind === "steambun" || kind === "vite" ? ["toConfigEnv"] : []),
     "resolveDefaults",
     ...(envCheck ? ["validateEnv"] : []),
   ];
-  const steambunImports = `import { ${steambunNames.join(", ")} } from "steambun";`;
   const envCheckBlock = envCheck
     ? `
 try {
@@ -76,22 +72,30 @@ try {
 }
 `
     : "";
-  const rawConfigBlock = isToml
-    ? `const rawConfig = await resolveBunfigModules(
+  const callConfig = `const exported =
+  typeof configExport === "function"
+    ? await configExport(toConfigEnv("preview", ${JSON.stringify(config.mode)}))
+    : await configExport;`;
+  const rawConfigBlock =
+    kind === "bunfig"
+      ? `const rawConfig = await resolveBunfigModules(
   bunfigToUserConfig(configExport),
   configExport,
   ${JSON.stringify(config.root)},
 );`
-    : `const rawConfig =
-  typeof configExport === "function"
-    ? await configExport({ command: "preview", mode: ${JSON.stringify(config.mode)} })
-    : configExport;`;
+      : kind === "vite"
+        ? `${callConfig}
+const rawConfig = viteConfigToUserConfig(exported ?? {});`
+        : kind === "steambun"
+          ? `${callConfig}
+const rawConfig = exported;`
+          : "const rawConfig = configExport;";
 
-  return `// Auto-generated by steambun. Do not edit — regenerated on every build.
+  return `${GENERATED_HEADER}
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-${steambunImports}
 import {
+  ${internalNames.join(",\n  ")},
   createApp,
   displayServerUrls,
   hostnameFromHost,
@@ -99,7 +103,7 @@ import {
   resolveOpenUrl,
   serveWithPortRetry,
   tlsFromHttps,
-} from "steambun/runtime";
+} from "steambun/internal";
 ${configImport}
 
 ${outDirBlock}
@@ -118,30 +122,29 @@ const apiDirCandidates = config.api
   : [];
 const apiDir = apiDirCandidates.find(existsSync) ?? config.api;
 
-const app = await createApp({ config, mode: "preview", outDir, apiDir });
+const app = await createApp({ config, mode: "preview", outDir, apiDir${opts.local ? ", cache: false" : ""} });
 
 ${SERVER_ENV_DECODER_SOURCE}
 const overrides = serverOverridesFromEnv(process.env, {
-  port: config.preview?.port ?? ${JSON.stringify(DEFAULT_PREVIEW_PORT)},
-  host: config.preview?.host ?? config.server.host,
-  strictPort: config.preview?.strictPort,
-  open: config.preview?.open ?? config.server.open,
+  port: config.server.port,
+  host: config.server.host,
+  strictPort: config.server.strictPort ?? ${opts.local !== true},
+  open: config.server.open,
 });
-const { port, host, open } = overrides;
-const strictPort = ${opts.embedOutDir ? "true" : "overrides.strictPort"};
+const { port, host, strictPort, open } = overrides;
 
 const server = serveWithPortRetry(
   {
     port,
     hostname: hostnameFromHost(host),
-    tls: tlsFromHttps(config.server.https, config.root${opts.devCert ? ", { devCert: true }" : ""}),
+    tls: tlsFromHttps(config.server.https, config.root${opts.local ? ", { devCert: true }" : ""}),
     ...app.serveOptions,
   },
-  { strictPort, label: "preview" },
+  { strictPort },
 );
 
 const { local, network } = displayServerUrls(server.url);
-console.log(\`[steambun] preview server ready\`);
+console.log(\`[steambun] server ready\`);
 console.log(\`  Local:   \${local}\`);
 for (const url of network) console.log(\`  Network: \${url}\`);
 const openUrl = resolveOpenUrl(local, open);

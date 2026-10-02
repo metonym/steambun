@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createAliasPlugin } from "../src/util/alias";
 import { createServerBoundaryPlugin } from "../src/util/server-boundary";
+import { createViteSuffixPlugin } from "../src/util/vite-suffix-plugin";
 
 function project(main: string): string {
   const root = mkdtempSync(join(tmpdir(), "steambun-boundary-"));
@@ -32,6 +33,7 @@ async function bundle(main: string) {
     plugins: [
       createServerBoundaryPlugin(root, "./src/api", { "@": "./src" }),
       createAliasPlugin({ "@": "./src" }, root),
+      createViteSuffixPlugin({ "@": "./src" }, root),
     ],
   });
   return {
@@ -81,6 +83,35 @@ describe("createServerBoundaryPlugin", () => {
     const { success } = await bundle(
       'import { lib } from "lib"; import { pkg } from "pkg/entry.server.js"; console.log(lib, pkg);',
     );
+    expect(success).toBe(true);
+  });
+
+  test.each([
+    ["?raw", "./db.server.ts?raw"],
+    ["?url", "./db.server.ts?url"],
+    ["?inline on an extensionless specifier", "./db.server?inline"],
+    ["an aliased ?raw", "@/db.server.ts?raw"],
+  ])("rejects a .server module reached through %s", async (_, spec) => {
+    const { success, errors } = await bundle(
+      `import x from ${JSON.stringify(spec)}; console.log(x);`,
+    );
+    expect(success).toBe(false);
+    expect(errors).toContain("server-only");
+  });
+
+  test("rejects an api module reached through ?raw", async () => {
+    const { success, errors } = await bundle(
+      'import x from "./api/users.ts?raw"; console.log(x);',
+    );
+    expect(success).toBe(false);
+    expect(errors).toContain("server-only");
+  });
+
+  test("still allows ?raw of an ordinary file", async () => {
+    const { success, errors } = await bundle(
+      'import x from "./shared.ts?raw"; console.log(x);',
+    );
+    expect(errors).toBe("");
     expect(success).toBe(true);
   });
 });

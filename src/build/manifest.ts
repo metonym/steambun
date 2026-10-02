@@ -1,8 +1,7 @@
-// Bun's metafile paths carry a "./" prefix (relative to outdir/root); strip
-// it rather than re-deriving relativity, which would break under a different cwd.
-import { stripDotSlash } from "./rename";
+import { buildFileType } from "../util/format";
+import { stripDotSlash } from "./analyze";
 
-export interface ManifestChunk {
+interface ManifestChunk {
   file: string;
   src?: string;
   isEntry?: boolean;
@@ -16,16 +15,10 @@ interface MetafileOutput {
   cssBundle?: string;
 }
 
-// Bun tags every output derived from an HTML entrypoint — JS chunk, CSS
-// bundle, and the rewritten HTML file — with the same entryPoint, so outputs
-// are grouped per entrypoint first and the JS chunk is picked as the file.
-export function buildManifest(
-  metafile: {
-    outputs: Record<string, MetafileOutput>;
-  },
-  /** entryPoint (e.g. "index.html") → extra CSS files, e.g. build.sharedCss's output. */
-  extraCss?: Record<string, string[]>,
-): Manifest {
+// Bun tags the JS chunk, CSS bundle, and HTML file of an HTML entrypoint with the same `entryPoint`.
+export function buildManifest(metafile: {
+  outputs: Record<string, MetafileOutput>;
+}): Manifest {
   const groups = new Map<
     string,
     Array<{ path: string; output: MetafileOutput }>
@@ -39,13 +32,12 @@ export function buildManifest(
   }
 
   const manifest: Manifest = {};
-  for (const [entryPoint, outputs] of groups) {
-    const src = stripDotSlash(entryPoint);
-    const jsOutput = outputs.find(
-      (o) => !o.path.endsWith(".css") && !o.path.endsWith(".html"),
-    );
-    const primary =
-      jsOutput ?? outputs.find((o) => o.path.endsWith(".html")) ?? outputs[0]!;
+  for (const outputs of groups.values()) {
+    const ofType = (type: string) =>
+      outputs.find((o) => buildFileType(o.path) === type);
+    // `entryPoint` is relative to Bun's cwd, not `root`; the HTML output keeps the entry's root-relative path.
+    const src = stripDotSlash((ofType("html") ?? outputs[0]!).path);
+    const primary = ofType("js") ?? ofType("html") ?? outputs[0]!;
 
     const chunk: ManifestChunk = {
       file: stripDotSlash(primary.path),
@@ -53,9 +45,7 @@ export function buildManifest(
       isEntry: true,
     };
     const cssBundle = outputs.find((o) => o.output.cssBundle)?.output.cssBundle;
-    const css = cssBundle ? [stripDotSlash(cssBundle)] : [];
-    css.push(...(extraCss?.[entryPoint] ?? []).map(stripDotSlash));
-    if (css.length > 0) chunk.css = css;
+    if (cssBundle) chunk.css = [stripDotSlash(cssBundle)];
 
     manifest[src] = chunk;
   }

@@ -2,8 +2,7 @@ import { group, task } from "ostia";
 import { z } from "zod";
 import { route } from "../src/runtime/route";
 
-// route() wraps every file-based API handler, so its per-request overhead
-// is paid on every API call. `alloc` records bytes allocated per call.
+// `alloc` records bytes allocated per call.
 const params = { id: "42" };
 const withParams = (req: Request) =>
   Object.assign(req, { params }) as Request & { params: typeof params };

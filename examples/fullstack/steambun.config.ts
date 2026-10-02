@@ -18,9 +18,8 @@ const upperLoaderPlugin = {
   },
 };
 
-// A middleware factory (like design's `middleware: [auth()]`) — applies to
-// native api routes and proxy entries, not the static HTML/asset routes
-// (see runtime/middleware.ts for why).
+// A middleware factory. Middleware wraps api routes and proxy entries, not
+// Bun's native HTML/asset routes.
 function logger(): Middleware {
   return async (req, next) => {
     const start = performance.now();
@@ -78,19 +77,11 @@ export default defineConfig({
     "import.meta.env.PUBLIC_TITLE": JSON.stringify("from steambun.config.ts"),
   },
   build: {
-    // Adds integrity=/crossorigin to local <script src>/<link stylesheet>
-    // tags, and writes dist/_headers.json with a Content-Security-Policy
-    // (both read by dist/server.js and steambun preview).
-    sri: true,
-    csp: "strict",
     // splitting turns src/nav.ts (shared by main.ts and about.ts) into its
-    // own chunk; importMap keys chunk-to-chunk imports by a
-    // content-independent id, so editing nav.ts only re-hashes that one
-    // file instead of both pages' entry scripts.
+    // own chunk.
     splitting: true,
-    importMap: true,
   },
-  // build --compile bundles the static assets, api routes, proxy, and
+  // `steambun build` also bundles the static assets, api routes, proxy, and
   // middleware above into a single executable (bin/server).
   compile: true,
 });

@@ -1,12 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { loadConfig } from "../config/loader";
 import { loadEnvFiles, withProcessEnv } from "../env/loader";
 import { validateEnv } from "../env/schema";
 import { prepareDevCert } from "../util/dev-cert";
+import { resolveFrom } from "../util/paths";
 import { childEnv } from "../util/server-env";
-import { generateProdServeSource } from "./prod-server";
+import { writeProdServe } from "./prod-server";
 
 export interface PreviewOptions {
   root?: string;
@@ -28,38 +27,31 @@ export async function preview(opts: PreviewOptions = {}): Promise<void> {
   });
 
   if (opts.host !== undefined) {
-    config.preview = { ...config.preview, host: opts.host };
+    config.server.host = opts.host;
   }
 
-  const outDir = join(config.root, config.build.outDir);
+  const outDir = resolveFrom(config.root, config.build.outDir);
   if (!existsSync(outDir)) {
     throw new Error(
       `[steambun] ${config.build.outDir}/ not found. Run \`steambun build\` first.`,
     );
   }
 
-  await validateEnv(
-    config.envSchema,
-    withProcessEnv(await loadEnvFiles(mode, config.envDir)),
-  );
+  const env = withProcessEnv(await loadEnvFiles(mode, config.envDir));
+  await validateEnv(config.envSchema, env);
 
-  const serveDir = join(config.root, ".steambun");
-  await mkdir(serveDir, { recursive: true });
-  const servePath = join(serveDir, "prod-serve.ts");
   if (config.server.https === true) {
-    await prepareDevCert(config, config.preview?.host ?? config.server.host);
+    await prepareDevCert(config, config.server.host);
   }
-  await writeFile(
-    servePath,
-    generateProdServeSource(config, outDir, { devCert: true }),
-    "utf8",
-  );
+  const servePath = await writeProdServe(config, outDir, "prod-serve.ts", {
+    local: true,
+  });
 
   const proc = Bun.spawn({
-    cmd: ["bun", servePath],
+    cmd: ["bun", "--no-env-file", servePath],
     cwd: config.root,
     stdio: ["inherit", "inherit", "inherit"],
-    env: { ...process.env, ...childEnv(opts) },
+    env: { ...env, ...childEnv(opts) },
   });
 
   const shutdown = () => proc.kill();

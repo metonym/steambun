@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { group, task } from "ostia";
 import { precompressDir } from "../src/build/precompress";
 
-// ~400 KB of minifier-resistant JS + 20 small pages, like a real dist/assets.
+// ~400 KB of JS + 20 small pages.
 const dir = mkdtempSync(join(tmpdir(), "steambun-precompress-bench-"));
 mkdirSync(join(dir, "assets"));
 let vendor = "";
@@ -35,15 +35,15 @@ async function clean(): Promise<void> {
 
 group("build/precompress: precompressDir (dist-like tree, 22 files)", () => {
   task("gzip only", async () => {
-    await precompressDir(dir, ["gzip"], 1024);
+    await precompressDir(dir, ["gzip"]);
     await clean();
   });
   task("gzip+zstd", async () => {
-    await precompressDir(dir, ["gzip", "zstd"], 1024);
+    await precompressDir(dir, ["gzip", "zstd"]);
     await clean();
   });
   task("gzip+br+zstd", async () => {
-    await precompressDir(dir, ["gzip", "br", "zstd"], 1024);
+    await precompressDir(dir, ["gzip", "br", "zstd"]);
     await clean();
   });
 });

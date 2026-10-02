@@ -1,23 +1,20 @@
 import { basename } from "node:path";
 import { bumpConfigGeneration, loadConfig } from "../config/loader";
+import type { ResolvedConfig } from "../config/types";
 import {
   buildBundleDefine,
   filterPublicEnv,
   loadEnvFiles,
   withProcessEnv,
 } from "../env/loader";
-import {
-  EnvValidationError,
-  envSchemaTypes,
-  publicOutput,
-  validateEnv,
-} from "../env/schema";
+import { envSchemaTypes, publicOutput, validateEnv } from "../env/schema";
 import { writeEnvDts } from "../env/types";
 import { writeRoutesDts } from "../routes-dts";
 import { prepareDevCert } from "../util/dev-cert";
 import { mergeFeatures } from "../util/features";
 import { childEnv } from "../util/server-env";
-import { discoverHtmlEntries, discoverSkipDirs } from "./discover";
+import { log } from "../util/terminal";
+import { discoverConfigHtmlEntries, discoverSkipDirs } from "./discover";
 import { synthesizeDevServer } from "./synth";
 import { setupDevWatchers } from "./watch";
 
@@ -35,52 +32,49 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
   const mode = opts.mode ?? "development";
 
   let shuttingDown = false;
-  let killedForRestart = false;
+  let restartRequested = false;
+  let started = false;
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let watcher: { close(): void } | undefined;
-  let resumeAfterCrash: (() => void) | null = null;
+  let wake: (() => void) | undefined;
 
-  function waitForNextChange(): Promise<void> {
-    return new Promise((resolve) => {
-      resumeAfterCrash = () => {
-        resumeAfterCrash = null;
-        resolve();
-      };
+  const waitForChange = () =>
+    new Promise<void>((resolve) => {
+      // A change that landed while starting up must not be waited out.
+      if (restartRequested || shuttingDown) return resolve();
+      wake = resolve;
     });
-  }
 
   const shutdown = () => {
     shuttingDown = true;
     watcher?.close();
     proc?.kill();
-    resumeAfterCrash?.();
+    wake?.();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  function watch(config: {
-    root: string;
-    envDir: string;
-    configFile: string | null;
-  }): void {
+  function watch(config: ResolvedConfig): void {
     watcher?.close();
     watcher = setupDevWatchers({
       root: config.root,
       envDir: config.envDir,
       configFileName: config.configFile ? basename(config.configFile) : null,
+      skip: discoverSkipDirs(config),
       onRestart: (filename) => {
-        if (shuttingDown || killedForRestart) return;
-        killedForRestart = true;
-        console.log(
+        if (shuttingDown || restartRequested) return;
+        restartRequested = true;
+        log.info(
           `[steambun] ${filename ?? "a watched file"} changed, restarting`,
         );
         proc?.kill();
-        resumeAfterCrash?.();
+        wake?.();
       },
     });
   }
 
-  async function startOnce(): Promise<number> {
+  /** Runs the server once. Resolves to an exit code, or `undefined` to restart. */
+  async function startOnce(): Promise<number | undefined> {
     if (shuttingDown) return 0;
 
     const config = await loadConfig({
@@ -90,16 +84,12 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       configFile: opts.configFile,
     });
 
-    if (opts.port) config.server.port = opts.port;
+    if (opts.port !== undefined) config.server.port = opts.port;
     if (opts.host !== undefined) config.server.host = opts.host;
     if (opts.strictPort !== undefined)
       config.server.strictPort = opts.strictPort;
 
-    const { skipDirs, skipPaths } = discoverSkipDirs(config);
-    const htmlEntries = await discoverHtmlEntries(config.root, {
-      skipDirs,
-      skipPaths,
-    });
+    const htmlEntries = await discoverConfigHtmlEntries(config);
     if (htmlEntries.length === 0) {
       throw new Error(
         `[steambun] No HTML entrypoints found in ${config.root}. Expected an index.html at the project root.`,
@@ -108,42 +98,20 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
 
     await writeRoutesDts(config.root, config.api, htmlEntries, config.appType);
 
-    const envDir = config.envDir;
-    const fileEnv = await loadEnvFiles(mode, envDir);
+    const fileEnv = await loadEnvFiles(mode, config.envDir);
     const env = withProcessEnv(fileEnv);
-    const publicEnv = filterPublicEnv(env, config.envPrefix);
-    let typedPublicEnv: Record<string, unknown> | undefined;
-    try {
-      typedPublicEnv = publicOutput(
-        await validateEnv(config.envSchema, env),
-        config.envPrefix,
-      );
-    } catch (error) {
-      if (!(error instanceof EnvValidationError)) throw error;
-      // Same recovery as a crashed server: fixing a .env file (or the
-      // config) is a watched change that restarts from the top.
-      console.error(error.message);
-      console.log("[steambun] waiting for a change to restart");
-      proc = undefined;
-      watch(config);
-      await waitForNextChange();
-      killedForRestart = false;
-      if (shuttingDown) return 0;
-      bumpConfigGeneration();
-      return startOnce();
-    }
+    const typedPublicEnv = publicOutput(
+      await validateEnv(config.envSchema, env),
+      config.envPrefix,
+    );
     await writeEnvDts(
       config.root,
       filterPublicEnv(fileEnv, config.envPrefix),
       envSchemaTypes(config, typedPublicEnv),
     );
     const define = buildBundleDefine(
-      publicEnv,
-      {
-        mode,
-        command: "dev",
-        base: config.base,
-      },
+      filterPublicEnv(env, config.envPrefix),
+      { mode, command: "dev", base: config.base },
       config.define,
       typedPublicEnv,
     );
@@ -160,23 +128,19 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
 
     if (shuttingDown) return 0;
 
-    console.log(`[steambun] starting dev server (mode: ${mode})`);
+    log.info(`[steambun] starting dev server (mode: ${mode})`);
 
-    // Bun's dev bundler has no `features` build option in 1.4.1, so
-    // config.build.features can't apply here — only the STEAMBUN_FEATURES env
-    // var reaches feature() in dev, via --feature= CLI args (verified: bun
-    // --hot --feature=X works; a comma-separated single flag does not — one
-    // --feature= per flag).
+    // Dev has no `features` build option, so only the env var applies; Bun wants one --feature= per flag.
     const featureFlags = mergeFeatures(
       undefined,
       process.env.STEAMBUN_FEATURES,
     );
 
     proc = Bun.spawn({
-      // `--config <path> <script>` (space-separated) silently no-ops on Bun
-      // 1.4.0 — verified empirically. `--config=<path>` is the form that works.
+      // `--config <path>` (space-separated) silently no-ops on Bun 1.4.0; `--config=<path>` works.
       cmd: [
         "bun",
+        "--no-env-file",
         "--hot",
         `--config=${bunfigPath}`,
         ...featureFlags.map((f) => `--feature=${f}`),
@@ -185,38 +149,54 @@ export async function dev(opts: DevOptions = {}): Promise<void> {
       cwd: config.root,
       stdio: ["inherit", "inherit", "inherit"],
       env: {
-        ...process.env,
-        NODE_ENV: "development",
+        ...env,
+        NODE_ENV: mode === "production" ? "production" : "development",
         ...childEnv(opts),
+        // Open a tab on the first start only, not on every restart.
+        ...(started && { OPEN: "0" }),
       },
     });
 
+    started = true;
     watch(config);
+    // A change during startup was swallowed by `restartRequested` before there was a process to kill.
+    if (restartRequested) proc.kill();
 
     const exitCode = await proc.exited;
+    proc = undefined;
 
     if (shuttingDown) return exitCode;
+    if (restartRequested) return undefined;
+    if (exitCode === 0) return 0;
 
-    if (killedForRestart) {
-      killedForRestart = false;
-      bumpConfigGeneration();
-      return startOnce();
-    }
-
-    if (exitCode !== 0) {
-      console.log(
-        `[steambun] dev server exited (code ${exitCode}) — waiting for a change to restart`,
-      );
-      await waitForNextChange();
-      if (shuttingDown) return 0;
-      bumpConfigGeneration();
-      return startOnce();
-    }
-
-    return exitCode;
+    log.info(
+      `[steambun] dev server exited (code ${exitCode}) — waiting for a change to restart`,
+    );
+    await waitForChange();
+    return undefined;
   }
 
-  const exitCode = await startOnce();
-  watcher?.close();
+  let exitCode: number | undefined;
+  try {
+    while (exitCode === undefined) {
+      try {
+        exitCode = await startOnce();
+      } catch (error) {
+        // Before the first start there is nothing to recover to; afterwards the running watcher picks up the fix.
+        if (!started) throw error;
+        log.error(error instanceof Error ? error.message : String(error));
+        log.info("[steambun] waiting for a change to restart");
+        await waitForChange();
+      }
+      if (exitCode === undefined) {
+        restartRequested = false;
+        bumpConfigGeneration();
+      }
+    }
+  } finally {
+    watcher?.close();
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+  }
   if (!shuttingDown) process.exitCode = exitCode;
 }

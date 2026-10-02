@@ -88,8 +88,76 @@ describe("createStaticHandler", () => {
 
   test("a decoded path with a .. segment is 404, not a file outside outDir", async () => {
     const res = await noSpa(
-      new Request("http://localhost/%2e%2e/%2e%2e/etc/passwd"),
+      new Request("http://localhost/..%2f..%2fetc/passwd"),
     );
+    expect(res.status).toBe(404);
+  });
+
+  test("traversal never reaches a real file beside outDir, even with spa or a base", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "steambun-static-escape-"));
+    writeFileSync(join(parent, "secret.txt"), "secret");
+    const dist = join(parent, "dist");
+    mkdirSync(dist);
+    writeFileSync(join(dist, "index.html"), "<h1>spa</h1>");
+    const handlers = [
+      createStaticHandler({ outDir: dist, spa: true }),
+      createStaticHandler({ outDir: dist, spa: true, base: "/app/" }),
+    ];
+    // URL parsing already collapses %2e%2e, so those fall back to the SPA page; %2f survives to the decoder and is a 404.
+    for (const path of [
+      "/%2e%2e/secret.txt",
+      "/..%2fsecret.txt",
+      "/a/..%2f..%2fsecret.txt",
+      "/app/..%2fsecret.txt",
+    ]) {
+      for (const handler of handlers) {
+        const res = await handler(new Request(`http://localhost${path}`));
+        expect(await res.text()).not.toContain("secret");
+      }
+    }
+    const res = await handlers[0]?.(
+      new Request("http://localhost/..%2fsecret.txt"),
+    );
+    expect(res?.status).toBe(404);
+  });
+
+  test("a backslash can't smuggle a .. segment (a separator on Windows)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-static-backslash-"));
+    writeFileSync(join(dir, "..\\secret.txt"), "secret");
+    const handler = createStaticHandler({ outDir: dir, spa: false });
+    for (const path of ["/..%5csecret.txt", "/a%5c..%5c..%5csecret.txt"]) {
+      const res = await handler(new Request(`http://localhost${path}`));
+      expect(res.status).toBe(404);
+    }
+  });
+
+  test("an excluded path is never served, however it is spelled", async () => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, "server.js"), "SECRET");
+    for (const spaFallback of [true, false]) {
+      const handler = createStaticHandler({
+        outDir: dir,
+        spa: spaFallback,
+        exclude: ["server.js"],
+      });
+      for (const path of [
+        "/server.js",
+        "/server.js/",
+        "/SERVER.JS",
+        "/%73erver.js",
+        "//server.js",
+      ]) {
+        const res = await handler(new Request(`http://localhost${path}`));
+        expect(await res.text()).not.toContain("SECRET");
+      }
+      expect(
+        (await handler(new Request("http://localhost/foo.txt"))).status,
+      ).toBe(200);
+    }
+  });
+
+  test("a double-encoded .. is a literal name, not a traversal", async () => {
+    const res = await noSpa(new Request("http://localhost/%252e%252e/foo.txt"));
     expect(res.status).toBe(404);
   });
 
@@ -150,6 +218,30 @@ describe("createStaticHandler — headers", () => {
     expect(await second.text()).toBe("");
   });
 
+  test("If-None-Match accepts comma lists, weak validators, and *", async () => {
+    const handler = createStaticHandler({ outDir, spa: false });
+    const etag = (
+      await handler(new Request("http://localhost/foo.txt"))
+    ).headers.get("etag")!;
+    const bare = etag.replace(/^W\//, "");
+    const status = async (value: string) =>
+      (
+        await handler(
+          new Request("http://localhost/foo.txt", {
+            headers: { "if-none-match": value },
+          }),
+        )
+      ).status;
+
+    expect(await status(`"other", ${etag}`)).toBe(304);
+    expect(await status(`${etag},"other"`)).toBe(304);
+    expect(await status(bare)).toBe(304);
+    expect(await status(`W/"other", ${bare}`)).toBe(304);
+    expect(await status("*")).toBe(304);
+    expect(await status(`"other", W/"another"`)).toBe(200);
+    expect(await status("")).toBe(200);
+  });
+
   test("HEAD returns the same headers with no body", async () => {
     const handler = createStaticHandler({ outDir, spa: false });
     const res = await handler(
@@ -187,7 +279,22 @@ describe("createStaticHandler — precompressed variants", () => {
     const handler = createStaticHandler({ outDir, spa: false });
     const res = await handler(new Request("http://localhost/app.js"));
     expect(res.headers.get("content-encoding")).toBeNull();
+    expect(res.headers.get("vary")).toBe("Accept-Encoding");
     expect(await res.text()).toBe("console.log(1)");
+  });
+
+  test("a 304 for a file with variants still carries Vary", async () => {
+    const handler = createStaticHandler({ outDir, spa: false });
+    const etag = (
+      await handler(new Request("http://localhost/app.js"))
+    ).headers.get("etag")!;
+    const res = await handler(
+      new Request("http://localhost/app.js", {
+        headers: { "if-none-match": etag },
+      }),
+    );
+    expect(res.status).toBe(304);
+    expect(res.headers.get("vary")).toBe("Accept-Encoding");
   });
 
   test("precompressed: false ignores Accept-Encoding entirely", async () => {
@@ -274,89 +381,7 @@ describe("build() + createApp preview — precompress round trip", () => {
   });
 });
 
-describe("createStaticHandler — headersFile", () => {
-  test("applies a matching glob's headers from _headers.json", async () => {
-    const outDir = fixtureDir();
-    writeFileSync(
-      join(outDir, "_headers.json"),
-      JSON.stringify({
-        "/*.html": {
-          "Content-Security-Policy": "default-src 'self'",
-          "x-custom": "html",
-        },
-        "/foo.txt": { "x-custom": "txt" },
-      }),
-    );
-
-    const handler = createStaticHandler({
-      outDir,
-      spa: false,
-      headersFile: join(outDir, "_headers.json"),
-    });
-
-    const htmlRes = await handler(new Request("http://localhost/about"));
-    expect(htmlRes.headers.get("content-security-policy")).toBe(
-      "default-src 'self'",
-    );
-    expect(htmlRes.headers.get("x-custom")).toBe("html");
-
-    const txtRes = await handler(new Request("http://localhost/foo.txt"));
-    expect(txtRes.headers.get("x-custom")).toBe("txt");
-    expect(txtRes.headers.get("content-security-policy")).toBeNull();
-  });
-
-  test("a missing headersFile is a no-op", async () => {
-    const outDir = fixtureDir();
-    const handler = createStaticHandler({
-      outDir,
-      spa: false,
-      headersFile: join(outDir, "no-such-file.json"),
-    });
-    const res = await handler(new Request("http://localhost/foo.txt"));
-    expect(res.status).toBe(200);
-  });
-
-  test("a /**/*.html glob applies its header to a nested HTML page", async () => {
-    const outDir = fixtureDir();
-    writeFileSync(
-      join(outDir, "_headers.json"),
-      JSON.stringify({
-        "/**/*.html": { "Content-Security-Policy": "default-src 'self'" },
-      }),
-    );
-
-    const handler = createStaticHandler({
-      outDir,
-      spa: false,
-      headersFile: join(outDir, "_headers.json"),
-    });
-
-    const res = await handler(new Request("http://localhost/nested/"));
-    expect(res.headers.get("content-security-policy")).toBe(
-      "default-src 'self'",
-    );
-  });
-});
-
-describe("createStaticHandler — denied build metadata", () => {
-  test("_headers.json is 404", async () => {
-    const outDir = fixtureDir();
-    writeFileSync(join(outDir, "_headers.json"), "{}");
-    const handler = createStaticHandler({ outDir, spa: false });
-    const res = await handler(new Request("http://localhost/_headers.json"));
-    expect(res.status).toBe(404);
-  });
-
-  test(".steambun-chunks.json is 404", async () => {
-    const outDir = fixtureDir();
-    writeFileSync(join(outDir, ".steambun-chunks.json"), "{}");
-    const handler = createStaticHandler({ outDir, spa: false });
-    const res = await handler(
-      new Request("http://localhost/.steambun-chunks.json"),
-    );
-    expect(res.status).toBe(404);
-  });
-
+describe("createStaticHandler — build metadata", () => {
   test("manifest.json is served", async () => {
     const outDir = fixtureDir();
     writeFileSync(join(outDir, "manifest.json"), '{"ok":true}');
@@ -378,9 +403,7 @@ describe("createStaticHandler — resolution cache", () => {
     const etag1 = first.headers.get("etag");
     expect(etag1).toBeTruthy();
 
-    // outDir is documented as immutable for the handler's lifetime: the
-    // etag (derived from a stat taken once, on the first resolution) must
-    // stay the same even though the file on disk changed size and mtime.
+    // outDir is immutable for the handler's lifetime, so the etag stays put.
     await new Promise((r) => setTimeout(r, 5));
     writeFileSync(file, "v1-is-now-a-longer-string");
     const second = await handler(new Request("http://localhost/cached.txt"));
@@ -403,11 +426,58 @@ describe("createStaticHandler — resolution cache", () => {
   });
 });
 
-describe("/**/*.html glob (Bun.Glob pin)", () => {
-  test("matches root and nested HTML at any depth", () => {
-    const glob = new Bun.Glob("/**/*.html");
-    expect(glob.match("/index.html")).toBe(true);
-    expect(glob.match("/about/index.html")).toBe(true);
-    expect(glob.match("/a/b/c.html")).toBe(true);
+describe("createStaticHandler base", () => {
+  const outDir = fixtureDir();
+  const based = createStaticHandler({ outDir, spa: true, base: "/app/" });
+
+  test("strips the base prefix before lookup", async () => {
+    expect(
+      await (await based(new Request("http://x/app/foo.txt"))).text(),
+    ).toBe("hello");
+    expect(
+      await (await based(new Request("http://x/app/nested/"))).text(),
+    ).toContain("dir");
+    expect(await (await based(new Request("http://x/app"))).text()).toContain(
+      "spa",
+    );
   });
+
+  test("still serves paths outside the base", async () => {
+    expect(await (await based(new Request("http://x/foo.txt"))).text()).toBe(
+      "hello",
+    );
+  });
+});
+
+describe("createStaticHandler accept-encoding q=0", () => {
+  test("an encoding refused with q=0 is not served", async () => {
+    const outDir = mkdtempSync(join(tmpdir(), "steambun-static-q-"));
+    writeFileSync(join(outDir, "a.txt"), "plain");
+    writeFileSync(join(outDir, "a.txt.gz"), Bun.gzipSync("plain"));
+    const handler = createStaticHandler({ outDir, spa: false });
+    const refused = handler(
+      new Request("http://x/a.txt", {
+        headers: { "accept-encoding": "gzip;q=0, identity" },
+      }),
+    );
+    expect(refused.headers.get("content-encoding")).toBeNull();
+    const accepted = handler(
+      new Request("http://x/a.txt", {
+        headers: { "accept-encoding": "gzip;q=0.5" },
+      }),
+    );
+    expect(accepted.headers.get("content-encoding")).toBe("gzip");
+  });
+});
+
+test("a missing asset-like path is 404 even with spa; extensionless paths still fall back", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "steambun-spa-asset-"));
+  writeFileSync(join(outDir, "index.html"), "<h1>shell</h1>");
+  const handler = createStaticHandler({ outDir, spa: true });
+  expect(
+    (await handler(new Request("http://localhost/assets/x.js"))).status,
+  ).toBe(404);
+  expect(
+    (await handler(new Request("http://localhost/deep/route"))).status,
+  ).toBe(200);
 });

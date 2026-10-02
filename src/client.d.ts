@@ -8,12 +8,10 @@ declare global {
   }
 
   interface ImportGlobOptions {
-    /** Pick one named export (`"default"`, `"setup"`, ...) instead of the module namespace. */
+    /** Pick one named export (`"default"`, `"setup"`, `"*"` for the namespace) instead of the module namespace. */
     import?: string;
-    /** Appended to each import specifier, e.g. `"?raw"` (needs `resolve.viteSuffixes`). */
-    query?: string | Record<string, string | boolean>;
-    /** Also match dotfiles and `node_modules`. Default `false`. */
-    exhaustive?: boolean;
+    /** Appended to each import specifier, e.g. `"?raw"`. */
+    query?: string;
   }
 
   interface ImportMeta {
@@ -41,10 +39,7 @@ type SchemaOutput<S> = S extends {
     : never
   : never;
 
-/**
- * The envPrefix-matched keys of a config's `envSchema` output. Used by the
- * generated `.steambun/env.d.ts` to type `import.meta.env`.
- */
+/** The `envPrefix`-matched keys of a config's `envSchema` output, for the generated `.steambun/env.d.ts`. */
 export type PublicEnvOf<C, Prefix extends string> =
   ResolvedConfigExport<C> extends { envSchema?: infer S }
     ? {
@@ -64,10 +59,7 @@ export interface SteambunPages {}
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD";
 
-// `route()`'s wrapper always returns `Promise<Response>` at the type level —
-// its real value type only survives via the phantom `__steambun_return`
-// property, so that's checked (and unwrapped from its `| undefined`) before
-// falling back to a plain handler's actual return type.
+// `route()` returns `Promise<Response>`; its value type lives on the phantom `__steambun_return`.
 type ReturnOf<H> = "__steambun_return" extends keyof H
   ? NonNullable<H["__steambun_return"]>
   : // biome-ignore lint/suspicious/noExplicitAny: matches handlers of any arity/arg types
@@ -85,11 +77,11 @@ type HandlerOf<M, K extends Method> =
 /** `Response` → `unknown` (body shape unknown without parsing); anything else (e.g. via `route()`) passes through. */
 type Json<R> = Awaited<R> extends Response ? unknown : Awaited<R>;
 
-type DefaultInput = { query?: Record<string, string>; body?: unknown };
+type Query = Record<string, string | string[]>;
 
-// `route(schemas, fn)` records its schemas' input types on a phantom
-// `__steambun_input` property, the same way `__steambun_return` carries the
-// output type.
+type DefaultInput = { query?: Query; body?: unknown };
+
+// Schema input types ride on the phantom `__steambun_input`.
 type InputOf<H> = "__steambun_input" extends keyof H
   ? NonNullable<H["__steambun_input"]>
   : DefaultInput;
@@ -118,12 +110,6 @@ export class SteambunApiError extends Error {
   constructor(method: string, path: string, status: number, body: unknown);
 }
 
-/**
- * Typed fetch against a file-based API route. `path` and `params` are
- * checked against the generated `.steambun/routes.d.ts`; the resolved
- * type is the matching method handler's return value (via {@link Json}),
- * or `unknown` if the handler returns a bare `Response`.
- */
 type ParamsOf<P extends keyof SteambunRoutes> = SteambunRoutes[P] extends {
   params: infer Params;
 }
@@ -138,6 +124,10 @@ type ApiReturn<P extends keyof SteambunRoutes, K extends Method> = Json<
   HandlerOf<ModuleOf<P>, K>
 >;
 
+/**
+ * Typed fetch against a file-based API route. Resolves to the matching
+ * handler's return value, or `unknown` for a bare `Response`.
+ */
 export function api<
   P extends keyof SteambunRoutes,
   K extends Lowercase<Method>,
@@ -150,21 +140,22 @@ export function api<
   >,
 ): Promise<ApiReturn<P, Uppercase<K>>>;
 
-/** Typed link builder for a page or API route path, substituting any `:param` segments and appending an optional query string. */
+export interface HrefOptions<P> {
+  params?: P;
+  query?: Query;
+}
+
+/** Typed link builder for a page or API route path; prefixes `import.meta.env.BASE_URL`. */
 export function href<P extends keyof SteambunPages | keyof SteambunRoutes>(
   path: P,
   ...args: P extends keyof SteambunRoutes
-    ? SteambunRoutes[P] extends { params: infer Params }
-      ? keyof Params extends never
-        ? [params?: undefined, query?: Record<string, string>]
-        : [params: Params, query?: Record<string, string>]
-      : [params?: undefined, query?: Record<string, string>]
-    : [params?: undefined, query?: Record<string, string>]
+    ? keyof ParamsOf<P> extends never
+      ? [opts?: HrefOptions<undefined>]
+      : [opts: HrefOptions<ParamsOf<P>> & { params: ParamsOf<P> }]
+    : [opts?: HrefOptions<undefined>]
 ): string;
 
-export interface WsOptions<P> {
-  params?: P;
-  query?: Record<string, string>;
+export interface WsOptions<P> extends HrefOptions<P> {
   protocols?: string | string[];
   reconnect?: boolean | { maxAttempts?: number; baseDelayMs?: number };
 }
@@ -176,7 +167,7 @@ export interface SteambunSocket {
   on(
     event: "open" | "message" | "close" | "error",
     fn: (ev: Event) => void,
-  ): void;
+  ): () => void;
 }
 
 type WebSocketRoutes = {
@@ -185,11 +176,7 @@ type WebSocketRoutes = {
     : never;
 }[keyof SteambunRoutes];
 
-/**
- * Typed WebSocket client against a file-based `export const websocket`
- * route. `path` is checked against the generated `.steambun/routes.d.ts`
- * and must belong to a route that exports `websocket`.
- */
+/** Typed WebSocket client for a route that exports `websocket`; reconnect backs off up to 30s and `close()` stops it; `send()` throws while a reconnect is pending. */
 export function ws<P extends WebSocketRoutes>(
   path: P,
   opts?: WsOptions<ParamsOf<P>>,

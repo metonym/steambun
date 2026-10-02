@@ -1,54 +1,52 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-function isWs(c: number): boolean {
-  return c === 32 || c === 9;
-}
+const ENTRY_HEAD = /[ \t]*(?:export[ \t]+)?([\w.-]+)[ \t]*=[ \t]*/y;
+const QUOTES = new Set(["'", '"', "`"]);
+const AFTER_QUOTE = /^[ \t]*(?:#.*)?$/;
 
-function parseLine(
-  contents: string,
-  start: number,
-  end: number,
-  out: Record<string, string>,
-): void {
-  while (start < end && isWs(contents.charCodeAt(start))) start++;
-  while (end > start && isWs(contents.charCodeAt(end - 1))) end--;
-  if (start >= end || contents.charCodeAt(start) === 35) return;
-
-  const eq = contents.indexOf("=", start);
-  if (eq === -1 || eq >= end) return;
-
-  let keyEnd = eq;
-  while (keyEnd > start && isWs(contents.charCodeAt(keyEnd - 1))) keyEnd--;
-  let valStart = eq + 1;
-  while (valStart < end && isWs(contents.charCodeAt(valStart))) valStart++;
-  let valEnd = end;
-  if (valEnd - valStart >= 2) {
-    const q = contents.charCodeAt(valStart);
-    if ((q === 34 || q === 39) && contents.charCodeAt(valEnd - 1) === q) {
-      valStart++;
-      valEnd--;
-    }
-  }
-  out[contents.slice(start, keyEnd)] = contents.slice(valStart, valEnd);
-}
-
-/** Minimal .env parser: KEY=VALUE per line, '#' comments, optional quotes. No interpolation. */
+/** dotenv/Vite syntax: `[export] KEY=value`, `#` comments, quoted values, no interpolation. */
 export function parseEnvFile(contents: string): Record<string, string> {
+  const src = contents.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const out: Record<string, string> = {};
-  const len = contents.length;
-  let start = 0;
-  for (let i = 0; i <= len; i++) {
-    const c = i === len ? 10 : contents.charCodeAt(i);
-    if (c !== 10 && c !== 13) continue;
-    if (i > start) parseLine(contents, start, i, out);
-    if (c === 13 && i + 1 < len && contents.charCodeAt(i + 1) === 10) i++;
-    start = i + 1;
+  let pos = 0;
+  while (pos < src.length) {
+    let eol = src.indexOf("\n", pos);
+    if (eol === -1) eol = src.length;
+    ENTRY_HEAD.lastIndex = pos;
+    const head = ENTRY_HEAD.exec(src);
+    if (head) {
+      const valStart = pos + head[0].length;
+      const quote = src[valStart];
+      let value: string | undefined;
+      if (QUOTES.has(quote)) {
+        // A quoted value may span lines, so find the closing quote across the rest of the file.
+        let close = valStart + 1;
+        while (close < src.length && src[close] !== quote) {
+          close += src[close] === "\\" && src[close + 1] === quote ? 2 : 1;
+        }
+        if (close < src.length) {
+          let lineEnd = src.indexOf("\n", close);
+          if (lineEnd === -1) lineEnd = src.length;
+          if (AFTER_QUOTE.test(src.slice(close + 1, lineEnd))) {
+            value = src.slice(valStart + 1, close);
+            if (quote === '"') {
+              value = value.replace(/\\n/g, "\n").replace(/\\r/g, "\r");
+            }
+            eol = lineEnd;
+          }
+        }
+      }
+      // An unquoted value, or a quote with no valid close, ends at the first `#`.
+      value ??= src.slice(valStart, eol).replace(/#.*/, "").trim();
+      out[head[1]] = value;
+    }
+    pos = eol + 1;
   }
   return out;
 }
 
-/** Keys from `.env*` files only. Used for generated types so a machine's `VITE_*` shell vars stay out of `.steambun/env.d.ts`. */
+/** `.env`, `.env.local`, `.env.[mode]`, `.env.[mode].local`, later overriding earlier. Excludes `process.env` so shell vars stay out of generated types. */
 export async function loadEnvFiles(
   mode: string,
   envDir: string,
@@ -66,15 +64,7 @@ export async function loadEnvFiles(
   return merged;
 }
 
-// .env, .env.local, .env.[mode], .env.[mode].local, later overriding earlier
-// (Vite's precedence). process.env always wins.
-export async function loadEnv(
-  mode: string,
-  envDir: string,
-): Promise<Record<string, string>> {
-  return withProcessEnv(await loadEnvFiles(mode, envDir));
-}
-
+/** `process.env` always wins over file values. */
 export function withProcessEnv(
   fileEnv: Record<string, string>,
 ): Record<string, string> {
@@ -99,28 +89,31 @@ export function filterPublicEnv(
   return out;
 }
 
-export interface ImportMetaEnvOptions {
+interface ImportMetaEnvOptions {
   mode: string;
-  command: "dev" | "build" | "preview";
+  command: "dev" | "build";
   base: string;
 }
 
-// Bun only inlines process.env.* via --env, leaving import.meta.env
-// untouched, so its rewriting goes through this define map instead.
-// `typedPublicEnv` is envSchema's envPrefix-matched output: its values
-// (defaults and transforms applied) replace the raw strings for
-// import.meta.env, while process.env.* stays the raw string.
+// Like Vite, `build` is always production whatever `--mode` says; `dev` is production only for `--mode production`.
+function isProduction(opts: ImportMetaEnvOptions): boolean {
+  return opts.command === "build" || opts.mode === "production";
+}
+
+// Bun's `env` option only inlines process.env.*, so import.meta.env.* goes through define.
+// `typedPublicEnv` (envSchema output) replaces the raw strings for import.meta.env only;
+// process.env.* stays the raw environment.
 export function buildImportMetaEnvDefine(
   publicEnv: Record<string, string>,
   opts: ImportMetaEnvOptions,
   typedPublicEnv?: Record<string, unknown>,
 ): Record<string, string> {
-  const isDev = opts.command === "dev";
+  const production = isProduction(opts);
   const define: Record<string, string> = {
     "import.meta.env.MODE": JSON.stringify(opts.mode),
-    "import.meta.env.DEV": JSON.stringify(isDev),
-    "import.meta.env.PROD": JSON.stringify(!isDev),
-    "import.meta.env.SSR": JSON.stringify(false),
+    "import.meta.env.DEV": JSON.stringify(!production),
+    "import.meta.env.PROD": JSON.stringify(production),
+    "import.meta.env.SSR": "false",
     "import.meta.env.BASE_URL": JSON.stringify(opts.base),
   };
   for (const key in publicEnv) {
@@ -134,16 +127,30 @@ export function buildImportMetaEnvDefine(
   return define;
 }
 
-/** Bun `[serve.static] env` / `Bun.build({ env })` accepts one `PREFIX_*` glob. */
-export function toBunEnvPattern(prefixes: string[]): `${string}*` | undefined {
-  if (prefixes.length !== 1) return undefined;
-  const prefix = prefixes[0];
-  if (!prefix) return undefined;
-  return `${prefix}*`;
+const IMPORT_META_ENV = "import.meta.env";
+
+// Object literal of every `import.meta.env.KEY` define, so a bare `import.meta.env` (spread,
+// `Object.keys`, `in`) sees the same values. Omitted if a value isn't JSON, which Bun requires of defines.
+function importMetaEnvObject(
+  define: Record<string, string>,
+): string | undefined {
+  const entries: string[] = [];
+  for (const key in define) {
+    if (!key.startsWith(`${IMPORT_META_ENV}.`)) continue;
+    try {
+      JSON.parse(define[key]);
+    } catch {
+      return undefined;
+    }
+    entries.push(
+      `${JSON.stringify(key.slice(IMPORT_META_ENV.length + 1))}:${define[key]}`,
+    );
+  }
+  return `{${entries.join(",")}}`;
 }
 
-export function toPublicPath(base: string): string | undefined {
-  if (!base || base === "/") return undefined;
+/** `base` with a trailing slash, so built asset URLs are absolute and work from nested pages. */
+export function toPublicPath(base: string): string {
   return base.endsWith("/") ? base : `${base}/`;
 }
 
@@ -157,9 +164,13 @@ export function buildBundleDefine(
     ...buildImportMetaEnvDefine(publicEnv, opts, typedPublicEnv),
     ...userDefine,
   };
+  if (!(IMPORT_META_ENV in define)) {
+    const object = importMetaEnvObject(define);
+    if (object) define[IMPORT_META_ENV] = object;
+  }
   if (!("process.env.NODE_ENV" in define)) {
     define["process.env.NODE_ENV"] = JSON.stringify(
-      opts.mode === "production" ? "production" : "development",
+      isProduction(opts) ? "production" : "development",
     );
   }
   return define;

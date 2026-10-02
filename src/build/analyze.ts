@@ -1,11 +1,28 @@
 import { readFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { compress, type Encoding } from "./precompress";
-import { outPath, stripDotSlash } from "./rename";
+import { compressedSize } from "./precompress";
 
-// Bun's metafile output keys are already relative to `outdir`, just with a
-// "./" prefix for top-level files — `stripDotSlash` gets budgets globbing
-// against the same shape as `outDir`-relative paths (e.g. "assets/app.js").
+/** Bun's metafile prefixes top-level output paths with `./`. */
+export function stripDotSlash(path: string): string {
+  return path.startsWith("./") ? path.slice(2) : path;
+}
+
+/** Replaces each output's `bytes` with its on-disk size; a missing file keeps the metafile value. */
+export async function refreshOutputSizes(
+  metafile: Bun.BuildMetafile,
+  outDir: string,
+): Promise<Bun.BuildMetafile> {
+  const entries = await Promise.all(
+    Object.entries(metafile.outputs).map(async ([path, output]) => {
+      const bytes = await stat(join(outDir, stripDotSlash(path)))
+        .then((s) => s.size)
+        .catch(() => output.bytes);
+      return [path, { ...output, bytes }] as const;
+    }),
+  );
+  return { ...metafile, outputs: Object.fromEntries(entries) };
+}
 
 export interface AnalyzeReport {
   outputs: Array<{
@@ -52,23 +69,17 @@ function packageInfo(inputPath: string): { name: string; dir: string } | null {
   return { name, dir: `${inputPath.slice(0, idx)}node_modules/${name}` };
 }
 
-// Metafile paths are relative to the cwd Bun.build() ran in (verified via
-// probe: `root`/`outdir` don't affect it), so package.json lookups resolve
-// the same way. Cached by directory since many inputs share one package.
-const versionCache = new Map<string, string>();
-
-function versionForDir(dir: string): string {
+// Metafile input paths are relative to the cwd Bun.build() ran in, not `root`/`outdir`.
+function versionForDir(dir: string, cache: Map<string, string>): string {
   const absDir = resolve(process.cwd(), dir);
-  const cached = versionCache.get(absDir);
+  const cached = cache.get(absDir);
   if (cached !== undefined) return cached;
   let version = "unknown";
   try {
     const pkg = JSON.parse(readFileSync(join(absDir, "package.json"), "utf8"));
     if (typeof pkg.version === "string") version = pkg.version;
-  } catch {
-    // Unreadable or missing package.json — leave as "unknown".
-  }
-  versionCache.set(absDir, version);
+  } catch {}
+  cache.set(absDir, version);
   return version;
 }
 
@@ -93,6 +104,7 @@ export function analyzeMetafile(metafile: Bun.BuildMetafile): AnalyzeReport {
   outputs.sort((a, b) => b.bytes - a.bytes);
 
   const packageAgg = new Map<string, PackageAgg>();
+  const versionCache = new Map<string, string>();
   for (const [inputPath, input] of Object.entries(metafile.inputs)) {
     const info = packageInfo(inputPath);
     if (!info) continue;
@@ -104,8 +116,10 @@ export function analyzeMetafile(metafile: Bun.BuildMetafile): AnalyzeReport {
     };
     agg.bytes += input.bytes;
     agg.files += 1;
-    agg.dirs.add(info.dir);
-    agg.versions.add(versionForDir(info.dir));
+    if (!agg.dirs.has(info.dir)) {
+      agg.dirs.add(info.dir);
+      agg.versions.add(versionForDir(info.dir, versionCache));
+    }
     packageAgg.set(info.name, agg);
   }
 
@@ -125,8 +139,6 @@ export function analyzeMetafile(metafile: Bun.BuildMetafile): AnalyzeReport {
   return { outputs, packages, duplicates, total };
 }
 
-// Parent pointers rather than a queue of whole chains: the path is only
-// materialized for the one node that matches, not copied per pushed edge.
 function bfsChain(
   metafile: Bun.BuildMetafile,
   start: string,
@@ -173,19 +185,14 @@ export function explainImport(
   return chains.slice(0, 3);
 }
 
-const SIZE_UNITS: Record<string, number> = {
-  b: 1,
-  kb: 1024,
-  mb: 1024 * 1024,
-};
+const SIZE_UNITS = { b: 1, kb: 1024, mb: 1024 * 1024 };
 
 export function parseSize(input: string | number): number {
   if (typeof input === "number") return input;
-  const match = input.trim().match(/^([\d.]+)\s*(b|kb|mb)?$/i);
+  const match = input.trim().match(/^(\d+(?:\.\d+)?|\.\d+)\s*(b|kb|mb)?$/i);
   if (!match) throw new Error(`[steambun] Invalid size budget: "${input}"`);
-  const value = Number.parseFloat(match[1]!);
-  const unit = (match[2] ?? "b").toLowerCase();
-  return Math.round(value * (SIZE_UNITS[unit] ?? 1));
+  const unit = (match[2] ?? "b").toLowerCase() as keyof typeof SIZE_UNITS;
+  return Math.round(Number.parseFloat(match[1]!) * SIZE_UNITS[unit]);
 }
 
 export function checkBudgets(
@@ -218,33 +225,36 @@ export interface CompareRow {
   delta: number;
 }
 
-/**
- * Diffs two metafiles' output sizes by normalized path. Equal-size paths are
- * omitted; the rest are sorted by absolute delta, largest first.
- */
+function outputBytes(metafile: Bun.BuildMetafile): Map<string, number> {
+  return new Map(
+    Object.entries(metafile.outputs).map(([path, output]) => [
+      stripDotSlash(path),
+      output.bytes,
+    ]),
+  );
+}
+
+/** Output size diff by normalized path, equal sizes omitted, largest absolute delta first. */
 export function compareMetafiles(
   before: Bun.BuildMetafile,
   after: Bun.BuildMetafile,
 ): CompareRow[] {
-  const beforeBytes = new Map<string, number>();
-  for (const [path, output] of Object.entries(before.outputs)) {
-    beforeBytes.set(stripDotSlash(path), output.bytes);
-  }
-  const afterBytes = new Map<string, number>();
-  for (const [path, output] of Object.entries(after.outputs)) {
-    afterBytes.set(stripDotSlash(path), output.bytes);
-  }
+  const beforeBytes = outputBytes(before);
+  const afterBytes = outputBytes(after);
 
   const rows: CompareRow[] = [];
-  const paths = new Set([...beforeBytes.keys(), ...afterBytes.keys()]);
-  for (const path of paths) {
+  for (const path of new Set([...beforeBytes.keys(), ...afterBytes.keys()])) {
     const b = beforeBytes.get(path);
     const a = afterBytes.get(path);
-    if (b === undefined && a !== undefined) {
-      rows.push({ path, status: "added", before: 0, after: a, delta: a });
-    } else if (b !== undefined && a === undefined) {
-      rows.push({ path, status: "removed", before: b, after: 0, delta: -b });
-    } else if (b !== undefined && a !== undefined && b !== a) {
+    if (b === undefined || a === undefined) {
+      rows.push({
+        path,
+        status: a === undefined ? "removed" : "added",
+        before: b ?? 0,
+        after: a ?? 0,
+        delta: (a ?? 0) - (b ?? 0),
+      });
+    } else if (b !== a) {
       rows.push({ path, status: "changed", before: b, after: a, delta: a - b });
     }
   }
@@ -259,11 +269,8 @@ export interface CompressedSizes {
 }
 
 /**
- * Reads each output's on-disk file under `outDir` and compresses it with
- * gzip/zstd (and brotli, opt-in — it's slow). A `.gz`/`.zst`/`.br` sibling
- * left by `build.precompress` is used as-is (same codec levels, so the same
- * bytes). Outputs with no file on disk (e.g. a stale metafile) are skipped,
- * not errored.
+ * Compresses each output's on-disk file with gzip/zstd (and brotli, opt-in —
+ * it's slow). Outputs with no file on disk (e.g. a stale metafile) are skipped.
  */
 export async function computeCompressedSizes(
   outputs: AnalyzeReport["outputs"],
@@ -272,27 +279,13 @@ export async function computeCompressedSizes(
 ): Promise<Map<string, CompressedSizes>> {
   const entries = await Promise.all(
     outputs.map(async (output) => {
-      const path = outPath(outDir, stripDotSlash(output.path));
-      const file = Bun.file(path);
-      if (!(await file.exists())) return null;
-
-      // `build.precompress` may already have written the exact bytes this
-      // function would produce — its levels are the same, so stat the sibling.
-      const sibling = async (ext: string): Promise<number | undefined> => {
-        const s = Bun.file(path + ext);
-        return (await s.exists()) ? s.size : undefined;
-      };
-      const size = async (ext: string, encoding: Encoding): Promise<number> => {
-        const existing = await sibling(ext);
-        return (
-          existing ?? (await compress(await file.bytes(), encoding)).length
-        );
-      };
+      const path = join(outDir, output.path);
+      if (!(await Bun.file(path).exists())) return null;
 
       const [gzip, zstd, br] = await Promise.all([
-        size(".gz", "gzip"),
-        size(".zst", "zstd"),
-        opts.brotli ? size(".br", "br") : undefined,
+        compressedSize(path, "gzip"),
+        compressedSize(path, "zstd"),
+        opts.brotli ? compressedSize(path, "br") : undefined,
       ]);
       return [output.path, { gzip, zstd, br }] as const;
     }),

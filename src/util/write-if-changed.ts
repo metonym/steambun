@@ -1,11 +1,4 @@
-/**
- * Writes `content` to `path` only if it differs from what's already there.
- * `routes.d.ts`/`env.d.ts` and the synthesized dev server are regenerated on
- * every restart; a no-op write still bumps mtime, which is enough to trigger
- * an editor's or `tsc --watch`'s re-check even though nothing changed.
- *
- * @returns whether a write happened.
- */
+/** Writes only when the content differs: a no-op write still bumps mtime and retriggers `tsc --watch`. Returns whether it wrote. */
 export async function writeIfChanged(
   path: string,
   content: string,

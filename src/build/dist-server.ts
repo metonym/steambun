@@ -1,19 +1,13 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { BunPlugin, ResolvedConfig } from "../config/types";
-import { toBunEnvPattern } from "../env/loader";
-import { assertBuildSuccess, toBunMinify, withBuiltinPlugins } from "./options";
-import { generateProdServeSource } from "./prod-server";
+import { DIST_SERVER_FILE } from "../util/paths";
+import {
+  assertBuildSuccess,
+  commonBuildOptions,
+  withBuiltinPlugins,
+} from "./options";
+import { writeProdServe } from "./prod-server";
 
-/** The dist server bundle's filename under `outDir`. */
-export const DIST_SERVER_FILE = "server.js";
-
-/**
- * Writes `outDir/server.js`: a `bun`-target bundle of the same preview
- * server used by `steambun preview` / `--compile`, with `import.meta.dir`
- * treated as `outDir` itself (since the bundle lives there). Running
- * `bun dist/server.js` has no dependency on the project source tree.
- */
+/** Bundles the preview server into `outDir/server.js` so `bun dist/server.js` needs no source tree. */
 export async function writeDistServer(
   config: ResolvedConfig,
   define: Record<string, string>,
@@ -21,30 +15,22 @@ export async function writeDistServer(
   outDir: string,
   publicEnv: Record<string, string>,
 ): Promise<void> {
-  const serveDir = join(config.root, ".steambun");
-  await mkdir(serveDir, { recursive: true });
-  const distServePath = join(serveDir, "dist-serve.ts");
-  await writeFile(
-    distServePath,
-    generateProdServeSource(config, outDir, {
-      embedOutDir: true,
-      envCheck: publicEnv,
-    }),
-    "utf8",
-  );
+  const distServePath = await writeProdServe(config, outDir, "dist-serve.ts", {
+    embedOutDir: true,
+    envCheck: publicEnv,
+  });
 
-  const env = toBunEnvPattern(config.envPrefix);
   const result = await Bun.build({
+    ...commonBuildOptions(config, define),
     entrypoints: [distServePath],
     outdir: outDir,
     naming: DIST_SERVER_FILE,
     target: "bun",
-    define,
     plugins: withBuiltinPlugins(config, plugins),
-    minify: toBunMinify(config.build.minify),
-    drop: config.build.drop,
-    ...(env ? { env } : {}),
   });
 
-  assertBuildSuccess(result, "[steambun] dist/server.js build failed.");
+  assertBuildSuccess(
+    result,
+    "[steambun] build.server: bundling dist/server.js failed.",
+  );
 }

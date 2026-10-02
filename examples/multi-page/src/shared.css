@@ -1,6 +1,4 @@
-/* Design-system base, imported by every page. Verbatim and contiguous in
-   each page's CSS output, which is what makes build.sharedCss able to cut
-   it into one shared file instead of leaving three copies. */
+/* Design-system base, imported by every page. */
 body {
   font-family: system-ui, sans-serif;
   max-width: 32rem;

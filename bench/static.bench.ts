@@ -26,9 +26,7 @@ group("runtime/static: createStaticHandler (per-request hot path)", () => {
   task("404 without spa", () => noSpa(missReq));
 });
 
-// --- A1-A7: full request paths through a more realistic outDir (precompressed
-// assets, nested html, _headers.json rules, HEAD, If-None-Match). See
-// .context/review/perf-runtime.md for the rationale behind each task. ---
+// Full request paths through a realistic outDir.
 
 const fullOutDir = mkdtempSync(join(tmpdir(), "steambun-static-full-"));
 writeFileSync(join(fullOutDir, "index.html"), "<!doctype html><h1>spa</h1>");
@@ -40,23 +38,12 @@ writeFileSync(
 writeFileSync(join(fullOutDir, "assets", "app-abc123.js.gz"), "gz-bytes"); // only .gz exists
 mkdirSync(join(fullOutDir, "docs"));
 writeFileSync(join(fullOutDir, "docs", "page.html"), "<h1>doc</h1>");
-writeFileSync(
-  join(fullOutDir, "_headers.json"),
-  JSON.stringify({
-    "/*.html": { "x-frame-options": "DENY" },
-    "/assets/*": { "x-a": "1" },
-    "/docs/**/*.html": { "x-b": "2" },
-    "/**/*.map": { "x-c": "3" },
-    "/never/*": { "x-d": "4" },
-  }),
-);
 
 const fullHandler = createStaticHandler({
   outDir: fullOutDir,
   spa: true,
   immutablePrefix: "/assets/",
   precompressed: true,
-  headersFile: join(fullOutDir, "_headers.json"),
 });
 
 const BROWSER_AE = "gzip, deflate, br, zstd";
@@ -97,9 +84,6 @@ group("runtime/static: full request paths (per-request hot path)", () => {
   );
   task("A3 asset hit, AE=gzip,deflate,br,zstd, only .gz sibling", () =>
     fullHandler(assetGzReq),
-  );
-  task("A4 html hit with 5 _headers.json rules (2 match)", () =>
-    fullHandler(new Request("http://localhost:4173/docs/page.html")),
   );
   task("A5 3-deep SPA fallback", () => fullHandler(deepSpaReq));
   task("A6 extension-less .html resolution", () => fullHandler(docReq));

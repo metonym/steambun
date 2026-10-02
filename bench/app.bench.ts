@@ -30,9 +30,7 @@ const config = resolveDefaults(
 );
 
 group("runtime/app: createApp (startup path)", () => {
-  // Bun caches dynamic imports by resolved path, so trials after the first
-  // measure wiring cost only (readdir + 50 cached-module imports + route
-  // table), not a cold parse/transpile of each route file.
+  // Imports are cached after the first trial, so this measures wiring only.
   task("D1 createApp preview, 50 api route files (warm module cache)", () =>
     createApp({ config, mode: "preview", outDir, apiDir }),
   );

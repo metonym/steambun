@@ -1,13 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { minifyHtml } from "../src/build/html-minify";
-import { shouldMinifyHtml } from "../src/build/options";
+import { minifyHtml, shouldMinifyHtml } from "../src/build/html-minify";
 
 describe("shouldMinifyHtml", () => {
   test("follows whitespace minify", () => {
     expect(shouldMinifyHtml(true)).toBe(true);
-    expect(shouldMinifyHtml("esbuild")).toBe(true);
-    expect(shouldMinifyHtml("terser")).toBe(true);
-    expect(shouldMinifyHtml(undefined)).toBe(true);
     expect(shouldMinifyHtml(false)).toBe(false);
     expect(shouldMinifyHtml({ whitespace: true })).toBe(true);
     expect(shouldMinifyHtml({ syntax: true })).toBe(false);
@@ -61,5 +57,40 @@ describe("minifyHtml", () => {
     expect(out).toContain("body { color: red; }");
     expect(out).toContain("\n  indented\n");
     expect(out.startsWith("<p>x</p><script")).toBe(true);
+  });
+});
+
+describe("minifyHtml inline whitespace and conditional comments", () => {
+  test("keeps one space for a line break between inline elements", () => {
+    expect(minifyHtml('<p><a href="/a">A</a>\n  <a href="/b">B</a></p>')).toBe(
+      '<p><a href="/a">A</a> <a href="/b">B</a></p>',
+    );
+    expect(minifyHtml("<span>x</span>\n\n   <em>y</em>")).toBe(
+      "<span>x</span> <em>y</em>",
+    );
+  });
+
+  test("still collapses line breaks next to block elements", () => {
+    expect(minifyHtml("<div>\n  <a>x</a>\n</div>\n<p>y</p>")).toBe(
+      "<div><a>x</a></div><p>y</p>",
+    );
+  });
+
+  test("treats a textarea neighbor as inline", () => {
+    expect(minifyHtml("<span>x</span>\n<textarea>\n a\n</textarea>")).toBe(
+      "<span>x</span> <textarea>\n a\n</textarea>",
+    );
+  });
+
+  test("keeps IE conditional comments but strips ordinary ones", () => {
+    const html = `<!--[if lt IE 9]><script src="shim.js"></script><![endif]-->
+<!--[if !IE]><!-->
+<p>modern</p>
+<!--<![endif]-->
+<!-- drop me -->
+<p>x</p>`;
+    expect(minifyHtml(html)).toBe(
+      `<!--[if lt IE 9]><script src="shim.js"></script><![endif]--><!--[if !IE]><!--><p>modern</p><!--<![endif]--><p>x</p>`,
+    );
   });
 });

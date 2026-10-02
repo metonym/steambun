@@ -71,6 +71,22 @@ describe("file-based WebSocket routes", () => {
     }
   });
 
+  test("a websocket-only route answers a plain request with a JSON 426", async () => {
+    const apiDir = tmpApiDir();
+    writeFileSync(
+      join(apiDir, "live.ts"),
+      "export const websocket = { message() {} };\n",
+    );
+    const app = await createApp({ config: baseConfig(apiDir), mode: "dev" });
+    try {
+      const res = await app.fetch(new Request("http://localhost/api/live"));
+      expect(res.status).toBe(426);
+      expect(await res.json()).toEqual({ error: "Upgrade Required" });
+    } finally {
+      app.close();
+    }
+  });
+
   test("middleware returning a Response blocks the upgrade", async () => {
     const apiDir = tmpApiDir();
     const config = baseConfig(apiDir, {
