@@ -1,6 +1,4 @@
-// Shared by main.ts and about.ts — with build.splitting + build.importMap,
-// this becomes its own chunk that both pages import by a stable id, so
-// editing it re-hashes one file instead of every page that uses it.
+// Shared by main.ts and about.ts; build.splitting makes it its own chunk.
 export function nav(active: "index" | "about"): string {
   const cls = (page: "index" | "about") =>
     page === active

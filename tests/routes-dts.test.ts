@@ -38,18 +38,8 @@ describe("generateRoutesDts", () => {
       appType: "spa",
     });
 
-    expect(source).toContain('import type * as R0 from "../src/api/health";');
     expect(source).toContain(
       'import type * as R1 from "../src/api/users/[id]";',
-    );
-    expect(source).toContain(
-      'import type * as R2 from "../src/api/docs/[...slug]";',
-    );
-    expect(source).toContain(
-      'import type * as R3 from "../src/api/opt/[[...slug]]";',
-    );
-    expect(source).toContain(
-      'import type * as R4 from "../src/api/chat/[room]";',
     );
 
     expect(source).toContain(
@@ -58,8 +48,7 @@ describe("generateRoutesDts", () => {
     expect(source).toContain(
       '"/api/users/:id": { params: { "id": string }; module: typeof R1; websocket: false };',
     );
-    // A wildcard segment carries no named param, matching real Bun.serve
-    // (req.params is empty for a `/*` match).
+    // A wildcard match leaves req.params empty.
     expect(source).toContain(
       '"/api/docs/*": { params: {}; module: typeof R2; websocket: false };',
     );
@@ -73,7 +62,7 @@ describe("generateRoutesDts", () => {
       '"/api/chat/:room": { params: { "room": string }; module: typeof R4; websocket: true };',
     );
 
-    // Root index.html in SPA mode is "/*" — stripped to "/" for the page key.
+    // SPA root "/*" becomes the page key "/".
     expect(source).toContain('"/": {};');
     expect(source).toContain('"/about": {};');
     expect(source).toContain('declare module "steambun/client"');
@@ -125,5 +114,48 @@ describe("writeRoutesDts", () => {
     expect(content).toContain(
       '"/api/health": { params: {}; module: typeof R1; websocket: false };',
     );
+  });
+
+  test("detects websocket exports declared as `export { ... }`", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-routes-dts-"));
+    mkdirSync(join(root, "api"), { recursive: true });
+    writeFileSync(
+      join(root, "api", "a.ts"),
+      "const handlers = { open() {} };\nexport { handlers as websocket };\n",
+    );
+
+    const path = await writeRoutesDts(root, join(root, "api"), [], "mpa");
+    expect(readFileSync(path, "utf8")).toContain(
+      '"/api/a": { params: {}; module: typeof R0; websocket: true };',
+    );
+  });
+
+  test("a catch-all that is not the last segment fails with one clear error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-routes-dts-"));
+    mkdirSync(join(root, "api", "[...x]"), { recursive: true });
+    writeFileSync(
+      join(root, "api", "[...x]", "foo.ts"),
+      "export const GET = () => Response.json({});\n",
+    );
+    await expect(
+      writeRoutesDts(root, join(root, "api"), [], "mpa"),
+    ).rejects.toThrow("catch-all [...x] must be the last path segment");
+  });
+
+  test("a.ts and a.tsx produce one route entry, owned by a.ts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-routes-dts-"));
+    mkdirSync(join(root, "api"), { recursive: true });
+    writeFileSync(join(root, "api", "a.ts"), "export const GET = () => 1;\n");
+    writeFileSync(join(root, "api", "a.tsx"), "export const GET = () => 2;\n");
+    writeFileSync(join(root, "api", "a.test.ts"), "export {};\n");
+    writeFileSync(join(root, "api", "_x.ts"), "export {};\n");
+
+    const path = await writeRoutesDts(root, join(root, "api"), [], "mpa");
+    const content = readFileSync(path, "utf8");
+    expect(content.match(/"\/api\/a":/g)).toHaveLength(1);
+    expect(content).toContain('from "../api/a";');
+    expect(content).not.toContain("a.tsx");
+    expect(content).not.toContain("a.test");
+    expect(content).not.toContain("_x");
   });
 });

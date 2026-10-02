@@ -1,20 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findConfigFile } from "../src/config/loader";
 import { migrate } from "../src/config/migrate";
 import { viteConfigToUserConfig } from "../src/config/vite";
-import { createViteSuffixPlugin } from "../src/util/vite-suffix-plugin";
-
-// Importing a generated config's `steambun` import resolves via Node/Bun's
-// package self-reference, which only works for importers inside this
-// package's own directory tree — not from the system tmpdir other tests use.
-function tmpMigrateRootWithSelfReference(prefix: string): string {
-  const base = join(process.cwd(), ".steambun", "test-tmp");
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, prefix));
-}
+import { linkSteambun, tmpRoot } from "./helpers";
 
 describe("viteConfigToUserConfig", () => {
   test("converts the supported keys and warns on everything else", () => {
@@ -22,7 +13,7 @@ describe("viteConfigToUserConfig", () => {
     const config = viteConfigToUserConfig(
       {
         server: { port: 3000, host: true, hmr: { overlay: false } },
-        build: { outDir: "build", minify: true, lib: { entry: "x.ts" } },
+        build: { outDir: "build", minify: "terser", lib: { entry: "x.ts" } },
         preview: { port: 5000, host: true },
         resolve: {
           alias: [{ find: "@", replacement: "./src" }],
@@ -43,11 +34,8 @@ describe("viteConfigToUserConfig", () => {
 
     expect(config.server).toEqual({ port: 3000, host: true });
     expect(config.build).toEqual({ outDir: "build", minify: true });
-    expect(config.preview).toEqual({ port: 5000, host: true });
-    expect(config.resolve).toEqual({
-      alias: { "@": "./src" },
-      extensions: [".ts", ".vue"],
-    });
+    expect(config).not.toHaveProperty("preview");
+    expect(config.resolve).toEqual({ alias: { "@": "./src" } });
     expect(config.define).toEqual({ __VERSION__: '"1.0"' });
     expect(config.envPrefix).toBe("PUBLIC_");
     expect(config.envDir).toBe("config");
@@ -60,7 +48,7 @@ describe("viteConfigToUserConfig", () => {
     expect(warnings.some((w) => w.includes('"server.hmr"'))).toBe(true);
     expect(warnings.some((w) => w.includes('"build.lib"'))).toBe(true);
     expect(warnings.some((w) => w.includes('"resolve.dedupe"'))).toBe(true);
-    expect(warnings.some((w) => w.includes("preview"))).toBe(false);
+    expect(warnings.some((w) => w.includes('"preview"'))).toBe(true);
     expect(warnings.some((w) => w.includes("resolve.extensions"))).toBe(false);
     expect(
       warnings.some(
@@ -75,6 +63,26 @@ describe("viteConfigToUserConfig", () => {
       () => {},
     );
     expect(config.resolve?.alias).toEqual({ "@": "/src", "~": "/lib" });
+  });
+
+  test("a build.target that is not a Bun target is dropped with a warning", () => {
+    const warnings: string[] = [];
+    const config = viteConfigToUserConfig(
+      { build: { target: "esnext", outDir: "out" } },
+      (msg) => warnings.push(msg),
+    );
+    expect(config.build).toEqual({ outDir: "out" });
+    expect(warnings.some((w) => w.includes('"build.target"'))).toBe(true);
+    expect(
+      viteConfigToUserConfig({ build: { target: "node" } }).build?.target,
+    ).toBe("node");
+  });
+
+  test("define values that are not strings are JSON-stringified", () => {
+    const config = viteConfigToUserConfig({
+      define: { A: "'x'", B: 1, C: { v: true } },
+    });
+    expect(config.define).toEqual({ A: "'x'", B: "1", C: '{"v":true}' });
   });
 
   test("an unrecognized appType value warns instead of converting", () => {
@@ -106,8 +114,22 @@ describe("migrate", () => {
     expect(written).toContain("port: 4000");
     expect(written).toContain('outDir: "out"');
 
-    // Re-running finds the newly-written steambun config, not vite's.
     expect(findConfigFile(root)?.kind).toBe("steambun");
+  });
+
+  test("migrates a vite.config.ts that sits next to a bunfig.toml", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-migrate-bunfig-"));
+    writeFileSync(join(root, "bunfig.toml"), "[install]\nexact = true\n");
+    writeFileSync(
+      join(root, "vite.config.ts"),
+      "export default ({ command }) => ({ server: { port: command === 'build' ? 1 : 2 } });\n",
+    );
+
+    await migrate(root);
+
+    expect(readFileSync(join(root, "steambun.config.ts"), "utf8")).toContain(
+      "port: 1",
+    );
   });
 
   test("never overwrites an existing steambun config", async () => {
@@ -127,7 +149,8 @@ describe("migrate", () => {
   });
 
   test("inlines a proxy.rewrite function and warns about it", async () => {
-    const root = tmpMigrateRootWithSelfReference("steambun-migrate-rewrite-");
+    const root = tmpRoot("migrate-rewrite");
+    linkSteambun(root);
     writeFileSync(
       join(root, "vite.config.ts"),
       `export default {
@@ -144,12 +167,13 @@ describe("migrate", () => {
     );
 
     const logs: string[] = [];
-    const orig = console.log;
-    console.log = (msg: unknown) => logs.push(String(msg));
+    const log = spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg));
+    });
     try {
       await migrate(root);
     } finally {
-      console.log = orig;
+      log.mockRestore();
     }
 
     const outPath = join(root, "steambun.config.ts");
@@ -178,6 +202,7 @@ describe("migrate", () => {
       join(root, "vite.config.ts"),
       `export default {
   css: { modules: {} },
+  plugins: [],
   server: { port: 3000 },
 };
 `,
@@ -186,7 +211,7 @@ describe("migrate", () => {
     await migrate(root);
 
     const written = readFileSync(join(root, "steambun.config.ts"), "utf8");
-    expect(written).toContain("// Ignored Vite keys: css");
+    expect(written).toContain("// Ignored Vite keys: css, plugins");
   });
 
   test("a function-form vite config with matching dev/build output writes a plain object with no divergence warning", async () => {
@@ -198,12 +223,13 @@ describe("migrate", () => {
     );
 
     const logs: string[] = [];
-    const orig = console.log;
-    console.log = (msg: unknown) => logs.push(String(msg));
+    const log = spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg));
+    });
     try {
       await migrate(root);
     } finally {
-      console.log = orig;
+      log.mockRestore();
     }
 
     expect(logs.some((l) => l.includes("returns different values"))).toBe(
@@ -224,49 +250,17 @@ describe("migrate", () => {
     );
 
     const logs: string[] = [];
-    const orig = console.log;
-    console.log = (msg: unknown) => logs.push(String(msg));
+    const log = spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg));
+    });
     try {
       await migrate(root);
     } finally {
-      console.log = orig;
+      log.mockRestore();
     }
 
     expect(logs.some((l) => l.includes("returns different values"))).toBe(true);
     const written = readFileSync(join(root, "steambun.config.ts"), "utf8");
     expect(written).toContain("port: 4000");
-  });
-});
-
-describe("createViteSuffixPlugin", () => {
-  test("?raw, ?url, and ?inline each resolve through a real build", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "steambun-vite-suffix-"));
-    writeFileSync(join(dir, "data.txt"), "hello suffixes");
-    writeFileSync(
-      join(dir, "entry.ts"),
-      `import raw from "./data.txt?raw";
-import url from "./data.txt?url";
-import inline from "./data.txt?inline";
-export { raw, url, inline };
-`,
-    );
-
-    const result = await Bun.build({
-      entrypoints: [join(dir, "entry.ts")],
-      outdir: join(dir, "dist"),
-      target: "bun",
-      plugins: [createViteSuffixPlugin()],
-    });
-    expect(result.success).toBe(true);
-
-    const mod = (await import(result.outputs[0]!.path)) as {
-      raw: string;
-      url: string;
-      inline: string;
-    };
-    expect(mod.raw).toBe("hello suffixes");
-    expect(mod.url).toContain("data");
-    expect(mod.inline.startsWith("data:")).toBe(true);
-    expect(atob(mod.inline.split("base64,")[1]!)).toBe("hello suffixes");
   });
 });

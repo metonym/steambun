@@ -1,7 +1,4 @@
-// The Standard Schema interface (https://standardschema.dev), copied rather
-// than depended on, as the spec recommends. zod (3.24+), valibot (1.0+),
-// arktype (2.0+), and others implement it, so steambun validates with
-// whichever the project already uses.
+// https://standardschema.dev, copied rather than depended on, as the spec recommends.
 
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
   readonly "~standard": {
@@ -49,7 +46,6 @@ export function isStandardSchema(value: unknown): value is StandardSchemaV1 {
   );
 }
 
-/** Runs a schema and flattens its issues' paths to dotted strings. */
 export async function validateWith<S extends StandardSchemaV1>(
   schema: S,
   value: unknown,
@@ -57,7 +53,7 @@ export async function validateWith<S extends StandardSchemaV1>(
   | { ok: true; value: StandardSchemaV1.InferOutput<S> }
   | { ok: false; issues: ValidationIssue[] }
 > {
-  // Most validators are synchronous; skip the extra await when they are.
+  // Skip the await for synchronous validators (route() calls this per request).
   let result = schema["~standard"].validate(value);
   if (result instanceof Promise) result = await result;
   if (!result.issues) return { ok: true, value: result.value };

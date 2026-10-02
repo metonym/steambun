@@ -17,12 +17,7 @@
   "exclude": [
     "**/dist/**",
     "**/node_modules/**",
-    "**/.steambun/serve.ts",
-    "**/.steambun/prod-serve.ts",
-    "**/.steambun/dist-serve.ts",
-    "**/.steambun/alias-plugin.ts",
-    "**/.steambun/server-boundary-plugin.ts",
-    "**/.steambun/vite-suffix-plugin.ts",
-    "**/.steambun/plugin-*.ts"
+    "**/.steambun/*serve.ts",
+    "**/.steambun/*plugin*.ts"
   ]
 }

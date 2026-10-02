@@ -6,6 +6,5 @@ export default defineConfig({
   },
   build: {
     standalone: true,
-    minify: true,
   },
 });

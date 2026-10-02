@@ -5,10 +5,7 @@ import { group, task } from "ostia";
 import { createHtmlBuildConfig } from "../src/build/options";
 import { resolveDefaults } from "../src/config/loader";
 
-// steambun's client plugins (server boundary, import.meta.glob) add a JS
-// onLoad/onResolve hop per module. The example builds have too few modules
-// for that to show, so this bundles 400 of them, with and without the
-// plugins, to isolate the per-file cost.
+// Bundles 400 modules with and without the client plugins to isolate their per-file hop.
 const MODULES = 400;
 const root = mkdtempSync(join(tmpdir(), "steambun-build-bench-"));
 mkdirSync(join(root, "src/mods"), { recursive: true });

@@ -1,23 +1,21 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { BunPlugin } from "../config/types";
+import { type AliasEntry, aliasEntries, matchAlias } from "./alias";
+import { isIdentifier } from "./guards";
+import { posixRelative, toPosix } from "./specifier";
 
-// Bun has no bundle-time `import.meta.glob` (Bun 1.4.2 leaves the call in
-// place and it throws at runtime), so steambun expands it as an onLoad
-// transform: each call becomes an object literal of lazy `import()`s, or of
-// namespace bindings from imports appended to the end of the file (ESM hoists
-// them) when `eager: true`. The replacement keeps the call's line count so
-// stack traces and sourcemaps still point at the right line.
+// Bun 1.4.2 has no bundle-time `import.meta.glob` (the call throws at runtime), so it is expanded
+// here. Eager imports are appended to the file (ESM hoists them); the replacement keeps the call's
+// line count so stack traces and sourcemaps stay aligned.
 
 const NEEDLE = "import.meta.glob";
 const GLOB_CHARS = /[*?[\]{}]/;
-const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 
 export interface ImportGlobContext {
   /** Absolute path of the file being transformed. */
   importer: string;
   root: string;
-  /** Vite-shaped `resolve.alias`, as in `createAliasPlugin`. */
   alias?: Record<string, string>;
 }
 
@@ -30,18 +28,16 @@ interface GlobCall {
   eager: boolean;
   importName?: string;
   query: string;
-  exhaustive: boolean;
 }
 
-const OPTION_KEYS = new Set(["eager", "import", "query", "exhaustive"]);
+const OPTION_KEYS = ["eager", "import", "query"];
 
 function fail(importer: string, message: string): never {
   throw new Error(`[steambun] import.meta.glob in ${importer}: ${message}`);
 }
 
-// Character codes that can change the scanner's state. The scanner skips
-// everything else in a tight charCodeAt loop, which JITs far better than
-// stepping through each character's branches (or a regex exec per token).
+// The scanner skips every other character in a tight charCodeAt loop, which JITs far better than a
+// branch per character or a regex exec per token.
 const SLASH = 47;
 const DQUOTE = 34;
 const SQUOTE = 39;
@@ -55,25 +51,18 @@ const table = (...codes: number[]) => {
   for (const code of codes) t[code] = 1;
   return t;
 };
-// Brace depth only matters inside a template's `${}`, so top-level code
-// skips braces entirely.
 const TOP_LEVEL = table(SLASH, DQUOTE, SQUOTE, BACKTICK);
 const NESTED = table(SLASH, DQUOTE, SQUOTE, BACKTICK, LBRACE, RBRACE);
 const TEMPLATE = table(BACKSLASH, BACKTICK, DOLLAR);
 const IN_TEMPLATE = -1;
 
-/** Offsets of `import.meta.glob` in code — skipping comments, string
- * literals, and template-literal text, but not `${}` interpolations. Same
- * scanner-not-parser trade-off as the dev env plugin: a regex literal with
- * an unbalanced quote can misparse. */
+// A scanner, not a parser: regex literals are recognized heuristically (by the preceding token), and
+// a string or regex that is unterminated ends at its line so a stray quote can't swallow later code.
+/** Offsets of `import.meta.glob` in code, skipping comments, strings, and template text. */
 function findCallSites(src: string): number[] {
   const hits: number[] = [];
-  // One entry per nesting level: IN_TEMPLATE for template text, else the
-  // code's open-brace depth. A `}` at depth 0 closes the `${` that opened
-  // it and resumes the enclosing template.
+  // Per nesting level: IN_TEMPLATE, or the open-brace depth of code (a `}` at 0 closes its `${`).
   const stack: number[] = [0];
-  // Needle positions come from indexOf; the scan only has to decide whether
-  // each one sits in code. Nothing after the last one can be a call site.
   let needle = src.indexOf(NEEDLE);
   let i = 0;
   while (needle !== -1) {
@@ -85,8 +74,6 @@ function findCallSites(src: string): number[] {
       c = src.charCodeAt(++i);
     }
     if (i >= needle) {
-      // Reached the needle in the current state: a call site if in code
-      // at an identifier boundary, template text otherwise.
       i = needle;
       if (
         !inTemplate &&
@@ -117,6 +104,8 @@ function findCallSites(src: string): number[] {
     } else if (c === SLASH && next === 42 /* * */) {
       const j = src.indexOf("*/", i + 2);
       i = j === -1 ? src.length : j + 2;
+    } else if (c === SLASH) {
+      i = startsRegex(src, i) ? skipRegex(src, i) : i + 1;
     } else if (c === DQUOTE || c === SQUOTE) {
       i = skipString(src, i);
     } else if (c === BACKTICK) {
@@ -132,28 +121,104 @@ function findCallSites(src: string): number[] {
     } else {
       i += 1;
     }
-    // A comment or string just skipped may have swallowed the needle.
+    // The skipped comment or string may have swallowed the needle.
     if (needle < i) needle = src.indexOf(NEEDLE, i);
   }
   return hits;
 }
 
-/** End of the string literal opening at `start`: the next matching quote
- * not escaped by an odd run of backslashes (or end of file). */
+/** End offset of the string starting at `start`; an unterminated one ends at its line, as in JS. */
 function skipString(src: string, start: number): number {
-  const quote = src[start]!;
-  let from = start + 1;
-  for (;;) {
-    const end = src.indexOf(quote, from);
-    if (end === -1) return src.length;
-    let backslashes = 0;
-    for (let k = end - 1; k > start && src[k] === "\\"; k--) backslashes++;
-    if (backslashes % 2 === 0) return end + 1;
-    from = end + 1;
+  const quote = src.charCodeAt(start);
+  let i = start + 1;
+  while (i < src.length) {
+    const c = src.charCodeAt(i);
+    if (c === quote) return i + 1;
+    if (c === BACKSLASH) {
+      i += src.startsWith("\r\n", i + 1) ? 3 : 2;
+    } else if (c === 10 || c === 13) {
+      return i;
+    } else i += 1;
   }
+  return src.length;
 }
 
-/** Recursive-descent reader for the literal arguments Vite also requires. */
+// `<` and `>` are left out so JSX closing tags (`</div>`) aren't read as regexes; `=>` is handled below.
+const REGEX_PRECEDERS = "(,=:[!&|?{};+-*%~^";
+const REGEX_KEYWORDS =
+  /(?:^|[^\w$.])(?:return|typeof|case|do|else|in|of|void|delete|throw|new|instanceof|yield|await)$/;
+
+/** Whether a `/` at `index` starts a regex literal rather than dividing, judged by what precedes it. */
+function startsRegex(src: string, index: number): boolean {
+  let j = index - 1;
+  while (j >= 0 && (src[j] === " " || src[j] === "\t")) j--;
+  if (j < 0) return true;
+  const prev = src[j]!;
+  if (
+    prev === "\n" ||
+    prev === "\r" ||
+    REGEX_PRECEDERS.includes(prev) ||
+    (prev === ">" && src[j - 1] === "=")
+  ) {
+    return true;
+  }
+  return (
+    /[\w$]/.test(prev) &&
+    REGEX_KEYWORDS.test(src.slice(Math.max(0, j - 10), j + 1))
+  );
+}
+
+/** End offset of the regex literal at `start` (its closing `/`, or the end of the line if unterminated). */
+function skipRegex(src: string, start: number): number {
+  let inClass = false;
+  for (let i = start + 1; i < src.length; i++) {
+    const c = src[i];
+    if (c === "\n" || c === "\r") return i;
+    if (c === "\\") i += 1;
+    else if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) return i + 1;
+  }
+  return src.length;
+}
+
+/** The value of a JS string literal's body, following JS escape rules. */
+function unescapeString(raw: string): string {
+  if (!raw.includes("\\")) return raw;
+  return raw.replace(
+    /\\(?:u\{([0-9a-fA-F]+)\}|u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|\r\n|([\s\S]))/g,
+    (_, codePoint, unit, hex, other) => {
+      const code = codePoint ?? unit ?? hex;
+      if (code !== undefined)
+        return String.fromCodePoint(Number.parseInt(code, 16));
+      switch (other) {
+        case undefined:
+        case "\n":
+        case "\r":
+        case "\u2028":
+        case "\u2029":
+          return "";
+        case "n":
+          return "\n";
+        case "t":
+          return "\t";
+        case "r":
+          return "\r";
+        case "b":
+          return "\b";
+        case "f":
+          return "\f";
+        case "v":
+          return "\v";
+        case "0":
+          return "\0";
+        default:
+          return other;
+      }
+    },
+  );
+}
+
 class ArgReader {
   constructor(
     private readonly src: string,
@@ -189,8 +254,6 @@ class ArgReader {
     this.pos += 1;
   }
 
-  /** Skips a TS type-argument list (`import.meta.glob<Module>(...)`),
-   * treating `=>` as an arrow rather than a closing `>`. */
   skipTypeArguments(): void {
     if (this.peek() !== "<") return;
     let depth = 0;
@@ -212,14 +275,20 @@ class ArgReader {
     const c = this.peek();
     if (c === '"' || c === "'") {
       const end = skipString(this.src, this.pos);
+      if (this.src[end - 1] !== c || end - 1 === this.pos) {
+        fail(this.importer, "unterminated string literal");
+      }
       const raw = this.src.slice(this.pos + 1, end - 1);
       this.pos = end;
-      return raw.replace(/\\(.)/g, "$1");
+      return unescapeString(raw);
     }
     if (c === "`") {
-      const end = this.src.indexOf("`", this.pos + 1);
+      let end = this.pos + 1;
+      while (end < this.src.length && this.src[end] !== "`") {
+        end += this.src[end] === "\\" ? 2 : 1;
+      }
       const raw = this.src.slice(this.pos + 1, end);
-      if (end === -1 || raw.includes("${")) {
+      if (end >= this.src.length || /(?<!\\)(?:\\\\)*\$\{/.test(raw)) {
         fail(
           this.importer,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: names the literal ${} syntax in the message
@@ -227,7 +296,7 @@ class ArgReader {
         );
       }
       this.pos = end + 1;
-      return raw;
+      return unescapeString(raw);
     }
     if (c === "[") return this.array();
     if (c === "{") return this.object();
@@ -309,20 +378,20 @@ function parseCall(src: string, start: number, importer: string): GlobCall {
   reader.expect(")");
 
   for (const key of Object.keys(options)) {
-    if (key === "as") {
+    if (!OPTION_KEYS.includes(key)) {
       fail(
         importer,
-        '`as` was removed in Vite 5 — use `query: "?raw"` (or "?url") with `import: "default"`',
+        `unsupported option "${key}" (supported: ${OPTION_KEYS.join(", ")})`,
       );
     }
-    if (!OPTION_KEYS.has(key)) fail(importer, `unsupported option "${key}"`);
   }
-  const { eager = false, import: importName, exhaustive = false } = options;
-  if (typeof eager !== "boolean" || typeof exhaustive !== "boolean") {
-    fail(importer, "`eager` and `exhaustive` must be booleans");
-  }
+  const { eager = false, import: importName, query } = options;
+  if (typeof eager !== "boolean") fail(importer, "`eager` must be a boolean");
   if (importName !== undefined && typeof importName !== "string") {
     fail(importer, "`import` must be a string");
+  }
+  if (query !== undefined && typeof query !== "string") {
+    fail(importer, "`query` must be a string");
   }
   return {
     start,
@@ -330,79 +399,43 @@ function parseCall(src: string, start: number, importer: string): GlobCall {
     patterns: patterns as string[],
     eager,
     importName: importName === "*" ? undefined : importName,
-    query: toQuery(options.query, importer),
-    exhaustive,
+    query: query ? (query.startsWith("?") ? query : `?${query}`) : "",
   };
 }
 
-function toQuery(query: Literal | undefined, importer: string): string {
-  if (query === undefined) return "";
-  if (typeof query === "string") {
-    if (query === "") return "";
-    return query.startsWith("?") ? query : `?${query}`;
-  }
-  if (typeof query !== "object" || Array.isArray(query)) {
-    return fail(importer, "`query` must be a string or a flat object");
-  }
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    if (typeof value === "object") {
-      fail(importer, "`query` object values must be strings or booleans");
-    }
-    params.set(key, String(value));
-  }
-  const text = params.toString();
-  return text ? `?${text}` : "";
+interface FilePattern {
+  negative: boolean;
+  /** Directory the pattern is anchored to; `tail` is the rest of the pattern. */
+  dir: string;
+  tail: string;
+  /** Vite keys relative patterns by importer-relative path, `/`-rooted and aliased ones by root-relative path. */
+  rootKeys: boolean;
 }
 
-function toPosix(path: string): string {
-  return sep === "/" ? path : path.split(sep).join("/");
+/** A bare exclusion like `!**\/*.test.ts`, matched against importer-relative paths (fast-glob's `ignore`, as in Vite). */
+interface BareExclusion {
+  bare: InstanceType<typeof Bun.Glob>;
 }
-
-type ResolvedPattern =
-  | {
-      negative: boolean;
-      /** Absolute pattern: a literal base directory followed by glob segments. */
-      absolute: string;
-      /** Vite keys relative patterns by their importer-relative path, and
-       * `/`-rooted or aliased patterns by their root-relative path. */
-      rootKeys: boolean;
-    }
-  | {
-      negative: true;
-      /** A bare exclusion like `!**\/*.test.ts`, matched against each
-       * file's importer-relative path (fast-glob's `ignore`, as in Vite). */
-      bare: InstanceType<typeof Bun.Glob>;
-    };
 
 function resolvePattern(
   pattern: string,
   ctx: ImportGlobContext,
-  aliases: Array<readonly [string, string]>,
-): ResolvedPattern {
+  aliases: readonly AliasEntry[],
+  relativeDir: string,
+): FilePattern | BareExclusion {
   const negative = pattern.startsWith("!");
   const body = negative ? pattern.slice(1) : pattern;
   if (body.startsWith("./") || body.startsWith("../")) {
-    return {
-      negative,
-      absolute: resolve(dirname(ctx.importer), body),
-      rootKeys: false,
-    };
+    return { negative, dir: relativeDir, tail: body, rootKeys: false };
   }
   if (body.startsWith("/")) {
-    return { negative, absolute: join(ctx.root, body), rootKeys: true };
+    return { negative, dir: ctx.root, tail: body.slice(1), rootKeys: true };
   }
-  for (const [from, to] of aliases) {
-    const prefix = from.endsWith("/") ? from : `${from}/`;
-    if (body.startsWith(prefix)) {
-      return {
-        negative,
-        absolute: join(to, body.slice(prefix.length)),
-        rootKeys: true,
-      };
-    }
+  const alias = matchAlias(body, aliases);
+  if (alias) {
+    return { negative, dir: alias.to, tail: alias.rest, rootKeys: true };
   }
-  if (negative) return { negative, bare: new Bun.Glob(body) };
+  if (negative) return { bare: new Bun.Glob(body) };
   return fail(
     ctx.importer,
     `pattern "${pattern}" must start with "./", "../", "/", or a resolve.alias key`,
@@ -417,49 +450,49 @@ interface Match {
   fromRoot: string;
 }
 
-/** Every match sits under one base directory, so its relative paths are
- * that base's (computed once) plus the match — not two `path.relative()`
- * calls per file. */
+/** The pattern's literal leading directories, resolved, and the index of its first glob segment (-1 if none). */
+function splitPattern(pattern: FilePattern) {
+  // Split on the pattern, not the resolved path, so a directory named `[id]` isn't read as a glob.
+  const segments = pattern.tail.split("/");
+  const firstGlob = segments.findIndex((s) => GLOB_CHARS.test(s));
+  const literal = firstGlob === -1 ? segments : segments.slice(0, firstGlob);
+  return { segments, firstGlob, base: resolve(pattern.dir, ...literal) };
+}
+
 function expand(
-  pattern: { absolute: string },
-  exhaustive: boolean,
+  pattern: FilePattern,
   importerDir: string,
   root: string,
 ): Match[] {
-  const segments = toPosix(pattern.absolute).split("/");
-  const firstGlob = segments.findIndex((s) => GLOB_CHARS.test(s));
+  const { segments, firstGlob, base } = splitPattern(pattern);
+  const stat = statSync(base, { throwIfNoEntry: false });
   if (firstGlob === -1) {
-    if (!existsSync(pattern.absolute)) return [];
-    const file = pattern.absolute;
+    if (!stat?.isFile()) return [];
     return [
       {
-        file,
-        fromImporter: toPosix(relative(importerDir, file)),
-        fromRoot: toPosix(relative(root, file)),
+        file: base,
+        fromImporter: posixRelative(importerDir, base),
+        fromRoot: posixRelative(root, base),
       },
     ];
   }
-  const base = segments.slice(0, firstGlob).join("/") || "/";
-  const rest = segments.slice(firstGlob).join("/");
-  if (!existsSync(base)) return [];
+  if (!stat?.isDirectory()) return [];
+  // Every match sits under `base`, so its relative paths are base's plus the match.
   const under = (dir: string) => {
-    const rel = toPosix(relative(dir, base));
+    const rel = posixRelative(dir, base);
     return rel === "" ? "" : `${rel}/`;
   };
   const importerPrefix = under(importerDir);
   const rootPrefix = under(root);
-  const skipNodeModules = !exhaustive && !rest.includes("node_modules");
   const matches: Match[] = [];
-  for (const raw of new Bun.Glob(rest).scanSync({
+  for (const raw of new Bun.Glob(segments.slice(firstGlob).join("/")).scanSync({
     cwd: base,
     onlyFiles: true,
-    dot: exhaustive,
+    followSymlinks: true,
   })) {
     const match = toPosix(raw);
-    if (
-      skipNodeModules &&
-      (match.startsWith("node_modules/") || match.includes("/node_modules/"))
-    ) {
+    // Like Vite: dotfiles are skipped by Bun.Glob, and node_modules below the pattern's literal prefix is too.
+    if (match.startsWith("node_modules/") || match.includes("/node_modules/")) {
       continue;
     }
     matches.push({
@@ -471,29 +504,28 @@ function expand(
   return matches;
 }
 
+const dotSlash = (rel: string) =>
+  rel.startsWith("../") || rel.startsWith("./") ? rel : `./${rel}`;
+
 function generate(
   call: GlobCall,
   callIndex: number,
   ctx: ImportGlobContext,
-  aliases: Array<readonly [string, string]>,
+  aliases: readonly AliasEntry[],
   hoisted: string[],
 ): string {
-  const resolved = call.patterns.map((p) => resolvePattern(p, ctx, aliases));
   const importerDir = dirname(ctx.importer);
   const included = new Map<string, { match: Match; rootKeys: boolean }>();
   const excluded = new Set<string>();
   const bareExclusions: Array<InstanceType<typeof Bun.Glob>> = [];
+  const resolved: FilePattern[] = [];
+  for (const raw of call.patterns) {
+    const pattern = resolvePattern(raw, ctx, aliases, importerDir);
+    if ("bare" in pattern) bareExclusions.push(pattern.bare);
+    else resolved.push(pattern);
+  }
   for (const pattern of resolved) {
-    if ("bare" in pattern) {
-      bareExclusions.push(pattern.bare);
-      continue;
-    }
-    for (const match of expand(
-      pattern,
-      call.exhaustive,
-      importerDir,
-      ctx.root,
-    )) {
+    for (const match of expand(pattern, importerDir, ctx.root)) {
       if (pattern.negative) excluded.add(match.file);
       else if (!included.has(match.file)) {
         included.set(match.file, { match, rootKeys: pattern.rootKeys });
@@ -508,9 +540,7 @@ function generate(
         !bareExclusions.some((glob) => glob.match(match.fromImporter)),
     )
     .map(({ match, rootKeys }) => {
-      const relativeKey = match.fromImporter.startsWith("../")
-        ? match.fromImporter
-        : `./${match.fromImporter}`;
+      const relativeKey = dotSlash(match.fromImporter);
       const key =
         rootKeys &&
         !match.fromRoot.startsWith("../") &&
@@ -529,7 +559,7 @@ function generate(
       hoisted.push(
         name === undefined
           ? `import * as ${local} from ${spec};`
-          : `import { ${IDENTIFIER.test(name) ? name : JSON.stringify(name)} as ${local} } from ${spec};`,
+          : `import { ${isIdentifier(name) ? name : JSON.stringify(name)} as ${local} } from ${spec};`,
       );
       return `${JSON.stringify(key)}: ${local}`;
     }
@@ -542,20 +572,7 @@ function generate(
   return `({${props.join(", ")}})`;
 }
 
-/**
- * Expands every `import.meta.glob(...)` call in `source`. Returns
- * `undefined` when the file has none, so an onLoad hook can fall through.
- *
- * @example
- * ```ts
- * import { transformImportGlobs } from "steambun/runtime";
- *
- * const out = transformImportGlobs(
- *   'const pages = import.meta.glob("./pages/*.ts");',
- *   { importer: "/app/src/main.ts", root: "/app" },
- * );
- * ```
- */
+/** Expands every `import.meta.glob(...)` call in `source`; `undefined` when there are none. */
 export function transformImportGlobs(
   source: string,
   ctx: ImportGlobContext,
@@ -564,18 +581,13 @@ export function transformImportGlobs(
   const sites = findCallSites(source);
   if (sites.length === 0) return undefined;
 
-  const aliases = Object.entries(ctx.alias ?? {})
-    .map(
-      ([from, to]) => [from, isAbsolute(to) ? to : join(ctx.root, to)] as const,
-    )
-    .sort((a, b) => b[0].length - a[0].length);
+  const aliases = aliasEntries(ctx.alias, ctx.root);
   const hoisted: string[] = [];
   let output = "";
   let cursor = 0;
   sites.forEach((site, index) => {
     const call = parseCall(source, site, ctx.importer);
-    const original = source.slice(call.start, call.end);
-    const newlines = original.split("\n").length - 1;
+    const newlines = source.slice(call.start, call.end).split("\n").length - 1;
     output += source.slice(cursor, call.start);
     output += generate(call, index, ctx, aliases, hoisted);
     output += "\n".repeat(newlines);
@@ -593,20 +605,15 @@ function loaderFor(path: string): "ts" | "tsx" | "jsx" {
   return "jsx";
 }
 
-// Project sources only: node_modules never reaches the JS callback.
 const PROJECT_SOURCE_FILTER =
   /^(?!.*[\\/]node_modules[\\/]).*\.(ts|tsx|js|jsx|mts|mjs)$/;
 
 /**
- * Vite's `import.meta.glob` as a Bun `onLoad` plugin for client bundles.
- * `steambun build` adds it automatically; `steambun dev` folds the same
- * transform into its env plugin, since Bun runs only the first `onLoad`
- * that returns contents for a file.
+ * Vite's `import.meta.glob` as a Bun `onLoad` plugin for client bundles. `steambun dev` folds the
+ * same transform into its env plugin, since Bun runs only the first `onLoad` that returns contents.
  *
- * It returns every file's contents, transformed or not: falling through
- * with `undefined` makes Bun redo the load, which measured ~4× the cost of
- * handing back the source it already has (400-module build: +16ms vs
- * +3.5ms). Since that claims every project source file, it must come after
+ * Returns every project file's contents, transformed or not: falling through with `undefined`
+ * makes Bun redo the load (~4x the cost). It claims every project source, so it must come after
  * any other `onLoad` plugin.
  */
 export function createImportGlobPlugin(

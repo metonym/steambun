@@ -1,66 +1,23 @@
-import type {
-  BunPlugin,
-  MinifyObject,
-  MinifyOption,
-  ResolvedConfig,
-} from "../config/types";
-import { toBunEnvPattern, toPublicPath } from "../env/loader";
+import type { BunPlugin, ResolvedConfig } from "../config/types";
+import { toPublicPath } from "../env/loader";
 import { createAliasPlugin } from "../util/alias";
 import { mergeFeatures } from "../util/features";
 import { createImportGlobPlugin } from "../util/import-glob";
 import { createServerBoundaryPlugin } from "../util/server-boundary";
+import { log } from "../util/terminal";
 import { createViteSuffixPlugin } from "../util/vite-suffix-plugin";
 
-export type BunMinify = boolean | MinifyObject;
-
-/** Prints Bun's own logs, then throws `message` — every `Bun.build` call site does this. */
+/** Prints Bun's own logs, then throws `message`. */
 export function assertBuildSuccess(
   result: Bun.BuildOutput,
   message: string,
 ): void {
   if (result.success) return;
-  for (const log of result.logs) console.error(log);
+  for (const entry of result.logs) log.error(String(entry));
   throw new Error(message);
 }
 
-let terserWarned = false;
-
-// "terser" is accepted for drop-in Vite configs and warns once; Bun has no
-// Terser backend, so it maps onto Bun's own minifier like "esbuild" does.
-export function toBunMinify(
-  minify: MinifyOption | undefined,
-  warn: (msg: string) => void = console.warn,
-): BunMinify {
-  if (minify === undefined || minify === true || minify === "esbuild") {
-    return true;
-  }
-  if (minify === false) return false;
-  if (minify === "terser") {
-    if (!terserWarned) {
-      terserWarned = true;
-      warn(
-        '[steambun] build.minify: "terser" is not available. Using Bun\'s minifier.',
-      );
-    }
-    return true;
-  }
-  return minify;
-}
-
-export function shouldMinifyHtml(minify: MinifyOption | undefined): boolean {
-  if (minify === false) return false;
-  if (
-    minify === undefined ||
-    minify === true ||
-    minify === "esbuild" ||
-    minify === "terser"
-  ) {
-    return true;
-  }
-  return minify.whitespace === true;
-}
-
-export function toBunSourcemap(
+function toBunSourcemap(
   sourcemap: ResolvedConfig["build"]["sourcemap"],
 ): "inline" | "external" | "none" {
   if (sourcemap === true) return "inline";
@@ -75,47 +32,66 @@ export interface HtmlBuildConfigInput {
   outDir: string;
 }
 
-/** Prepends steambun's own built-in plugins (alias, Vite import suffixes) ahead of the user's. */
+/** Prepends the alias and Vite-suffix plugins ahead of the user's. */
 export function withBuiltinPlugins(
   config: ResolvedConfig,
   plugins: BunPlugin[],
 ): BunPlugin[] {
-  const builtins: BunPlugin[] = [];
   const alias = config.resolve?.alias;
-  if (alias && Object.keys(alias).length > 0) {
-    builtins.push(createAliasPlugin(alias, config.root));
-  }
-  if (config.resolve?.viteSuffixes) {
-    builtins.push(createViteSuffixPlugin());
-  }
-  return [...builtins, ...plugins];
+  const hasAlias = alias && Object.keys(alias).length > 0;
+  return [
+    ...(hasAlias ? [createAliasPlugin(alias, config.root)] : []),
+    createViteSuffixPlugin(alias, config.root),
+    ...plugins,
+  ];
 }
 
-// bun-types 1.4.1 doesn't declare `cssChunking` on BuildConfig yet, though
-// Bun.build() accepts it at runtime (verified with a probe build).
-type HtmlBuildConfig = Bun.BuildConfig & { cssChunking?: boolean };
+/** Options every bundle (client, `dist/server.js`, compiled binary) shares. */
+export function commonBuildOptions(
+  config: ResolvedConfig,
+  define: Record<string, string>,
+) {
+  return {
+    // Return failures as logs so `assertBuildSuccess` can print them (the default rejects with a bare "Bundle failed").
+    throw: false,
+    define,
+    minify: config.build.minify,
+    drop: config.build.drop,
+    features: buildFeatures(config),
+  };
+}
+
+function buildFeatures(config: ResolvedConfig): string[] | undefined {
+  const features = mergeFeatures(
+    config.build.features,
+    process.env.STEAMBUN_FEATURES,
+  );
+  // `features: []` is not the same as omitting it.
+  return features.length > 0 ? features : undefined;
+}
+
+function assetNaming(config: ResolvedConfig) {
+  return {
+    entry: "[dir]/[name].[ext]",
+    chunk: `${config.build.assetsDir}/[name]-[hash].[ext]`,
+    asset: `${config.build.assetsDir}/[name]-[hash].[ext]`,
+  };
+}
 
 export function createHtmlBuildConfig(
   input: HtmlBuildConfigInput,
-): HtmlBuildConfig {
+): Bun.BuildConfig {
   const { config, entrypoints, define, plugins, outDir } = input;
   const standalone = config.build.standalone;
-  const publicPath = toPublicPath(config.base);
-  const env = toBunEnvPattern(config.envPrefix);
-  const features = mergeFeatures(
-    config.features,
-    process.env.STEAMBUN_FEATURES,
-  );
   return {
+    ...commonBuildOptions(config, define),
     entrypoints,
     outdir: outDir,
     root: config.root,
-    define,
-    // import.meta.glob and the server boundary are client-only: the
-    // compiled server loads API routes at runtime rather than through the
-    // bundler. The boundary goes first so an alias can't resolve a `.server`
-    // import before it's checked; the glob plugin goes last because it
-    // claims every project source file (see createImportGlobPlugin).
+    // Client-only plugins: the compiled server loads API routes at runtime.
+    // The boundary goes first so an alias can't resolve a `.server` import
+    // before it's checked; the glob plugin goes last because it claims every
+    // project source file.
     plugins: [
       createServerBoundaryPlugin(
         config.root,
@@ -125,28 +101,13 @@ export function createHtmlBuildConfig(
       ...withBuiltinPlugins(config, plugins),
       createImportGlobPlugin(config.root, config.resolve?.alias),
     ],
-    minify: toBunMinify(config.build.minify),
-    drop: config.build.drop,
     sourcemap: toBunSourcemap(config.build.sourcemap),
-    publicPath,
-    env,
-    // `features: []` is not the same as omitting it.
-    features: features.length > 0 ? features : undefined,
+    publicPath: toPublicPath(config.base),
     ...(standalone
       ? { compile: true }
       : {
-          naming: {
-            // Entrypoints are always the HTML files themselves — keep their name
-            // stable (Vite convention: dist/index.html, not dist/index-<hash>.html).
-            entry: "[dir]/[name].[ext]",
-            chunk: `${config.build.assetsDir}/[name]-[hash].[ext]`,
-            asset: `${config.build.assetsDir}/[name]-[hash].[ext]`,
-          },
+          naming: assetNaming(config),
           splitting: config.build.splitting || undefined,
-          minChunkSize: config.build.splitting
-            ? config.build.minChunkSize
-            : undefined,
-          cssChunking: config.build.cssChunking,
         }),
     metafile: !standalone,
     target: config.build.target ?? "browser",
@@ -160,7 +121,7 @@ export interface CompiledBuildConfigInput {
   plugins: BunPlugin[];
   outfile: string;
   assets: string[];
-  /** One of `Bun.Build.CompileTarget`, e.g. `"bun-linux-x64"`. Omit for the host platform. */
+  /** A `Bun.Build.CompileTarget` such as `"bun-linux-x64"`; omit for the host platform. */
   compileTarget?: string;
 }
 
@@ -176,27 +137,18 @@ export function createCompiledBuildConfig(
     assets,
     compileTarget,
   } = input;
-  const env = toBunEnvPattern(config.envPrefix);
-  const features = mergeFeatures(
-    config.features,
-    process.env.STEAMBUN_FEATURES,
-  );
   const compileOptions = config.compile || {};
   return {
+    ...commonBuildOptions(config, define),
     entrypoints: [prodServePath],
-    define,
     plugins: withBuiltinPlugins(config, plugins),
-    minify: toBunMinify(config.build.minify),
-    drop: config.build.drop,
     target: "bun",
     compile: {
       outfile,
       assets,
-      // A compiled server should get its config from real env vars, not
-      // files that may not ship with the binary — Bun defaults this true.
+      // Bun defaults this true; a binary shouldn't depend on files that may not ship with it.
       autoloadDotenv: compileOptions.autoloadDotenv ?? false,
-      // Unlike the top-level options, `compile` validates its keys eagerly:
-      // an explicit `target: undefined` is rejected, so these stay spreads.
+      // `compile` rejects explicit `undefined` keys, unlike the top-level options.
       ...(compileOptions.autoloadBunfig !== undefined
         ? { autoloadBunfig: compileOptions.autoloadBunfig }
         : {}),
@@ -205,9 +157,6 @@ export function createCompiledBuildConfig(
         ? { target: compileTarget as Bun.Build.CompileTarget }
         : {}),
     },
-    env,
-    bytecode: config.build.bytecode || undefined,
-    // `features: []` is not the same as omitting it.
-    features: features.length > 0 ? features : undefined,
+    bytecode: compileOptions.bytecode || undefined,
   };
 }

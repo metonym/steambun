@@ -56,8 +56,8 @@ fetch("/api/echo", { method: "POST", body: JSON.stringify({ hi: 1 }) })
 
 // `path` and `params` are checked against the generated .steambun/routes.d.ts
 // (try a typo in "id" below). The GET handler here returns a bare Response,
-// so `user` types as `unknown` — wrap a handler in route() (see
-// tests/fixtures/typed/users-id.ts) for the value type to flow through too.
+// so `user` types as `unknown`; route() would carry the value type through,
+// but this example's compiled binary can't import it (see api/users/[id].ts).
 api("get", "/api/users/:id", { params: { id: "42" } })
   .then((user) => set("user", user))
   .catch((err) => set("user", String(err)));

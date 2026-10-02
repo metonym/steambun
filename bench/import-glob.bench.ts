@@ -4,8 +4,7 @@ import { join } from "node:path";
 import { group, task } from "ostia";
 import { transformImportGlobs } from "../src/util/import-glob";
 
-// transformImportGlobs runs on every client module in dev (inside the env
-// plugin) and build (its own onLoad), so the no-glob fast path matters most.
+// Runs on every client module, so the no-glob fast path matters most.
 const root = mkdtempSync(join(tmpdir(), "steambun-glob-bench-"));
 mkdirSync(join(root, "src/pages"), { recursive: true });
 for (let i = 0; i < 50; i++) {

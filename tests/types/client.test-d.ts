@@ -24,11 +24,20 @@ async function check() {
   await api("patch", "/api/users/:id", { body: { name: 1 } });
 
   href("/");
-  href("/api/users/:id", { id: "1" });
-  href("/about", undefined, { tab: "info" });
-  href("/api/users/:id", { id: "1" }, { debug: "1" });
+  href("/api/users/:id", { params: { id: "1" } });
+  href("/about", { query: { tab: "info" } });
+  href("/api/users/:id", { params: { id: "1" }, query: { debug: "1" } });
 
-  ws("/api/chat/:room", { params: { room: "1" } });
+  // @ts-expect-error a route with params needs them
+  href("/api/users/:id");
+
+  href("/about", { query: { tag: ["a", "b"] } });
+
+  const socket = ws("/api/chat/:room", {
+    params: { room: "1" },
+    query: { tag: ["a", "b"] },
+  });
+  socket.on("message", () => {}) satisfies () => void;
 
   // @ts-expect-error not a websocket route
   ws("/api/users/:id", { params: { id: "1" } });

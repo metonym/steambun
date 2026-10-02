@@ -33,9 +33,7 @@ group("runtime/middleware: withMiddleware (construction)", () => {
 });
 
 group("runtime/http: cors + headers middleware (per-request hot path)", () => {
-  // Fresh Response per call: withHeaders sets headers in place, so a shared
-  // Response would accumulate the same header values across trials — cheap
-  // but not representative of a route that builds a new Response per request.
+  // Fresh Response per call: headers are set in place.
   const fresh = () =>
     new Response("ok", { headers: { "content-type": "text/plain" } });
   const chainWithHeaders = withMiddleware(

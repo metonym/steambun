@@ -21,16 +21,15 @@ export const log = {
   info(msg: string): void {
     logAt("info", console.log, msg);
   },
+  warn(msg: string): void {
+    logAt("warn", console.warn, msg);
+  },
   error(msg: string): void {
     logAt("error", console.error, msg);
   },
 };
 
-/**
- * Explicit, testable equivalent of Bun.color's own NO_COLOR/FORCE_COLOR/TTY
- * heuristic — `paint()` consults this itself so tests stay deterministic
- * regardless of Bun's implicit check.
- */
+// Checked here rather than left to Bun.color's implicit heuristic so tests stay deterministic.
 function colorEnabled(): boolean {
   if (process.env.NO_COLOR !== undefined) return false;
   if (process.env.FORCE_COLOR !== undefined && process.env.FORCE_COLOR !== "0")
@@ -40,29 +39,19 @@ function colorEnabled(): boolean {
 
 function paint(text: string, color: string): string {
   if (!colorEnabled()) return text;
-  const code = Bun.color(color, "ansi");
-  if (!code) return text;
-  return `${code}${text}\x1b[0m`;
+  return `${Bun.color(color, "ansi") ?? ""}${text}\x1b[0m`;
 }
 
-function asciiGlyphs(): boolean {
-  return process.env.TERM === "dumb" || !process.stdout.isTTY;
-}
+const status = (ascii: string, symbol: string, color: string) => {
+  return (text: string): string => {
+    const dumb = process.env.TERM === "dumb" || !process.stdout.isTTY;
+    return `${dumb ? ascii : paint(symbol, color)} ${text}`;
+  };
+};
 
-export function ok(text: string): string {
-  const glyph = asciiGlyphs() ? "OK" : paint("✓", "green");
-  return `${glyph} ${text}`;
-}
-
-export function warn(text: string): string {
-  const glyph = asciiGlyphs() ? "!!" : paint("!", "yellow");
-  return `${glyph} ${text}`;
-}
-
-export function fail(text: string): string {
-  const glyph = asciiGlyphs() ? "XX" : paint("✗", "red");
-  return `${glyph} ${text}`;
-}
+export const ok = status("OK", "✓", "green");
+export const warn = status("!!", "!", "yellow");
+export const fail = status("XX", "✗", "red");
 
 export function pad(
   text: string,

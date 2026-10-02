@@ -23,7 +23,8 @@
       },
       "suspicious": {
         "noExplicitAny": "error",
-        "noImportCycles": "error"
+        "noImportCycles": "error",
+        "noConsole": "error"
       }
     }
   },
@@ -39,5 +40,29 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "tests/**",
+        "bench/**",
+        "examples/**",
+        "src/bin.ts",
+        "src/cli.ts",
+        "src/doctor.ts",
+        "src/util/terminal.ts",
+        "src/dev/synth.ts",
+        "src/build/prod-server.ts",
+        "src/runtime/**",
+        "src/util/server-env.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    }
+  ]
 }

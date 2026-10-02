@@ -1,221 +1,161 @@
-// Bun's dev bundler has no JS-level `define` option — only bunfig.toml's
-// [serve.static] plugins are read into it — so import.meta.env.* and user
-// `define` rewriting goes through a synthesized onLoad plugin instead. The
-// plugin module must `export default { name, setup }`; calling the global
-// plugin() registrar throws (verified against Bun 1.4.0).
-//
-// The rewrite itself must be token-aware — a naive whole-file split/join can
-// corrupt string literals, comments, and identifiers where a define key is
-// only a prefix (e.g. `FOO` inside `FOOBAR`) — so the generated plugin ships
-// a small hand-rolled scanner rather than a regex or substring replace. The
-// generated source is built as plain quoted lines (not one outer template
-// literal) because the scanner itself needs literal backticks and `${`
-// sequences to reconstruct template literals, and those are painful to
-// double-escape inside an outer template literal.
-//
-// Bun runs only the first onLoad that returns contents for a file, so the
-// `import.meta.glob` expansion shares this hook instead of registering its
-// own. Like the build's glob plugin, it returns every project source file's
-// contents, rewritten or not — falling through with `undefined` makes Bun
-// redo the load, which costs more than handing back the source — so it's
-// registered after every other dev plugin.
+import { readFileSync } from "node:fs";
+import type { BunPlugin } from "bun";
+import { transformImportGlobs } from "../util/import-glob";
+import { GENERATED_HEADER } from "../util/paths";
+import { escapeRegExp } from "../util/regexp";
+
+const TEMPLATE_RUN = /[^\\`$]+/y;
+const SOURCE_FILE = /^(?!.*[\\/]node_modules[\\/]).*\.(ts|tsx|js|jsx|mts|mjs)$/;
+
+// Scanner, not a parser: a regex literal with an unbalanced quote or comment-like sequence can misparse.
+// Strings, comments, and keys that prefix a longer identifier (FOO in FOOBAR) are left alone.
+function createDefineSubstituter(
+  defines: Record<string, string>,
+): (src: string) => string {
+  const keys = Object.keys(defines).sort((a, b) => b.length - a.length);
+  if (keys.length === 0) return (src) => src;
+  const byFirstChar = new Map<string, string[]>();
+  for (const key of keys) {
+    const list = byFirstChar.get(key[0]);
+    if (list) list.push(key);
+    else byFirstChar.set(key[0], [key]);
+  }
+  const anyKey = new RegExp(keys.map(escapeRegExp).join("|"));
+  // The next place the scanner has to look at: a delimiter or a possible key start.
+  const stop = new RegExp(
+    `[{}\`/"'${[...byFirstChar.keys()].map(escapeRegExp).join("")}]`,
+    "g",
+  );
+
+  return (src) => {
+    if (!anyKey.test(src)) return src;
+    const n = src.length;
+    let i = 0;
+    let out = "";
+
+    const matchKey = (): string | undefined => {
+      for (const key of byFirstChar.get(src[i]) ?? []) {
+        if (!src.startsWith(key, i)) continue;
+        if (/[\w$.]/.test(src[i - 1] ?? "")) continue;
+        if (/[\w$]/.test(src[i + key.length] ?? "")) continue;
+        return key;
+      }
+      return undefined;
+    };
+
+    const copyTo = (end: number): void => {
+      out += src.slice(i, end);
+      i = end;
+    };
+
+    const quoted = (quote: string): void => {
+      let j = i + 1;
+      while (j < n && src[j] !== quote) j += src[j] === "\\" ? 2 : 1;
+      copyTo(Math.min(j + 1, n));
+    };
+
+    // `i` is just past the opening backtick.
+    const template = (): void => {
+      while (i < n) {
+        TEMPLATE_RUN.lastIndex = i;
+        const run = TEMPLATE_RUN.exec(src);
+        if (run) copyTo(i + run[0].length);
+        if (i >= n) return;
+        const c = src[i];
+        if (c === "\\") copyTo(i + 2);
+        else if (c === "`") {
+          copyTo(i + 1);
+          return;
+        } else if (c === "$" && src[i + 1] === "{") {
+          copyTo(i + 2);
+          code(true);
+          if (i < n) copyTo(i + 1);
+        } else copyTo(i + 1);
+      }
+    };
+
+    // Brace nesting is tracked so a nested block can't end a template interpolation on the wrong `}`.
+    const code = (stopAtBrace: boolean): void => {
+      while (i < n) {
+        const c = src[i];
+        if (c === "}" && stopAtBrace) return;
+        if (c === "{") {
+          copyTo(i + 1);
+          code(true);
+          if (i < n) copyTo(i + 1);
+        } else if (c === "`") {
+          copyTo(i + 1);
+          template();
+        } else if (c === "/" && src[i + 1] === "/") {
+          const eol = src.indexOf("\n", i);
+          copyTo(eol === -1 ? n : eol);
+        } else if (c === "/" && src[i + 1] === "*") {
+          const close = src.indexOf("*/", i + 2);
+          copyTo(close === -1 ? n : close + 2);
+        } else if (c === '"' || c === "'") {
+          quoted(c);
+        } else {
+          const key = matchKey();
+          if (key) {
+            out += defines[key];
+            i += key.length;
+          } else {
+            // A delimiter that isn't special here, or a key start that didn't match: copy it and run to the next stop.
+            stop.lastIndex = i + 1;
+            copyTo(stop.exec(src)?.index ?? n);
+          }
+        }
+      }
+    };
+
+    code(false);
+    return out;
+  };
+}
+
+/**
+ * Bun's dev bundler has no JS-level `define`, so defines go through an onLoad plugin. Bun runs only
+ * the first onLoad that returns contents, so `import.meta.glob` expansion shares this hook; it
+ * returns every project source (falling through makes Bun redo the load, which costs more), so it
+ * must be registered after every other dev plugin.
+ */
+export function createDevTransformPlugin(
+  defines: Record<string, string>,
+  importGlob: { root: string; alias?: Record<string, string> },
+): BunPlugin {
+  const substitute = createDefineSubstituter(defines);
+  return {
+    name: "steambun-env-define",
+    setup(build) {
+      build.onLoad({ filter: SOURCE_FILE }, (args) => {
+        const original = readFileSync(args.path, "utf8");
+        const globbed = transformImportGlobs(original, {
+          ...importGlob,
+          importer: args.path,
+        });
+        // Bun's default .js loader parses JSX; an explicit "js" doesn't.
+        const loader = args.path.endsWith(".tsx")
+          ? "tsx"
+          : args.path.endsWith(".ts") || args.path.endsWith(".mts")
+            ? "ts"
+            : "jsx";
+        return { contents: substitute(globbed ?? original), loader };
+      });
+    },
+  };
+}
+
+/** The dev plugin must `export default { name, setup }`: calling the global plugin() registrar throws (Bun 1.4.0). */
 export function generateEnvPluginSource(
   defines: Record<string, string>,
   importGlob: { root: string; alias?: Record<string, string> },
 ): string {
-  const lines = [
-    "// Auto-generated by steambun. Do not edit — regenerated on every dev run.",
-    'import { readFileSync } from "node:fs";',
-    'import { transformImportGlobs } from "steambun/runtime";',
-    `const GLOB_CONTEXT = ${JSON.stringify(importGlob)};`,
-    `const DEFINES = ${JSON.stringify(defines, null, 2)};`,
-    "const KEYS = Object.keys(DEFINES).sort((a, b) => b.length - a.length);",
-    "// First character of every key: matchKeyAt is only worth calling where",
-    "// the current character could plausibly start one.",
-    "const FIRST = new Set(KEYS.map((k) => k[0]));",
-    "// One alternation over every key, used as a whole-file pre-check instead",
-    "// of KEYS.length separate `contents.includes(key)` scans.",
-    "const KEY_RE = new RegExp(",
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal regex source for the generated file, not an interpolation
-    "  KEYS.map((k) => k.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')).join('|'),",
-    ");",
-    "",
-    "// Scanner, not a parser: a regex literal containing an unbalanced quote or",
-    "// comment-like sequence could misparse. That's the same class of edge case",
-    "// any non-AST tokenizer has, and an acceptable trade-off versus the naive",
-    "// whole-file replace this replaces.",
-    "function matchKeyAt(contents, i) {",
-    "  for (const key of KEYS) {",
-    "    if (!contents.startsWith(key, i)) continue;",
-    "    const before = contents[i - 1];",
-    "    const after = contents[i + key.length];",
-    "    if (",
-    "      (before === undefined || !/[\\w$.]/.test(before)) &&",
-    "      (after === undefined || !/[\\w$]/.test(after))",
-    "    ) {",
-    "      return key;",
-    "    }",
-    "  }",
-    "  return undefined;",
-    "}",
-    "",
-    "// Copies template-literal text verbatim (respecting `\\`-escapes) until the",
-    "// closing backtick, recursing into scanCode for each interpolation.",
-    "function scanTemplate(contents, start) {",
-    "  let i = start;",
-    "  let output = '';",
-    "  while (i < contents.length) {",
-    "    const c = contents[i];",
-    "    if (c === '\\\\') {",
-    "      output += contents.slice(i, i + 2);",
-    "      i += 2;",
-    "      continue;",
-    "    }",
-    "    if (c === '`') {",
-    "      output += '`';",
-    "      i += 1;",
-    "      return { output, end: i };",
-    "    }",
-    "    if (c === '$' && contents[i + 1] === '{') {",
-    "      const inner = scanCode(contents, i + 2, true);",
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal "${...}" reconstructs template syntax, not an interpolation
-    "      output += '${' + inner.output + '}';",
-    "      i = inner.end;",
-    "      continue;",
-    "    }",
-    "    output += c;",
-    "    i += 1;",
-    "  }",
-    "  return { output, end: i };",
-    "}",
-    "",
-    "// Walks contents left to right, substituting DEFINES[key] wherever",
-    "// matchKeyAt succeeds, copying comments and string literals verbatim, and",
-    "// recursing into scanTemplate() on '`' and into itself on '{' (tracking",
-    "// brace nesting generically so a nested object literal or block doesn't",
-    "// end the scan early on the wrong '}'). When stopAtBrace is true, the scan",
-    "// ends at (and consumes) the matching closing '}'.",
-    "function scanCode(contents, start, stopAtBrace) {",
-    "  let i = start;",
-    "  let output = '';",
-    "  while (i < contents.length) {",
-    "    const c = contents[i];",
-    "    if (stopAtBrace && c === '}') {",
-    "      i += 1;",
-    "      return { output, end: i };",
-    "    }",
-    "    if (c === '{') {",
-    "      const inner = scanCode(contents, i + 1, true);",
-    "      output += '{' + inner.output + '}';",
-    "      i = inner.end;",
-    "      continue;",
-    "    }",
-    "    if (c === '`') {",
-    "      const inner = scanTemplate(contents, i + 1);",
-    "      output += '`' + inner.output;",
-    "      i = inner.end;",
-    "      continue;",
-    "    }",
-    "    if (c === '/' && contents[i + 1] === '/') {",
-    "      let j = contents.indexOf('\\n', i);",
-    "      if (j === -1) j = contents.length;",
-    "      output += contents.slice(i, j);",
-    "      i = j;",
-    "      continue;",
-    "    }",
-    "    if (c === '/' && contents[i + 1] === '*') {",
-    "      let j = contents.indexOf('*/', i + 2);",
-    "      if (j === -1) {",
-    "        output += contents.slice(i);",
-    "        i = contents.length;",
-    "      } else {",
-    "        output += contents.slice(i, j + 2);",
-    "        i = j + 2;",
-    "      }",
-    "      continue;",
-    "    }",
-    "    if (c === '\"' || c === \"'\") {",
-    "      let j = i + 1;",
-    "      while (j < contents.length) {",
-    "        if (contents[j] === '\\\\') {",
-    "          j += 2;",
-    "          continue;",
-    "        }",
-    "        if (contents[j] === c) {",
-    "          j += 1;",
-    "          break;",
-    "        }",
-    "        j += 1;",
-    "      }",
-    "      output += contents.slice(i, j);",
-    "      i = j;",
-    "      continue;",
-    "    }",
-    "    // Only call matchKeyAt where a key could plausibly start.",
-    "    if (FIRST.has(c)) {",
-    "      const key = matchKeyAt(contents, i);",
-    "      if (key !== undefined) {",
-    "        output += DEFINES[key];",
-    "        i += key.length;",
-    "        continue;",
-    "      }",
-    "    }",
-    "    // Copy the run of characters up to the next delimiter or plausible",
-    "    // key start in one slice, instead of one character at a time. A",
-    "    // zero-length run means c itself stopped the scan (a delimiter, or a",
-    "    // FIRST character matchKeyAt just rejected) — copy that one char.",
-    "    let j = i;",
-    "    while (j < contents.length) {",
-    "      const cj = contents[j];",
-    "      if (",
-    "        cj === '{' ||",
-    "        cj === '}' ||",
-    "        cj === '`' ||",
-    "        cj === '/' ||",
-    "        cj === '\"' ||",
-    '        cj === "\'" ||',
-    "        FIRST.has(cj)",
-    "      ) {",
-    "        break;",
-    "      }",
-    "      j += 1;",
-    "    }",
-    "    if (j > i) {",
-    "      output += contents.slice(i, j);",
-    "      i = j;",
-    "      continue;",
-    "    }",
-    "    output += c;",
-    "    i += 1;",
-    "  }",
-    "  return { output, end: i };",
-    "}",
-    "",
-    "export default {",
-    "  name: 'steambun-env-define',",
-    "  setup(build) {",
-    "    // Project sources only: node_modules never reaches this callback.",
-    "    const filter = /^(?!.*[\\\\/]node_modules[\\\\/]).*\\.(ts|tsx|js|jsx|mts|mjs)$/;",
-    "    build.onLoad({ filter }, (args) => {",
-    "      const original = readFileSync(args.path, 'utf8');",
-    "      const globbed = transformImportGlobs(original, {",
-    "        ...GLOB_CONTEXT,",
-    "        importer: args.path,",
-    "      });",
-    "      const contents = globbed ?? original;",
-    "      const rewritten = KEY_RE.test(contents)",
-    "        ? scanCode(contents, 0, false).output",
-    "        : contents;",
-    "      // Bun's default .js loader parses JSX; an explicit 'js' doesn't.",
-    "      const loader = args.path.endsWith('.tsx')",
-    "        ? 'tsx'",
-    "        : args.path.endsWith('.ts') || args.path.endsWith('.mts')",
-    "          ? 'ts'",
-    "          : 'jsx';",
-    "      return { contents: rewritten, loader };",
-    "    });",
-    "  },",
-    "};",
-  ];
-  return `${lines.join("\n")}\n`;
+  return `${GENERATED_HEADER}
+import { createDevTransformPlugin } from "steambun/internal";
+
+export default createDevTransformPlugin(
+  ${JSON.stringify(defines, null, 2)},
+  ${JSON.stringify(importGlob)},
+);
+`;
 }

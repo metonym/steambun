@@ -1,8 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateProdServeSource } from "../src/build/prod-server";
 import {
   bunfigToUserConfig,
   parseBunfigToml,
@@ -105,6 +104,7 @@ targets = ["bun-linux-x64", "bun-darwin-arm64"]
 outDir = "out"
 autoloadDotenv = true
 autoloadBunfig = false
+bytecode = true
 
 [steambun.compile.windows]
 title = "My App"
@@ -116,15 +116,9 @@ hideConsole = true
       outDir: "out",
       autoloadDotenv: true,
       autoloadBunfig: false,
+      bytecode: true,
       windows: { title: "My App", hideConsole: true },
     });
-  });
-
-  test("[steambun] features = [...] maps to config.features", () => {
-    const config = bunfigToUserConfig(
-      parseBunfigToml(`[steambun]\nfeatures = ["a", "b"]\n`),
-    );
-    expect(config.features).toEqual(["a", "b"]);
   });
 
   test("decodes every [steambun.build] key", () => {
@@ -139,22 +133,13 @@ drop = ["debugger", "console"]
 standalone = true
 manifest = true
 target = "node"
-bytecode = true
 splitting = true
-cssChunking = true
-minChunkSize = 1024
-importMap = true
-sharedCss = { minSize = 100 }
 precompress = ["gzip", "br"]
-precompressMinSize = 2048
 server = false
-sri = true
+features = ["a", "b"]
 
 [steambun.build.budgets]
 "assets/*.js" = "250kb"
-
-[steambun.build.csp]
-"default-src" = ["'self'"]
 `),
     );
     expect(config.build).toEqual({
@@ -166,40 +151,19 @@ sri = true
       standalone: true,
       manifest: true,
       target: "node",
-      bytecode: true,
       splitting: true,
-      cssChunking: true,
-      minChunkSize: 1024,
-      importMap: true,
-      sharedCss: { minSize: 100 },
       precompress: ["gzip", "br"],
-      precompressMinSize: 2048,
       server: false,
-      sri: true,
+      features: ["a", "b"],
       budgets: { "assets/*.js": "250kb" },
-      csp: { "default-src": ["'self'"] },
     });
   });
 
-  test('[steambun.build] csp = "strict" is a supported literal', () => {
+  test("[steambun.server] strictPort decodes", () => {
     const config = bunfigToUserConfig(
-      parseBunfigToml(`[steambun.build]\ncsp = "strict"\n`),
-    );
-    expect(config.build?.csp).toBe("strict");
-  });
-
-  test("[steambun.server] and [steambun.preview] strictPort decode", () => {
-    const config = bunfigToUserConfig(
-      parseBunfigToml(`
-[steambun.server]
-strictPort = true
-
-[steambun.preview]
-strictPort = true
-`),
+      parseBunfigToml(`[steambun.server]\nstrictPort = true\n`),
     );
     expect(config.server?.strictPort).toBe(true);
-    expect(config.preview?.strictPort).toBe(true);
   });
 });
 
@@ -220,6 +184,18 @@ describe("bunfigToUserConfig warnings", () => {
     expect(warnings).toEqual([
       '[steambun] Unknown bunfig key "steambun.prot" was ignored.',
     ]);
+  });
+
+  test("keys that exist on Object.prototype are unknown keys, not decoders", () => {
+    const { config, warnings } = capture(
+      `[steambun]\nconstructor = 1\ntoString = "x"\n[steambun.server]\nhasOwnProperty = true\n`,
+    );
+    expect(warnings).toEqual([
+      '[steambun] Unknown bunfig key "steambun.constructor" was ignored.',
+      '[steambun] Unknown bunfig key "steambun.toString" was ignored.',
+      '[steambun] Unknown bunfig key "steambun.server.hasOwnProperty" was ignored.',
+    ]);
+    expect(Object.keys(config)).toEqual(["server"]);
   });
 
   test("warns on an unknown nested key", () => {
@@ -279,7 +255,7 @@ host = true
 
 [steambun.build]
 outDir = "dist"
-sri = true
+manifest = true
 precompress = ["gzip", "br"]
 
 [steambun.resolve.alias]
@@ -302,13 +278,12 @@ exact = true
 [steambun]
 api = "./src/api"
 `);
-    const source = serializeMergedBunfig(user, ["./env-plugin.ts"], "PUBLIC_*");
+    const source = serializeMergedBunfig(user, ["./env-plugin.ts"]);
     expect(source).toContain('preload = ["./preload.ts"]');
     expect(source).toContain('"process.env.bagel" = "\'lox\'"');
     expect(source).toContain("bun-plugin-tailwind");
     expect(source).toContain("./env-plugin.ts");
     expect(source).toContain("exact = true");
-    expect(source).toContain('env = "PUBLIC_*"');
     expect(source).not.toContain("[steambun]");
     expect(source).not.toContain("./src/api");
   });
@@ -381,6 +356,93 @@ describe("findConfigFile / loadConfig", () => {
     expect(config.server.port).toBe(5173);
   });
 
+  test("an explicit undefined server/build value falls back to the default", async () => {
+    const root = tmpProject();
+    writeFileSync(
+      join(root, "steambun.config.ts"),
+      `export default { server: { port: undefined, open: true }, build: { outDir: undefined } };\n`,
+    );
+    const config = await loadConfig({
+      root,
+      command: "dev",
+      mode: "development",
+    });
+    expect(config.server.port).toBe(5173);
+    expect(config.server.open).toBe(true);
+    expect(config.build.outDir).toBe("dist");
+  });
+
+  test("a function-form vite config sees Vite's command names", async () => {
+    const root = tmpProject();
+    writeFileSync(
+      join(root, "vite.config.ts"),
+      `export default ({ command }) => ({ server: { port: command === "serve" ? 4000 : 5000 } });\n`,
+    );
+    const dev = await loadConfig({ root, command: "dev", mode: "development" });
+    const build = await loadConfig({
+      root,
+      command: "build",
+      mode: "production",
+    });
+    expect(dev.server.port).toBe(4000);
+    expect(build.server.port).toBe(5000);
+  });
+
+  test("resolves bare middleware specifiers from the project, not from steambun", async () => {
+    const root = tmpProject();
+    mkdirSync(join(root, "node_modules/mw-pkg"), { recursive: true });
+    writeFileSync(
+      join(root, "node_modules/mw-pkg/package.json"),
+      `{ "name": "mw-pkg", "main": "index.js" }`,
+    );
+    writeFileSync(
+      join(root, "node_modules/mw-pkg/index.js"),
+      `export default (req, next) => next();\n`,
+    );
+    writeFileSync(
+      join(root, "bunfig.toml"),
+      `[steambun]\nmiddleware = ["mw-pkg"]\n`,
+    );
+    const config = await loadConfig({
+      root,
+      command: "dev",
+      mode: "development",
+    });
+    expect(config.middleware).toHaveLength(1);
+  });
+
+  test("a middleware specifier without a function default export warns", async () => {
+    const root = tmpProject();
+    writeFileSync(join(root, "mw.ts"), `export default 42;\n`);
+    writeFileSync(
+      join(root, "bunfig.toml"),
+      `[steambun]\nmiddleware = ["./mw.ts"]\n`,
+    );
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = await loadConfig({
+        root,
+        command: "dev",
+        mode: "development",
+      });
+      expect(config.middleware).toEqual([]);
+      expect(warn.mock.calls[0]?.[0]).toContain('middleware "./mw.ts"');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("an unresolvable specifier names it in the error", async () => {
+    const root = tmpProject();
+    writeFileSync(
+      join(root, "bunfig.toml"),
+      `[steambun]\nmiddleware = ["./missing.ts"]\n`,
+    );
+    await expect(
+      loadConfig({ root, command: "dev", mode: "development" }),
+    ).rejects.toThrow('bunfig middleware "./missing.ts"');
+  });
+
   test("resolves [steambun] middleware specifiers", async () => {
     const root = tmpProject();
     mkdirSync(join(root, "src"));
@@ -399,53 +461,5 @@ describe("findConfigFile / loadConfig", () => {
     });
     expect(config.middleware).toHaveLength(1);
     expect(typeof config.middleware?.[0]).toBe("function");
-  });
-});
-
-describe("serializeMergedBunfig (no user bunfig)", () => {
-  test("still writes plugins and a single env glob", () => {
-    const source = serializeMergedBunfig({}, ["./env-plugin.ts"], "PUBLIC_*");
-    expect(source).toContain('plugins = ["./env-plugin.ts"]');
-    expect(source).toContain('env = "PUBLIC_*"');
-  });
-});
-
-describe("generateProdServeSource", () => {
-  test("maps a toml config through bunfigToUserConfig", () => {
-    const source = generateProdServeSource(
-      {
-        root: "/project",
-        base: "/",
-        publicDir: "/project/public",
-        envDir: "/project",
-        mode: "production",
-        command: "preview",
-        configFile: "/project/bunfig.toml",
-        envPrefix: ["PUBLIC_"],
-        appType: "spa",
-        server: { port: 4173, host: false, cors: false },
-        build: {
-          outDir: "dist",
-          emptyOutDir: true,
-          assetsDir: "assets",
-          sourcemap: false,
-          minify: true,
-          manifest: false,
-          standalone: false,
-          drop: ["debugger"],
-          precompress: false,
-          precompressMinSize: 1024,
-          server: true,
-        },
-      },
-      "/project/dist",
-    );
-    expect(source).toContain("bunfigToUserConfig");
-    expect(source).toContain("resolveBunfigModules");
-    expect(source).toContain("bunfig.toml");
-    expect(source).toContain('mode: "preview"');
-    expect(source).toContain(
-      'createApp({ config, mode: "preview", outDir, apiDir })',
-    );
   });
 });

@@ -1,8 +1,8 @@
 import type { App } from "../runtime/app";
+import type { Middleware } from "../runtime/middleware";
 import type { StandardSchemaV1 } from "../util/standard-schema";
 
 export type Command = "dev" | "build" | "preview";
-export type Mode = string;
 export type AppType = "spa" | "mpa";
 
 export interface ProxyOptions {
@@ -28,17 +28,13 @@ export interface ServerOptions {
   cors?: boolean;
   headers?: Record<string, string>;
   proxy?: Record<string, ProxyEntry>;
-  /**
-   * Paths are resolved against `root`. Maps to `Bun.serve({ tls })`. `true`
-   * generates a local certificate for `dev` and `preview` (via mkcert when
-   * installed, else self-signed) under `.steambun/https/`.
-   */
+  /** Paths resolve against `root`. `true` generates a local certificate with mkcert (must be on `PATH`) for `dev` and `preview`. */
   https?: HttpsOptions | true;
   /** Seconds of inactivity before Bun closes the connection. Default 10. */
   idleTimeout?: number;
   /** Max request body size in bytes. Bun default is 128MB. */
   maxRequestBodySize?: number;
-  /** Fail instead of trying the next port when `port` is taken. Default `false`. */
+  /** Fail instead of trying the next port when `port` is taken. Default `false` for `dev` and `preview`, `true` for `dist/server.js` and compiled binaries. */
   strictPort?: boolean;
 }
 
@@ -49,8 +45,7 @@ export interface MinifyObject {
   keepNames?: boolean;
 }
 
-/** Vite `esbuild`/`terser` aliases map to Bun's minifier; `terser` warns once. */
-export type MinifyOption = boolean | "esbuild" | "terser" | MinifyObject;
+export type MinifyOption = boolean | MinifyObject;
 
 export interface BuildOptions {
   outDir?: string;
@@ -61,88 +56,28 @@ export interface BuildOptions {
   minify?: MinifyOption;
   /** Defaults to `["debugger"]` in production. */
   drop?: string[];
-  /** Bundles each HTML entry into one self-contained `.html` file. Distinct from top-level `compile`, which produces a single-binary server. */
+  /** Bundle each HTML entry into one self-contained `.html` file (unrelated to `compile`). */
   standalone?: boolean;
   manifest?: boolean;
   /** Bun build target. HTML builds default to `"browser"`. */
   target?: "browser" | "bun" | "node";
-  /** Bun bytecode cache. Only applied when `compile: true`. */
-  bytecode?: boolean;
-  /** Maps to `Bun.build({ splitting })`. Default off. Ignored for `standalone` and `compile`. */
+  /** Code splitting into hashed chunks. Default off; ignored for `standalone` and `compile`. */
   splitting?: boolean;
-  /** Glob → max size ("250kb", "1.5mb", or bytes). Build fails when exceeded. Checked on raw (uncompressed) sizes. */
+  /** Glob → max raw size (`"250kb"`, `"1.5mb"`, or bytes); the build fails when exceeded. */
   budgets?: Record<string, string | number>;
-  /** Maps to `Bun.build({ cssChunking })`. Only effective with multiple CSS-importing entries. */
-  cssChunking?: boolean;
-  /** Maps to `Bun.build({ minChunkSize })`. Requires `splitting`. */
-  minChunkSize?: number;
-  /**
-   * Rewrite chunk-to-chunk imports through an import map so an unchanged
-   * chunk keeps its URL when a dependency changes. Requires
-   * `build.splitting`; ignored (with one warning) for `standalone`. Default
-   * `false`.
-   */
-  importMap?: boolean;
-  /**
-   * Extracts stylesheets used by two or more pages into shared files under
-   * `assetsDir`, so a shared-CSS change only invalidates that file instead
-   * of every page's stylesheet. `minSize` (minified bytes, default `2048`)
-   * is the minimum combined size before a group is worth extracting.
-   * Default `false`.
-   */
-  sharedCss?: boolean | { minSize?: number };
-  /** Encodings to precompute for files under `assetsDir` (and `publicDir` copies) larger than `precompressMinSize`. Default `false`. */
+  /** Encodings to precompute for compressible files. Default `false`. */
   precompress?: false | Array<"gzip" | "br" | "zstd">;
-  /** Default `1024`. */
-  precompressMinSize?: number;
   /** Write `dist/server.js`, a self-contained preview server. Default `true`. */
   server?: boolean;
-  /** Adds `integrity`/`crossorigin` to local `<script src>` and `<link rel="stylesheet">` tags. Default `false`. */
-  sri?: boolean;
-  /**
-   * Writes `outDir/_headers.json` with a `Content-Security-Policy` for
-   * `"*.html"`, built from hashes of every inline `<script>`/`<style>`.
-   * `"strict"` is `default-src 'self'; script-src 'self' <hashes>;
-   * style-src 'self' <hashes>; object-src 'none'; base-uri 'self'`. An
-   * object's directives are merged with the computed hashes. Default `false`.
-   */
-  csp?: false | "strict" | Record<string, string[]>;
-  /**
-   * Extra response headers by glob (matched the same way as `build.csp`'s
-   * `_headers.json` entries), merged into `outDir/_headers.json`. For a glob
-   * present in both, this wins per header key over the CSP-generated entry.
-   * Default none.
-   */
-  headers?: Record<string, Record<string, string>>;
-  /**
-   * Emits deploy-target config files derived from `build.headers`/`build.csp`
-   * and `appType`, alongside the existing `_headers.json` (always written
-   * regardless of this setting). `"netlify"`/`"cloudflare-pages"` (same file
-   * convention) write `_headers` + `_redirects`; `"vercel"` writes
-   * `vercel.json`; `"static"` writes `_headers` + `_redirects` (the most
-   * portable pair). Default `false`.
-   */
-  deploy?: false | "netlify" | "cloudflare-pages" | "vercel" | "static";
+  /** Bun `--feature` flags for `bun:bundle` dead-code elimination; merged with `STEAMBUN_FEATURES`; `dev` uses only the env var. */
+  features?: string[];
 }
 
 export interface ResolveOptions {
   alias?: Record<string, string>;
-  /** Accepted for Vite configs. Bun already resolves `.ts` / `.tsx` / `.js` / `.jsx` / `.json`. */
-  extensions?: string[];
-  /** Shims Vite's `?raw` / `?url` / `?inline` import suffixes as a Bun plugin. Default `false`. */
-  viteSuffixes?: boolean;
 }
 
-export interface PreviewOptions {
-  port?: number;
-  host?: string | boolean;
-  open?: boolean | string;
-  /** Fail instead of trying the next port when `port` is taken. Default `false`. */
-  strictPort?: boolean;
-}
-
-// Aliases Bun's own ambient type rather than redeclaring `setup`'s `build`
-// param as `unknown`, which made real plugins structurally incompatible.
+// Bun's own type: redeclaring `setup`'s `build` param as `unknown` made real plugins incompatible.
 export type BunPlugin = globalThis.Bun.BunPlugin;
 
 export interface SteambunHooks {
@@ -155,16 +90,12 @@ export interface SteambunHooks {
     ctx: { mode: "dev" | "preview" },
   ) => void | Promise<void>;
   /** Runs before `Bun.build()` for the HTML entries. */
-  buildStart?: (ctx: {
-    config: ResolvedConfig;
-    entrypoints: string[];
-  }) => void | Promise<void>;
+  buildStart?: (ctx: { entrypoints: string[] }) => void | Promise<void>;
   transformHtml?: (
     html: string,
     ctx: { path: string },
   ) => string | Promise<string>;
-  onBuildEnd?: (artifacts: unknown) => void | Promise<void>;
-  /** Runs after `build()` finishes writing `outDir` (after `onBuildEnd`). */
+  /** Runs after `build()` finishes writing `outDir` (and compiling, if enabled), and on failure too. */
   closeBundle?: (ctx: { outDir: string }) => void | Promise<void>;
 }
 
@@ -186,83 +117,68 @@ export interface CompileOptions {
   /** Default `"bin"`. */
   outDir?: string;
   windows?: CompileWindowsOptions;
-  /** Whether the binary loads `.env` files at runtime. Bun defaults this to `true`; steambun defaults to `false` — a compiled server should get its config from real env vars, not files that may not ship with it. */
+  /** Whether the binary loads `.env` at runtime. Default `false` (Bun's is `true`): a compiled server should read real env vars. */
   autoloadDotenv?: boolean;
   /** Whether the binary loads `bunfig.toml` at runtime. Default `true` (Bun's default). */
   autoloadBunfig?: boolean;
+  /** Bun bytecode cache for faster startup. Default `false`. */
+  bytecode?: boolean;
 }
 
 export interface UserConfig {
-  root?: string;
   base?: string;
   publicDir?: string | false;
   plugins?: Plugin[];
   server?: ServerOptions;
   build?: BuildOptions;
-  preview?: PreviewOptions;
   resolve?: ResolveOptions;
   define?: Record<string, string>;
   envPrefix?: string | string[];
   envDir?: string;
-  /**
-   * A Standard Schema (zod, valibot, arktype, ...) for the merged `.env*` +
-   * `process.env`. `dev` and `build` fail on invalid env, and the preview
-   * server, `dist/server.js`, and a compiled binary check it at startup.
-   * Its output types `import.meta.env`. TypeScript config only.
-   */
+  /** Standard Schema (zod, valibot, arktype, ...) validating the merged `.env*` + `process.env`; its output types `import.meta.env`. TypeScript config only. */
   envSchema?: StandardSchemaV1;
-  /**
-   * After file lookup, unmatched paths get `index.html` (`spa`) or 404 (`mpa`).
-   * Applies to `dev`, `preview`, and `compile`. Default `"spa"`.
-   */
+  /** After file lookup, unmatched paths get `index.html` (`spa`) or 404 (`mpa`). Default `"spa"`. */
   appType?: AppType;
-
-  /** Directory of file-based API routes -> Bun.serve routes. */
+  /** Directory of file-based API routes. */
   api?: string;
-  /** (req, next) => Response | Promise<Response>. */
-  middleware?: unknown[];
+  middleware?: Middleware[];
   compile?: boolean | CompileOptions;
-  /**
-   * Bun `--feature` flags for `bun:bundle` dead-code elimination. Merges
-   * with the `STEAMBUN_FEATURES` env var (comma-separated) in `dev` and
-   * `build`. `dev` reflects only the env var — see the README.
-   */
-  features?: string[];
 }
 
-export type ConfigEnv = { command: Command; mode: Mode };
+/** Vite's config-function argument: `preview` is `command: "serve"` with `isPreview: true`. */
+export type ConfigEnv = {
+  command: "serve" | "build";
+  mode: string;
+  isPreview: boolean;
+};
 
 export type UserConfigFn = (env: ConfigEnv) => UserConfig | Promise<UserConfig>;
 
 export type UserConfigExport = UserConfig | Promise<UserConfig> | UserConfigFn;
 
-/**
- * Identity helper for config authoring — gives `steambun.config.ts` full
- * type-checking and autocomplete, mirroring Vite's `defineConfig`.
- *
- * @example
- * ```ts
- * import { defineConfig } from "steambun";
- *
- * export default defineConfig(({ mode }) => ({
- *   server: { port: 5173, proxy: { "/api": "http://localhost:8080" } },
- *   build: { manifest: true },
- * }));
- * ```
- */
+/** Identity helper that type-checks `steambun.config.ts`, like Vite's `defineConfig`. */
 export function defineConfig<T extends UserConfigExport>(config: T): T {
   return config;
 }
 
-export interface ResolvedConfig extends UserConfig {
+/** `UserConfig` with defaults applied; only keys with no meaningful default stay optional. */
+export interface ResolvedConfig {
   root: string;
   base: string;
   publicDir: string | false;
   envDir: string;
   appType: AppType;
-  mode: Mode;
+  mode: string;
   command: Command;
   configFile: string | null;
+  plugins: Plugin[];
+  middleware: Middleware[];
+  define: Record<string, string>;
+  envPrefix: string[];
+  envSchema?: StandardSchemaV1;
+  /** Absolute. */
+  api?: string;
+  resolve: Required<ResolveOptions>;
   server: Required<Pick<ServerOptions, "port" | "host" | "cors">> &
     ServerOptions;
   build: Required<
@@ -277,12 +193,11 @@ export interface ResolvedConfig extends UserConfig {
       | "drop"
       | "standalone"
       | "precompress"
-      | "precompressMinSize"
       | "server"
+      | "features"
     >
   > &
     BuildOptions;
-  envPrefix: string[];
   /** Normalized from `boolean | CompileOptions`: `true` becomes `{}`. */
-  compile?: false | CompileOptions;
+  compile: false | CompileOptions;
 }

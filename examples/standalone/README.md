@@ -6,7 +6,6 @@
 
 - `server.port`: `5178`
 - `build.standalone`: `true`
-- `build.minify`: `true`
 
 ```bash
 bun install && bun run dev

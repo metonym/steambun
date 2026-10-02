@@ -68,6 +68,32 @@ describe("discoverHtmlEntries", () => {
     expect(routes).not.toContain("/build/output/leftover");
     expect(entries).toHaveLength(2);
   });
+
+  test("a nested build.outDir does not hide same-named directories elsewhere", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-html-outdir-scope-"));
+    writeFileSync(join(dir, "index.html"), "<!doctype html>");
+    mkdirSync(join(dir, "docs", "build"), { recursive: true });
+    writeFileSync(join(dir, "docs", "build", "page.html"), "<!doctype html>");
+    const { skipDirs, skipPaths } = discoverSkipDirs({
+      build: { outDir: "build/output" },
+    });
+    const entries = await discoverHtmlEntries(dir, { skipDirs, skipPaths });
+    expect(entries.map((e) => e.routePath)).toContain("/docs/build/page");
+  });
+
+  test("normalizes a ./-prefixed or trailing-slash build.outDir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-html-outdir-norm-"));
+    writeFileSync(join(dir, "index.html"), "<!doctype html>");
+    mkdirSync(join(dir, "out"));
+    writeFileSync(join(dir, "out", "leftover.html"), "<!doctype html>");
+    for (const outDir of ["./out", "out/"]) {
+      const entries = await discoverHtmlEntries(
+        dir,
+        discoverSkipDirs({ build: { outDir } }),
+      );
+      expect(entries.map((e) => e.routePath)).toEqual(["/*"]);
+    }
+  });
 });
 
 describe("htmlServePath", () => {

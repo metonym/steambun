@@ -45,6 +45,15 @@ describe("withMiddleware", () => {
     expect(() => wrapped(req)).toThrow("next() called multiple times");
   });
 
+  test("double next() in an outer middleware throws instead of skipping the rest", () => {
+    const double: Middleware = (_req, next) => {
+      next();
+      return next();
+    };
+    const wrapped = withMiddleware([double, passthrough], handler);
+    expect(() => wrapped(req)).toThrow("next() called multiple times");
+  });
+
   test("handler sees the same Request", async () => {
     let seen: Request | undefined;
     const wrapped = withMiddleware([passthrough], (incoming) => {

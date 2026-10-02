@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "../src/build/build";
 import {
+  commonBuildOptions,
   createCompiledBuildConfig,
   createHtmlBuildConfig,
-  toBunMinify,
 } from "../src/build/options";
 import { resolveDefaults } from "../src/config/loader";
+import { log } from "../src/util/terminal";
 
 function ctx(mode: string) {
   return {
@@ -19,31 +20,6 @@ function ctx(mode: string) {
   };
 }
 
-describe("toBunMinify", () => {
-  test("boolean and esbuild alias map to Bun minify", () => {
-    expect(toBunMinify(true)).toBe(true);
-    expect(toBunMinify(false)).toBe(false);
-    expect(toBunMinify("esbuild")).toBe(true);
-    expect(toBunMinify(undefined)).toBe(true);
-  });
-
-  test("object form is passed through", () => {
-    const minify = { whitespace: true, syntax: true, identifiers: false };
-    expect(toBunMinify(minify)).toEqual(minify);
-  });
-
-  test("terser maps to true and warns once", () => {
-    const warnings: string[] = [];
-    const warn = (msg: string) => {
-      warnings.push(msg);
-    };
-    expect(toBunMinify("terser", warn)).toBe(true);
-    expect(toBunMinify("terser", warn)).toBe(true);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("terser");
-  });
-});
-
 describe("resolveDefaults drop / standalone", () => {
   test("appType defaults to spa and only mpa is accepted", () => {
     expect(resolveDefaults({}, ctx("production")).appType).toBe("spa");
@@ -53,22 +29,6 @@ describe("resolveDefaults drop / standalone", () => {
     expect(resolveDefaults({ appType: "mpa" }, ctx("production")).appType).toBe(
       "mpa",
     );
-  });
-
-  test("invalid appType warns and falls back to spa", () => {
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const config = resolveDefaults(
-        { appType: "custom" as never },
-        ctx("production"),
-      );
-      expect(config.appType).toBe("spa");
-      expect(
-        warnSpy.mock.calls.some((call) => String(call[0]).includes("custom")),
-      ).toBe(true);
-    } finally {
-      warnSpy.mockRestore();
-    }
   });
 
   test("envDir defaults to root and resolves relative to root", () => {
@@ -126,7 +86,7 @@ describe("createHtmlBuildConfig", () => {
       chunk: "assets/[name]-[hash].[ext]",
       asset: "assets/[name]-[hash].[ext]",
     });
-    expect(opts.publicPath).toBeUndefined();
+    expect(opts.publicPath).toBe("/");
     expect(opts.env).toBeUndefined();
     expect(opts.splitting).toBeUndefined();
   });
@@ -144,10 +104,9 @@ describe("createHtmlBuildConfig", () => {
       outDir: join(config.root, "dist"),
     });
     expect(opts.publicPath).toBe("/app/");
-    expect(opts.env).toBe("PUBLIC_*");
   });
 
-  test("resolve.alias adds a steambun-alias plugin right after the server boundary", () => {
+  test("resolve.alias adds a steambun-alias plugin, then the vite-suffix plugin, after the server boundary", () => {
     const config = resolveDefaults(
       { resolve: { alias: { "@": "./src" } } },
       ctx("production"),
@@ -162,6 +121,7 @@ describe("createHtmlBuildConfig", () => {
     expect(opts.plugins?.map((p) => p.name)).toEqual([
       "steambun-server-boundary",
       "steambun-alias",
+      "steambun-vite-suffixes",
       "steambun-import-glob",
     ]);
   });
@@ -181,41 +141,14 @@ describe("createHtmlBuildConfig", () => {
     expect(opts.target).toBe("bun");
   });
 
-  test("cssChunking passes through; minChunkSize only applies with splitting", () => {
-    const config = resolveDefaults(
-      { build: { cssChunking: true, minChunkSize: 5000 } },
-      ctx("production"),
-    );
-    const opts = createHtmlBuildConfig({
-      config,
-      entrypoints: [join(config.root, "index.html")],
-      define: {},
-      plugins: [],
-      outDir: join(config.root, "dist"),
-    });
-    expect(opts.cssChunking).toBe(true);
-    expect(opts.minChunkSize).toBeUndefined();
-
-    const splittingConfig = resolveDefaults(
-      { build: { splitting: true, minChunkSize: 5000 } },
-      ctx("production"),
-    );
-    const splittingOpts = createHtmlBuildConfig({
-      config: splittingConfig,
-      entrypoints: [join(splittingConfig.root, "index.html")],
-      define: {},
-      plugins: [],
-      outDir: join(splittingConfig.root, "dist"),
-    });
-    expect(splittingOpts.splitting).toBe(true);
-    expect(splittingOpts.minChunkSize).toBe(5000);
-  });
-
-  test("features forwards config.features and merges STEAMBUN_FEATURES", () => {
+  test("features forwards build.features and merges STEAMBUN_FEATURES", () => {
     const prevEnv = process.env.STEAMBUN_FEATURES;
     try {
       delete process.env.STEAMBUN_FEATURES;
-      const config = resolveDefaults({ features: ["a"] }, ctx("production"));
+      const config = resolveDefaults(
+        { build: { features: ["a"] } },
+        ctx("production"),
+      );
       const opts = createHtmlBuildConfig({
         config,
         entrypoints: [join(config.root, "index.html")],
@@ -253,7 +186,7 @@ describe("createHtmlBuildConfig", () => {
 
   test("standalone uses compile + browser and skips hashed naming", () => {
     const config = resolveDefaults(
-      { build: { standalone: true, minify: "esbuild" } },
+      { build: { standalone: true, minify: true } },
       ctx("production"),
     );
     const opts = createHtmlBuildConfig({
@@ -302,6 +235,26 @@ describe("createHtmlBuildConfig", () => {
   });
 });
 
+describe("commonBuildOptions", () => {
+  test("every bundle (client, dist/server.js, compile) gets the same features", () => {
+    const config = resolveDefaults(
+      { build: { features: ["a"] } },
+      ctx("production"),
+    );
+    expect(commonBuildOptions(config, {}).features).toEqual(["a"]);
+    expect(
+      createCompiledBuildConfig({
+        config,
+        prodServePath: "/tmp/prod-serve.ts",
+        define: {},
+        plugins: [],
+        outfile: "/tmp/server",
+        assets: [],
+      }).features,
+    ).toEqual(["a"]);
+  });
+});
+
 describe("createCompiledBuildConfig", () => {
   test("passes minify, drop, and define through to the bun target", () => {
     const config = resolveDefaults(
@@ -332,7 +285,7 @@ describe("createCompiledBuildConfig", () => {
 
   test("bytecode is passed only when requested", () => {
     const config = resolveDefaults(
-      { compile: true, build: { bytecode: true } },
+      { compile: { bytecode: true } },
       ctx("production"),
     );
     const opts = createCompiledBuildConfig({
@@ -374,7 +327,7 @@ describe("createCompiledBuildConfig", () => {
 });
 
 describe("compile option normalization", () => {
-  test("true becomes {}, an object stays as-is, false and undefined pass through", () => {
+  test("true becomes {}, an object stays as-is, false and undefined become false", () => {
     expect(
       resolveDefaults({ compile: true }, ctx("production")).compile,
     ).toEqual({});
@@ -387,7 +340,36 @@ describe("compile option normalization", () => {
     expect(resolveDefaults({ compile: false }, ctx("production")).compile).toBe(
       false,
     );
-    expect(resolveDefaults({}, ctx("production")).compile).toBeUndefined();
+    expect(resolveDefaults({}, ctx("production")).compile).toBe(false);
+  });
+});
+
+describe("Vite import suffixes", () => {
+  test("?raw imports work with no config", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-suffix-"));
+    mkdirSync(join(dir, "src"));
+    writeFileSync(
+      join(dir, "index.html"),
+      `<!doctype html><html><body><script type="module" src="./src/main.ts"></script></body></html>`,
+    );
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      `import txt from "./note.txt?raw";\ndocument.body.textContent = txt;\n`,
+    );
+    writeFileSync(join(dir, "src", "note.txt"), "raw-suffix-marker");
+    writeFileSync(
+      join(dir, "steambun.config.ts"),
+      `export default { build: { server: false } };\n`,
+    );
+
+    await build({ root: dir, emptyOutDir: true });
+
+    const js = readdirSync(join(dir, "dist", "assets")).find((f) =>
+      f.endsWith(".js"),
+    );
+    expect(
+      await Bun.file(join(dir, "dist", "assets", js ?? "")).text(),
+    ).toContain("raw-suffix-marker");
   });
 });
 
@@ -432,6 +414,26 @@ describe("standalone HTML build", () => {
     expect(html).toContain("#abc123");
     expect(html).toContain("<style");
     expect(html).toContain("<script");
+  });
+
+  test("warns that metafile-based options are ignored", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steambun-standalone-warn-"));
+    writeFileSync(join(dir, "index.html"), "<!doctype html><p>hi</p>\n");
+    writeFileSync(
+      join(dir, "steambun.config.ts"),
+      `export default { build: { standalone: true, manifest: true, budgets: { "*": "1kb" } } };\n`,
+    );
+
+    const warn = spyOn(log, "warn").mockImplementation(() => {});
+    try {
+      await build({ root: dir });
+      expect(warn.mock.calls.map((c) => c[0])).toEqual([
+        "[steambun] build.budgets: ignored with build.standalone (no metafile).",
+        "[steambun] build.manifest: ignored with build.standalone (no metafile).",
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("minifies the HTML shell when minify is on", async () => {
@@ -490,7 +492,7 @@ if (feature("myflag")) {
     );
     writeFileSync(
       join(dir, "steambun.config.ts"),
-      `export default { features: ["myflag"], build: { server: false } };\n`,
+      `export default { build: { features: ["myflag"], server: false } };\n`,
     );
 
     await build({ root: dir });

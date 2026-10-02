@@ -1,17 +1,36 @@
-import { isAbsolute, join } from "node:path";
 import type { HttpsOptions } from "../config/types";
 import { devCertPaths } from "../util/dev-cert";
-import type { Middleware, RouteHandler } from "./middleware";
+import { resolveFrom } from "../util/paths";
+import type { Middleware, RouteHandler, ServerLike } from "./middleware";
 
 const CORS_ALLOW_METHODS = "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS";
 const CORS_ALLOW_HEADERS = "Content-Type, Authorization";
 
-/**
- * Sets `pairs` on `res.headers` in place — no allocation on the common case,
- * where a route/proxy response has mutable headers. Falls back to Bun's
- * clone-and-set for the rare immutable `Response` (e.g. one returned
- * directly from a raw `fetch()`).
- */
+/** Every JSON error body steambun produces has this shape: `{ error, ...detail }`. */
+export function errorResponse(
+  status: number,
+  error: string,
+  detail?: Record<string, unknown>,
+): Response {
+  return Response.json({ error, ...detail }, { status });
+}
+
+export function isWebSocketUpgrade(req: Request): boolean {
+  return req.headers.get("upgrade")?.toLowerCase() === "websocket";
+}
+
+/** `undefined` once upgraded, a 500 otherwise. */
+export function upgradeOrFail(
+  req: Request,
+  server: ServerLike | undefined,
+  data: unknown,
+): Response | undefined {
+  return server?.upgrade(req, { data })
+    ? undefined
+    : errorResponse(500, "WebSocket upgrade failed");
+}
+
+/** Sets headers in place; falls back to cloning for an immutable `Response` (e.g. a raw `fetch()` result). */
 function withHeaders(
   res: Response,
   pairs: readonly [string, string][],
@@ -26,64 +45,47 @@ function withHeaders(
   }
 }
 
+function responseHeadersMiddleware(
+  pairs: readonly [string, string][],
+): Middleware {
+  const apply = (res: Response | undefined) =>
+    res ? withHeaders(res, pairs) : res;
+  return (_req, next) => {
+    const result = next();
+    return result instanceof Promise ? result.then(apply) : apply(result);
+  };
+}
+
 /**
- * Permissive CORS middleware: allows all origins, answers `OPTIONS` preflight
- * requests directly, and adds CORS headers to every other response.
- *
- * @example
- * ```ts
- * import { corsMiddleware, withMiddleware } from "steambun/runtime";
- *
- * const handler = withMiddleware([corsMiddleware()], (req) => Response.json({ ok: true }));
- * ```
+ * Permissive CORS middleware: allows all origins and answers `OPTIONS`
+ * preflight requests directly, echoing the requested headers.
  */
 export function corsMiddleware(): Middleware {
-  const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": CORS_ALLOW_METHODS,
-    "Access-Control-Allow-Headers": CORS_ALLOW_HEADERS,
-  };
-  const pairs = Object.entries(corsHeaders) as [string, string][];
-  const preflightHeaders = new Headers(corsHeaders);
+  const addHeaders = responseHeadersMiddleware([
+    ["Access-Control-Allow-Origin", "*"],
+  ]);
   return (req, next) => {
-    if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: preflightHeaders });
-    }
-    const apply = (res: Response | undefined) =>
-      res ? withHeaders(res, pairs) : res;
-    const result = next();
-    return result instanceof Promise ? result.then(apply) : apply(result);
+    if (req.method !== "OPTIONS") return addHeaders(req, next);
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": CORS_ALLOW_METHODS,
+        "Access-Control-Allow-Headers":
+          req.headers.get("access-control-request-headers") ||
+          CORS_ALLOW_HEADERS,
+        Vary: "Access-Control-Request-Headers",
+      },
+    });
   };
 }
 
-/**
- * Adds static response headers to every request that reaches the handler.
- *
- * @example
- * ```ts
- * headersMiddleware({ "x-powered-by": "steambun" });
- * ```
- */
+/** Adds static response headers to every request that reaches the handler. */
 export function headersMiddleware(headers: Record<string, string>): Middleware {
-  const pairs = Object.entries(headers) as [string, string][];
-  return (_req, next) => {
-    const apply = (res: Response | undefined) =>
-      res ? withHeaders(res, pairs) : res;
-    const result = next();
-    return result instanceof Promise ? result.then(apply) : apply(result);
-  };
+  return responseHeadersMiddleware(Object.entries(headers));
 }
 
-/**
- * Builds the middleware chain steambun runs for every request: `server.cors`
- * and `server.headers` first, then the user's `middleware` array.
- *
- * @example
- * ```ts
- * const chain = composeServerMiddleware({ cors: true }, config.middleware);
- * const handler = withMiddleware(chain, apiHandler);
- * ```
- */
+/** `server.cors` and `server.headers` first, then the user's `middleware` array. */
 export function composeServerMiddleware(
   server: {
     cors?: boolean;
@@ -91,24 +93,19 @@ export function composeServerMiddleware(
   },
   userMiddleware: unknown[] | undefined,
 ): Middleware[] {
-  const extra: Middleware[] = [];
-  if (server.cors) extra.push(corsMiddleware());
-  if (server.headers) extra.push(headersMiddleware(server.headers));
-  for (const item of userMiddleware ?? []) {
-    if (typeof item === "function") extra.push(item as Middleware);
-  }
-  return extra;
+  const chain: Middleware[] = [];
+  if (server.cors) chain.push(corsMiddleware());
+  if (server.headers) chain.push(headersMiddleware(server.headers));
+  userMiddleware?.forEach((item, i) => {
+    if (typeof item !== "function") {
+      throw new Error(`[steambun] middleware[${i}] must be a function`);
+    }
+    chain.push(item as Middleware);
+  });
+  return chain;
 }
 
-/**
- * Vite-shaped `server.https` (file paths) → `Bun.serve({ tls })` (file handles).
- *
- * @example
- * ```ts
- * const tls = tlsFromHttps({ key: "key.pem", cert: "cert.pem" }, process.cwd());
- * Bun.serve({ tls, fetch: () => new Response("ok") });
- * ```
- */
+/** Vite-shaped `server.https` (file paths) → `Bun.serve({ tls })` (file handles). */
 export function tlsFromHttps(
   https: HttpsOptions | true | undefined,
   root: string,
@@ -116,8 +113,6 @@ export function tlsFromHttps(
 ): Bun.TLSOptions | undefined {
   if (!https) return undefined;
   if (https === true) {
-    // `true` means the dev certificate `dev`/`preview` wrote before
-    // spawning this server — never a production server's.
     if (!opts.devCert) {
       console.warn(
         "[steambun] server.https: true is a local dev certificate for `dev` and `preview` only — serving plain HTTP. Set server.https to { key, cert } for TLS here.",
@@ -127,8 +122,7 @@ export function tlsFromHttps(
     const paths = devCertPaths(root);
     return { key: Bun.file(paths.key), cert: Bun.file(paths.cert) };
   }
-  const resolve = (path: string) =>
-    isAbsolute(path) ? path : join(root, path);
+  const resolve = (path: string) => resolveFrom(root, path);
   const ca = https.ca
     ? Array.isArray(https.ca)
       ? https.ca.map((path) => Bun.file(resolve(path)))
@@ -142,58 +136,18 @@ export function tlsFromHttps(
   };
 }
 
-/**
- * `Bun.serve({ error })` handler: logs the error, and in production hides
- * details behind a generic 500 (dev mode lets Bun's own overlay show it).
- *
- * @example
- * ```ts
- * Bun.serve({ error: createErrorHandler(false), fetch });
- * ```
- */
+/** `Bun.serve({ error })` handler: logs, then returns a generic 500 unless `dev` (Bun's own overlay shows it). */
 export function createErrorHandler(dev: boolean) {
   return function error(err: unknown) {
     console.error(err);
     if (dev) return;
-    return Response.json({ error: "Internal Server Error" }, { status: 500 });
+    return errorResponse(500, "Internal Server Error");
   };
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function devErrorHtml(error: Error, route: string): string {
-  return `<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>steambun dev error</title></head>
-<body>
-<div role="alertdialog" aria-modal="true" style="font-family: monospace; padding: 1.5rem; max-width: 60rem;">
-  <button aria-label="Close" onclick="this.closest('[role=alertdialog]').remove()" style="float: right;">&times;</button>
-  <h1 style="color: #e5484d;">${escapeHtml(error.message)}</h1>
-  <p>${escapeHtml(route)}</p>
-  <pre style="white-space: pre-wrap;">${escapeHtml(error.stack ?? "")}</pre>
-</div>
-</body>
-</html>`;
-}
-
 /**
- * Dev-only: wraps a `RouteHandler` so a thrown error becomes a visible 500
- * (JSON, or an HTML alert dialog for a browser navigation) instead of the
- * silent failure `createErrorHandler`'s dev branch leaves behind — Bun's own
- * `error` hook never sees a throw from inside a route/proxy/middleware
- * function, only from its own dispatch.
- *
- * @example
- * ```ts
- * routes[path] = wrapDevErrors(handler, "api/users/[id].ts");
- * ```
+ * Dev-only: turns a thrown error into a 500 whose JSON body carries the stack.
+ * Bun's `error` hook never sees throws from inside route handlers.
  */
 export function wrapDevErrors(
   handler: RouteHandler,
@@ -208,42 +162,23 @@ export function wrapDevErrors(
       console.error(
         `[steambun] ${req.method} ${pathname} threw: ${error.message} (${route})`,
       );
-      if (req.headers.get("accept")?.includes("text/html")) {
-        return new Response(devErrorHtml(error, route), {
-          status: 500,
-          headers: { "content-type": "text/html" },
-        });
-      }
-      return Response.json(
-        {
-          error: error.message,
-          stack: error.stack,
-          method: req.method,
-          path: pathname,
-          route,
-        },
-        { status: 500 },
-      );
+      return errorResponse(500, error.message, {
+        stack: error.stack,
+        method: req.method,
+        path: pathname,
+        route,
+      });
     }
   };
 }
 
-function isAddrInUseError(err: unknown): err is Error & { code: string } {
-  return (
-    err instanceof Error && (err as { code?: string }).code === "EADDRINUSE"
-  );
+function isAddrInUse(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "EADDRINUSE";
 }
 
 /**
  * `Bun.serve` with Vite-style port retry: on `EADDRINUSE`, tries `port + 1`
- * up to `attempts` times (default 10), unless `strictPort` is set, in which
- * case it fails immediately with a clear message. `port: 0` (pick any free
- * port) is passed through without retry.
- *
- * @example
- * ```ts
- * const server = serveWithPortRetry({ port: 5173, fetch }, { label: "dev" });
- * ```
+ * until `attempts` ports (default 10) have been tried, unless `strictPort` is set.
  */
 export function serveWithPortRetry<
   WebSocketData = undefined,
@@ -253,25 +188,26 @@ export function serveWithPortRetry<
   opts: { strictPort?: boolean; attempts?: number; label?: string },
 ): Bun.Server<WebSocketData> {
   const { strictPort = false, attempts = 10, label } = opts;
-  if (options.port === 0) return Bun.serve(options);
-
-  let port = options.port;
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  const firstPort = options.port;
+  for (let attempt = 0; ; attempt++) {
+    const port = firstPort + attempt;
     try {
       return Bun.serve({ ...options, port });
     } catch (err) {
-      if (!isAddrInUseError(err)) throw err;
+      if (!isAddrInUse(err)) throw err;
       if (strictPort) {
         throw new Error(
           `[steambun] port ${port} is already in use (strictPort)`,
         );
       }
-      const nextPort = port + 1;
+      if (attempt + 1 >= attempts) {
+        throw new Error(
+          `[steambun] no free port in ${firstPort}-${port} (${attempt + 1} tried)`,
+        );
+      }
       console.warn(
-        `[steambun] ${label ? `${label} ` : ""}port ${port} is in use, trying ${nextPort}`,
+        `[steambun] ${label ? `${label} ` : ""}port ${port} is in use, trying ${port + 1}`,
       );
-      port = nextPort;
     }
   }
-  return Bun.serve({ ...options, port });
 }

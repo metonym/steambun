@@ -1,34 +1,41 @@
-import { join, relative, sep } from "node:path";
+import { join, relative } from "node:path";
 import type { ResolvedConfig } from "../config/types";
+import { DIST_SERVER_FILE } from "../util/paths";
 import { splitPlugins } from "../util/plugins";
-import type { ApiRouteCollision } from "./api-routes";
-import { loadApiModules } from "./api-routes";
+import type { ApiHandler, ApiRouteCollision } from "./api-routes";
+import { API_PREFIX, isApiPath, loadApiRoutes, stemOf } from "./api-routes";
 import {
   composeServerMiddleware,
   createErrorHandler,
+  errorResponse,
   wrapDevErrors,
 } from "./http";
 import type { Middleware, RouteHandler } from "./middleware";
 import { withMiddleware } from "./middleware";
 import { createProxyRouteHandler } from "./proxy";
-import { addPublicDirRoutes } from "./public-dir";
+import { listPublicFiles } from "./public-dir";
 import { createStaticHandler } from "./static";
-import { createWsRouter } from "./ws-routes";
+import type { WebSocketRouteHandlers } from "./ws-routes";
+import { serverWebSocket, withWebSocketUpgrade } from "./ws-routes";
 
-export interface AppRoutes {
-  [path: string]: unknown;
-}
-
-export interface CreateAppOptions {
+export type CreateAppOptions = {
   config: ResolvedConfig;
-  mode: "dev" | "preview";
-  /** dev: HTML bundle imports keyed by serve path; preview: undefined */
-  htmlRoutes?: Record<string, unknown>;
-  /** preview/compile: built output dir */
-  outDir?: string;
-  /** preview/compile: api dir override (compiled binaries resolve by basename) */
+  /** Overrides `config.api` (compiled binaries resolve it by basename). */
   apiDir?: string;
-}
+} & (
+  | {
+      mode: "dev";
+      /** HTML bundle imports keyed by serve path. */
+      htmlRoutes?: Record<string, unknown>;
+    }
+  | {
+      mode: "preview";
+      /** Built output dir. */
+      outDir: string;
+      /** Remember each path's resolved file. Default `true`; `steambun preview` sets `false` so a rebuild shows up. */
+      cache?: boolean;
+    }
+);
 
 export interface RouteRow {
   path: string;
@@ -38,36 +45,35 @@ export interface RouteRow {
 }
 
 export interface App {
-  routes: AppRoutes;
+  routes: Record<string, unknown>;
   middleware: Middleware[];
-  /** Everything except port/hostname/tls: routes, error, idleTimeout, websocket, development */
+  /** Everything `Bun.serve` needs except port/hostname/tls. */
   serveOptions: Omit<
     Bun.Serve.Options<unknown>,
     "port" | "hostname" | "tls" | "fetch"
   >;
-  /**
-   * Dispatches through a real, lazily started `Bun.serve` instance bound to
-   * `app.routes` — a genuine round trip through Bun's own router (params,
-   * method maps, 405s, HTML/static routes), not a hand-rolled matcher.
-   */
+  /** Dispatches through a lazily started `Bun.serve` on `app.routes`, so Bun's own router decides. */
   fetch(req: Request): Promise<Response>;
-  /** Stops the server `fetch()` may have started. No-op if `fetch()` was never called. */
+  /** Stops the server `fetch()` started, if any. */
   close(): void;
-  [Symbol.asyncDispose](): Promise<void>;
-  /** Table rows for `steambun routes` and startup logging. */
+  /** Rows for `steambun routes` and startup logging. */
   routeTable(): RouteRow[];
-  /** API routes shadowed by a more specific file mapping to the same path. */
+  /** API files shadowed by a more specific (or earlier) file on the same path. */
   readonly collisions: ApiRouteCollision[];
 }
 
-export function formatApiRouteCollision(
+function formatApiRouteCollision(
   collision: ApiRouteCollision,
   source: string,
 ): string {
-  return `[steambun] api route collision: ${collision.path} ← ${source}/${collision.winner} (used) and ${source}/${collision.loser} (ignored)`;
+  const note =
+    stemOf(collision.winner) === stemOf(collision.loser)
+      ? " — same file name with different extensions"
+      : "";
+  return `[steambun] api route collision: ${collision.path} ← ${source}/${collision.winner} (used) and ${source}/${collision.loser} (ignored)${note}`;
 }
 
-/** SSE responses should never hit Bun's idle timeout — disable it per-request. */
+/** `text/event-stream` responses must not hit Bun's idle timeout. */
 function withSseTimeout(handler: RouteHandler): RouteHandler {
   return (req, server) => {
     const timeout = server?.timeout;
@@ -84,174 +90,136 @@ function withSseTimeout(handler: RouteHandler): RouteHandler {
   };
 }
 
+/** Upgrade requests reach `websocket`; everything else keeps the file's own HTTP handler (`GET` of a method map). */
+function withWebSocket(
+  path: string,
+  websocket: WebSocketRouteHandlers,
+  handler?: ApiHandler,
+): ApiHandler {
+  if (typeof handler === "object") {
+    return {
+      ...handler,
+      GET: withWebSocketUpgrade(path, websocket, handler.GET),
+    };
+  }
+  return withWebSocketUpgrade(path, websocket, handler);
+}
+
 export async function createApp(opts: CreateAppOptions): Promise<App> {
   const { config, mode } = opts;
-  const middleware = composeServerMiddleware(
-    config.server ?? {},
-    config.middleware,
-  );
-  const routes: AppRoutes = {};
+  const middleware = composeServerMiddleware(config.server, config.middleware);
+  const routes: Record<string, unknown> = {};
   const rows: RouteRow[] = [];
+  const apiDir = opts.apiDir ?? config.api;
 
-  /** The steambun-standard handler stack, in the same order everywhere it's applied. */
-  const wrap = (fn: RouteHandler, label: string): RouteHandler =>
-    withMiddleware(
+  const wrap = (fn: RouteHandler, label: string): RouteHandler => {
+    const handler = withSseTimeout(fn);
+    return withMiddleware(
       middleware,
-      mode === "dev"
-        ? wrapDevErrors(withSseTimeout(fn), label)
-        : withSseTimeout(fn),
+      mode === "dev" ? wrapDevErrors(handler, label) : handler,
     );
+  };
 
-  if (mode === "dev" && opts.htmlRoutes) {
-    for (const [path, mod] of Object.entries(opts.htmlRoutes)) {
+  if (opts.mode === "dev") {
+    for (const [path, mod] of Object.entries(opts.htmlRoutes ?? {})) {
       routes[path] = mod;
       rows.push({ path, kind: "html", methods: ["*"], source: "" });
     }
   }
 
-  if (config.publicDir) {
-    const publicDir = config.publicDir;
-    const before = new Set(Object.keys(routes));
-    await addPublicDirRoutes(routes, publicDir);
-    for (const path of Object.keys(routes)) {
-      if (before.has(path)) continue;
-      // Undo addPublicDirRoutes' percent-encoding to recover the file's path
-      // relative to publicDir, without inspecting the routed value itself.
-      const rel = path.slice(1).split("/").map(decodeURIComponent).join(sep);
+  // `preview` serves the copy `build` made in `outDir`.
+  if (opts.mode === "dev" && config.publicDir) {
+    for (const { urlPath, file } of await listPublicFiles(config.publicDir)) {
+      if (urlPath in routes || (apiDir && isApiPath(urlPath))) continue;
+      routes[urlPath] = Bun.file(file);
       rows.push({
-        path,
+        path: urlPath,
         kind: "public",
         methods: ["GET"],
-        source: relative(config.root, join(publicDir, rel)),
+        source: relative(config.root, file),
       });
     }
   }
 
   let hasWsProxy = false;
-  for (const [prefix, entry] of Object.entries(config.server?.proxy ?? {})) {
+  for (const [prefix, entry] of Object.entries(config.server.proxy ?? {})) {
     const target = typeof entry === "string" ? entry : entry.target;
     const handler = wrap(
       createProxyRouteHandler(prefix, entry),
       `proxy ${prefix} -> ${target}`,
     );
     const wildcard = prefix.endsWith("/") ? `${prefix}*` : `${prefix}/*`;
-    routes[prefix] = handler;
-    routes[wildcard] = handler;
-    rows.push({ path: prefix, kind: "proxy", methods: ["*"], source: target });
-    rows.push({
-      path: wildcard,
-      kind: "proxy",
-      methods: ["*"],
-      source: target,
-    });
+    for (const path of [prefix, wildcard]) {
+      routes[path] = handler;
+      rows.push({ path, kind: "proxy", methods: ["*"], source: target });
+    }
     if (typeof entry === "object" && entry.ws) hasWsProxy = true;
   }
 
-  const apiDir = opts.apiDir ?? config.api;
-  const apiModules = apiDir ? await loadApiModules(apiDir) : undefined;
-  const websockets = apiModules?.websockets ?? new Map();
-  const wsRouter = createWsRouter(websockets);
+  const api = apiDir ? await loadApiRoutes(apiDir) : undefined;
+  let hasApiWebSocket = false;
 
-  if (apiDir && apiModules) {
-    const apiRoutes = apiModules.routes;
+  if (apiDir && api) {
     const source = relative(config.root, apiDir);
-    const routeLabel = (path: string) =>
-      join(source, apiModules.fileForPath.get(path) ?? "");
-
-    for (const collision of apiModules.collisions) {
-      console.log(formatApiRouteCollision(collision, source));
+    for (const collision of api.collisions) {
+      console.warn(formatApiRouteCollision(collision, source));
     }
-    const paths = new Set([...Object.keys(apiRoutes), ...websockets.keys()]);
 
-    for (const path of paths) {
-      const handler = apiRoutes[path];
-      const upgrade = websockets.has(path)
-        ? wsRouter.upgradeHandler(path)
-        : undefined;
-
-      if (upgrade) {
-        const fallback: RouteHandler =
-          typeof handler === "function"
-            ? (handler as RouteHandler)
-            : handler
-              ? (req, server) => {
-                  const fn = (handler as Record<string, unknown>)[req.method];
-                  return typeof fn === "function"
-                    ? (fn as RouteHandler)(req, server)
-                    : new Response("Method Not Allowed", { status: 405 });
-                }
-              : () => new Response("Upgrade Required", { status: 426 });
-        const combined: RouteHandler = (req, server) => {
-          if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-            return upgrade(req, server);
-          }
-          return fallback(req, server);
-        };
-        routes[path] = wrap(combined, routeLabel(path));
-        const methods =
-          handler && typeof handler === "object" ? Object.keys(handler) : ["*"];
-        rows.push({ path, kind: "ws", methods, source });
-        continue;
-      }
-
-      if (typeof handler === "function") {
-        routes[path] = wrap(handler as RouteHandler, routeLabel(path));
-        rows.push({ path, kind: "api", methods: ["*"], source });
-      } else {
-        const wrapped: Record<string, unknown> = {};
-        const methods: string[] = [];
-        for (const [method, handlerFn] of Object.entries(
-          handler as Record<string, unknown>,
-        )) {
-          wrapped[method] = wrap(handlerFn as RouteHandler, routeLabel(path));
-          methods.push(method);
-        }
-        routes[path] = wrapped;
-        rows.push({ path, kind: "api", methods, source });
-      }
+    for (const { path, file, handler, websocket } of api.routes) {
+      const label = join(source, file);
+      const target = websocket
+        ? withWebSocket(path, websocket, handler)
+        : handler!;
+      hasApiWebSocket ||= !!websocket;
+      routes[path] =
+        typeof target === "function"
+          ? wrap(target, label)
+          : Object.fromEntries(
+              Object.entries(target).map(([method, fn]) => [
+                method,
+                wrap(fn, label),
+              ]),
+            );
+      rows.push({
+        path,
+        kind: websocket ? "ws" : "api",
+        methods: typeof target === "function" ? ["*"] : Object.keys(target),
+        source,
+      });
     }
+
+    // An unmatched `/api` path is a JSON 404, never the SPA's index.html.
+    const notFound = wrap(() => errorResponse(404, "Not Found"), "api 404");
+    for (const path of [API_PREFIX, `${API_PREFIX}/*`])
+      routes[path] ??= notFound;
   }
 
-  if (mode === "preview") {
-    const outDir = opts.outDir;
-    if (!outDir) {
-      throw new Error("[steambun] createApp preview mode requires outDir");
-    }
-    // A single static handler covers assets, publicDir copies, and the SPA
-    // fallback — including inside a compiled binary's embedded $bunfs
-    // filesystem, which the native `{ dir }` route can't open (see
-    // prod-server.ts). immutablePrefix gives hashed assetsDir files
-    // long-lived caching without a separate route.
-    routes["/*"] = withMiddleware(
-      middleware,
-      createStaticHandler({
-        outDir,
-        spa: config.appType === "spa",
-        immutablePrefix: `/${config.build.assetsDir}/`,
-        precompressed: config.build.precompress !== false,
-        headersFile: join(outDir, "_headers.json"),
-        chunkMapFile: join(outDir, ".steambun-chunks.json"),
-        base: config.base,
-      }),
-    );
-    rows.push({
-      path: "/*",
-      kind: "static",
-      methods: ["*"],
-      source: outDir,
+  if (opts.mode === "preview") {
+    const { outDir } = opts;
+    // Not Bun's native `{ dir }` route: it can't open a compiled binary's embedded $bunfs.
+    routes["/*"] = createStaticHandler({
+      outDir,
+      spa: config.appType === "spa",
+      immutablePrefix: `/${config.build.assetsDir}/`,
+      precompressed: config.build.precompress !== false,
+      base: config.base,
+      cache: opts.cache,
+      exclude:
+        config.build.server && !config.build.standalone
+          ? [DIST_SERVER_FILE]
+          : [],
     });
+    rows.push({ path: "/*", kind: "static", methods: ["*"], source: outDir });
   }
 
-  // Lazily started by `fetch()` — most callers only ever use `serveOptions`
-  // with their own `Bun.serve`, so `createApp` itself never opens a socket.
+  // Started lazily: most callers only use `serveOptions` with their own `Bun.serve`.
   let server: Bun.Server<unknown> | undefined;
 
   const app: App = {
     routes,
     middleware,
-    collisions: apiModules?.collisions ?? [],
-    // Placeholder — computed below from app.routes/app.middleware after
-    // configureApp hooks run, so a hook that adds a route sees it served.
+    collisions: api?.collisions ?? [],
+    // Filled in below, after `configureApp` hooks have had a chance to add routes.
     serveOptions: {} as App["serveOptions"],
     async fetch(req: Request): Promise<Response> {
       server ??= Bun.serve({
@@ -260,36 +228,29 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
         ...app.serveOptions,
       } as Bun.Serve.Options<unknown>);
 
-      const url = new URL(req.url);
-      const target = new URL(url.pathname + url.search + url.hash, server.url);
-      const init: RequestInit = {
+      const { pathname, search } = new URL(req.url);
+      // Concatenated, not resolved: `new URL("//host/x", base)` would leave the app's server.
+      return fetch(`${server.url.origin}${pathname}${search}`, {
         method: req.method,
         headers: req.headers,
         body: req.body,
         redirect: "manual",
-        // Return exactly what the route produced — fetch() otherwise
-        // transparently decodes a compressed body while leaving
-        // `content-encoding` on the response, which would desync the two.
+        // fetch() would otherwise decode the body but keep `content-encoding`.
         decompress: false,
-      } as RequestInit;
-      if (req.body) (init as { duplex?: string }).duplex = "half";
-      return fetch(target, init);
+        ...(req.body ? { duplex: "half" } : {}),
+      } as RequestInit);
     },
     close(): void {
       server?.stop(true);
       server = undefined;
-    },
-    async [Symbol.asyncDispose](): Promise<void> {
-      app.close();
     },
     routeTable(): RouteRow[] {
       return [...rows].sort((a, b) => a.path.localeCompare(b.path));
     },
   };
 
-  const { hooks } = splitPlugins(config.plugins ?? []);
-  for (const hook of hooks) {
-    if (hook.configureApp) await hook.configureApp(app, { mode });
+  for (const hook of splitPlugins(config.plugins).hooks) {
+    await hook.configureApp?.(app, { mode });
   }
 
   app.serveOptions = {
@@ -297,9 +258,7 @@ export async function createApp(opts: CreateAppOptions): Promise<App> {
     error: createErrorHandler(mode === "dev"),
     idleTimeout: config.server.idleTimeout,
     maxRequestBodySize: config.server.maxRequestBodySize,
-    ...(hasWsProxy || websockets.size > 0
-      ? { websocket: wsRouter.websocket }
-      : {}),
+    ...(hasWsProxy || hasApiWebSocket ? { websocket: serverWebSocket } : {}),
     ...(mode === "dev"
       ? { development: { hmr: true, console: true }, id: "steambun-dev" }
       : {}),

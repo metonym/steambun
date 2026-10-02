@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,7 @@ describe("splitPlugins", () => {
   test("accepts a Bun plugin and a steambun hooks object", () => {
     const { bunPlugins, hooks } = splitPlugins([
       { name: "bun-plugin", setup() {} },
-      { onBuildEnd() {} },
+      { closeBundle() {} },
     ]);
     expect(bunPlugins).toHaveLength(1);
     expect(hooks).toHaveLength(1);
@@ -25,7 +25,7 @@ describe("splitPlugins", () => {
 });
 
 describe("build() hook call order", () => {
-  test("configResolved, buildStart, transformHtml, onBuildEnd, closeBundle", async () => {
+  test("configResolved, buildStart, transformHtml, closeBundle", async () => {
     const root = mkdtempSync(join(tmpdir(), "steambun-hooks-"));
     writeFileSync(
       join(root, "index.html"),
@@ -49,7 +49,6 @@ export default {
       configResolved() { log("configResolved"); },
       buildStart() { log("buildStart"); },
       transformHtml(html) { log("transformHtml"); return html; },
-      onBuildEnd() { log("onBuildEnd"); },
       closeBundle() { log("closeBundle"); },
     },
   ],
@@ -64,9 +63,64 @@ export default {
       "configResolved",
       "buildStart",
       "transformHtml",
-      "onBuildEnd",
       "closeBundle",
     ]);
+  });
+});
+
+describe("build() closeBundle on failure", () => {
+  function failingFixture(extraHooks: string): {
+    root: string;
+    logPath: string;
+  } {
+    const root = mkdtempSync(join(tmpdir(), "steambun-hooks-fail-"));
+    writeFileSync(
+      join(root, "index.html"),
+      `<html><body><script type="module" src="./main.ts"></script></body></html>\n`,
+    );
+    writeFileSync(join(root, "main.ts"), `console.log("over budget");\n`);
+    const logPath = join(root, "calls.json");
+    writeFileSync(
+      join(root, "steambun.config.ts"),
+      `import { appendFileSync } from "node:fs";
+export default {
+  build: { budgets: { "assets/*.js": 1 }, server: false },
+  plugins: [
+    ${extraHooks}
+    { closeBundle({ outDir }) { appendFileSync(${JSON.stringify(logPath)}, "closeBundle:" + (outDir.length > 0) + "\\n"); } },
+  ],
+};
+`,
+    );
+    return { root, logPath };
+  }
+
+  test("runs closeBundle when the budget check throws", async () => {
+    const { root, logPath } = failingFixture("");
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(build({ root })).rejects.toThrow(/budget/i);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+    expect(readFileSync(logPath, "utf8")).toBe("closeBundle:true\n");
+  });
+
+  test("a throwing closeBundle does not mask the build error or skip later hooks", async () => {
+    const { root, logPath } = failingFixture(
+      `{ closeBundle() { throw new Error("hook boom"); } },`,
+    );
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(build({ root })).rejects.toThrow(/budget/i);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+    expect(readFileSync(logPath, "utf8")).toBe("closeBundle:true\n");
   });
 });
 

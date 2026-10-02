@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -115,6 +115,43 @@ describe("analyzeMetafile", () => {
     }
   });
 
+  test("package versions are re-read on every call", () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-versions-"));
+    for (const dir of [
+      "node_modules/left-pad",
+      "node_modules/@scope/pkg",
+      "packages/sub/node_modules/left-pad",
+    ]) {
+      mkdirSync(join(root, dir), { recursive: true });
+    }
+    const write = (dir: string, version: string) =>
+      writeFileSync(
+        join(root, dir, "package.json"),
+        JSON.stringify({ version }),
+      );
+    for (const dir of [
+      "node_modules/left-pad",
+      "node_modules/@scope/pkg",
+      "packages/sub/node_modules/left-pad",
+    ]) {
+      write(dir, "1.0.0");
+    }
+    const prevCwd = process.cwd();
+    process.chdir(root);
+    try {
+      expect(analyzeMetafile(fixtureMetafile()).packages[0]?.versions).toEqual([
+        "1.0.0",
+      ]);
+      write("node_modules/@scope/pkg", "2.0.0");
+      const pkg = analyzeMetafile(fixtureMetafile()).packages.find(
+        (p) => p.name === "@scope/pkg",
+      );
+      expect(pkg?.versions).toEqual(["2.0.0"]);
+    } finally {
+      process.chdir(prevCwd);
+    }
+  });
+
   test("output rows carry per-input byte contributions, largest first", () => {
     const report = analyzeMetafile(fixtureMetafile());
     const output = report.outputs[0];
@@ -164,6 +201,12 @@ describe("parseSize", () => {
     expect(parseSize("1.5mb")).toBe(1572864);
     expect(parseSize(1000)).toBe(1000);
     expect(parseSize("1000")).toBe(1000);
+  });
+
+  test("rejects malformed sizes instead of yielding NaN", () => {
+    for (const bad of ["1.2.3", ".", "kb", "-5kb", "1 gb", ""]) {
+      expect(() => parseSize(bad)).toThrow(/Invalid size budget/);
+    }
   });
 });
 
@@ -215,7 +258,7 @@ describe("computeCompressedSizes", () => {
     const root = mkdtempSync(join(tmpdir(), "steambun-analyze-sibling-"));
     const text = "c".repeat(2000);
     writeFileSync(join(root, "entry.js"), text);
-    // Deliberately not a real gzip stream: only its size should be read.
+    // Not a real gzip stream: only its size should be read.
     writeFileSync(join(root, "entry.js.gz"), "x".repeat(7));
 
     const sizes = await computeCompressedSizes(
@@ -285,73 +328,36 @@ describe("build() with build.budgets", () => {
     );
     writeFileSync(
       join(root, "steambun.config.ts"),
-      // build.server would try to bundle a dist server that statically
-      // imports "steambun", unresolvable from this bare fixture (no
-      // node_modules) — irrelevant to what this test checks.
+      // dist/server.js imports "steambun", unresolvable from this bare fixture.
       `export default { build: { budgets: { "assets/*.js": 1 }, server: false } };\n`,
     );
 
-    process.env.STEAMBUN_CI = "1";
-    const log = spyOn(console, "log").mockImplementation(() => {});
-    try {
-      await expect(build({ root })).rejects.toThrow(/budget/i);
-      const annotation = log.mock.calls
-        .map((call) => call[0])
-        .find((line) => typeof line === "string" && line.startsWith("::error"));
-      expect(annotation).toMatch(/^::error file=assets\/index.*::.*budget/i);
-    } finally {
-      log.mockRestore();
-      delete process.env.STEAMBUN_CI;
-    }
+    await expect(build({ root })).rejects.toThrow(/budget/i);
   });
 
-  test("passes on the post-extraction size and reports it in metafile.json", async () => {
-    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-sharedcss-"));
-    mkdirSync(join(root, "src"));
-    for (const page of ["index", "about"]) {
-      writeFileSync(
-        join(root, `${page}.html`),
-        `<!doctype html><html><head><link rel="stylesheet" href="./src/${page}.css"></head><body><script type="module" src="./src/${page}.ts"></script></body></html>\n`,
-      );
-    }
+  test("measures HTML after minification", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-analyze-html-"));
     writeFileSync(
-      join(root, "src/shared.css"),
-      `.shared-a{color:red}\n.shared-b{color:blue}\n.shared-c{color:green}\n.shared-d{color:yellow}\n.shared-e{color:purple}\n`,
-    );
-    writeFileSync(
-      join(root, "src/index.css"),
-      `@import "./shared.css";\nbody { --p: index; }\n`,
-    );
-    writeFileSync(join(root, "src/about.css"), `body { --p: about; }\n`);
-    writeFileSync(join(root, "src/index.ts"), `console.log("index");\n`);
-    writeFileSync(
-      join(root, "src/about.ts"),
-      `import "./about.css";\nimport "./shared.css";\nconsole.log("about");\n`,
+      join(root, "index.html"),
+      `<!doctype html><html><body><!-- ${"x".repeat(2000)} --><p>hi</p></body></html>\n`,
     );
     writeFileSync(
       join(root, "steambun.config.ts"),
-      // The unextracted page CSS (own rules + the duplicated shared block)
-      // is well over 50 bytes; only the post-extraction file fits.
-      `export default { build: { sharedCss: { minSize: 1 }, budgets: { "assets/index*.css": "50b" }, server: false } };\n`,
+      `export default { build: { budgets: { "*.html": "500b" }, server: false } };\n`,
     );
 
-    await build({ root });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await build({ root });
+    } finally {
+      log.mockRestore();
+    }
 
-    const assetsDir = join(root, "dist", "assets");
-    const indexCssFile = readdirSync(assetsDir).find(
-      (f) => f.startsWith("index-") && f.endsWith(".css"),
-    );
-    expect(indexCssFile).toBeDefined();
-    const onDiskBytes = (
-      await Bun.file(join(assetsDir, indexCssFile!)).arrayBuffer()
-    ).byteLength;
-    expect(onDiskBytes).toBeLessThan(50);
-
+    const onDisk = Bun.file(join(root, "dist", "index.html")).size;
     const metafile = JSON.parse(
       await Bun.file(join(root, ".steambun", "metafile.json")).text(),
     );
-    expect(metafile.outputs[`./assets/${indexCssFile}`].bytes).toBe(
-      onDiskBytes,
-    );
+    expect(metafile.outputs["./index.html"].bytes).toBe(onDisk);
+    expect(onDisk).toBeLessThan(500);
   });
 });

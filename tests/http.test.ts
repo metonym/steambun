@@ -2,17 +2,16 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { serializeMergedBunfig } from "../src/config/bunfig";
-import { generateEnvPluginSource } from "../src/dev/env-plugin";
 import {
+  composeServerMiddleware,
   corsMiddleware,
   createErrorHandler,
   headersMiddleware,
   serveWithPortRetry,
 } from "../src/runtime/http";
+import type { Middleware } from "../src/runtime/middleware";
 import { withMiddleware } from "../src/runtime/middleware";
-import { addPublicDirRoutes } from "../src/runtime/public-dir";
-import { createAliasPlugin } from "../src/util/alias";
+import { listPublicFiles } from "../src/runtime/public-dir";
 
 describe("corsMiddleware", () => {
   test("OPTIONS returns 204 with CORS headers", async () => {
@@ -36,6 +35,58 @@ describe("corsMiddleware", () => {
     expect(await res?.text()).toBe("ok");
     expect(res?.headers.get("Access-Control-Allow-Origin")).toBe("*");
   });
+
+  test("preflight reflects Access-Control-Request-Headers", async () => {
+    const wrapped = withMiddleware(
+      [corsMiddleware()],
+      () => new Response("ok"),
+    );
+    const res = await wrapped(
+      new Request("http://localhost/api", {
+        method: "OPTIONS",
+        headers: { "Access-Control-Request-Headers": "x-custom, content-type" },
+      }),
+    );
+    expect(res?.headers.get("Access-Control-Allow-Headers")).toBe(
+      "x-custom, content-type",
+    );
+    expect(res?.headers.get("Vary")).toBe("Access-Control-Request-Headers");
+  });
+
+  test("preflight without requested headers uses the default list", async () => {
+    const wrapped = withMiddleware(
+      [corsMiddleware()],
+      () => new Response("ok"),
+    );
+    const res = await wrapped(
+      new Request("http://localhost/api", { method: "OPTIONS" }),
+    );
+    expect(res?.headers.get("Access-Control-Allow-Headers")).toBe(
+      "Content-Type, Authorization",
+    );
+    expect(res?.headers.get("Access-Control-Allow-Methods")).toContain("POST");
+  });
+
+  test("a preflight response is not shared between requests", async () => {
+    const wrapped = withMiddleware(
+      [corsMiddleware()],
+      () => new Response("ok"),
+    );
+    const first = await wrapped(
+      new Request("http://localhost/api", {
+        method: "OPTIONS",
+        headers: { "Access-Control-Request-Headers": "x-a" },
+      }),
+    );
+    const second = await wrapped(
+      new Request("http://localhost/api", { method: "OPTIONS" }),
+    );
+    first?.headers.set("x-mutated", "1");
+    expect(second?.headers.has("x-mutated")).toBe(false);
+    expect(second?.headers.get("Access-Control-Allow-Headers")).toBe(
+      "Content-Type, Authorization",
+    );
+  });
 });
 
 describe("headersMiddleware", () => {
@@ -49,32 +100,38 @@ describe("headersMiddleware", () => {
   });
 });
 
+describe("composeServerMiddleware", () => {
+  test("puts cors and headers ahead of the user's middleware", () => {
+    const user: Middleware = (_req, next) => next();
+    const chain = composeServerMiddleware(
+      { cors: true, headers: { "x-a": "1" } },
+      [user],
+    );
+    expect(chain).toHaveLength(3);
+    expect(chain[2]).toBe(user);
+  });
+
+  test("a non-function entry throws instead of being skipped", () => {
+    expect(() =>
+      composeServerMiddleware({}, [() => undefined, "./auth"]),
+    ).toThrow("middleware[1] must be a function");
+  });
+});
+
 describe("createErrorHandler", () => {
   test("dev handler returns undefined so Bun can render the overlay", () => {
     const error = createErrorHandler(true);
-    const orig = console.error;
-    console.error = () => {};
-    try {
-      expect(error(new Error("boom"))).toBeUndefined();
-    } finally {
-      console.error = orig;
-    }
+    expect(error(new Error("boom"))).toBeUndefined();
   });
 
   test("prod handler returns JSON 500", async () => {
     const error = createErrorHandler(false);
-    const orig = console.error;
-    console.error = () => {};
-    try {
-      const res = error(new Error("boom"));
-      expect(res).toBeInstanceOf(Response);
-      expect((res as Response).status).toBe(500);
-      expect(await (res as Response).json()).toEqual({
-        error: "Internal Server Error",
-      });
-    } finally {
-      console.error = orig;
-    }
+    const res = error(new Error("boom"));
+    expect(res).toBeInstanceOf(Response);
+    expect((res as Response).status).toBe(500);
+    expect(await (res as Response).json()).toEqual({
+      error: "Internal Server Error",
+    });
   });
 });
 
@@ -115,6 +172,44 @@ describe("serveWithPortRetry", () => {
     }
   });
 
+  test("throws a steambun error naming the range once attempts run out", () => {
+    const occupied = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    const occupiedPort = occupied.port as number;
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() =>
+        serveWithPortRetry(
+          { port: occupiedPort, fetch: () => new Response("ok") },
+          { attempts: 1 },
+        ),
+      ).toThrow(
+        `[steambun] no free port in ${occupiedPort}-${occupiedPort} (1 tried)`,
+      );
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      occupied.stop(true);
+    }
+  });
+
+  test("attempts counts total ports tried", () => {
+    const occupied = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    const occupiedPort = occupied.port as number;
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    let server: Bun.Server<undefined> | undefined;
+    try {
+      server = serveWithPortRetry(
+        { port: occupiedPort, fetch: () => new Response("ok") },
+        { attempts: 2 },
+      );
+      expect(server.port).toBe(occupiedPort + 1);
+    } finally {
+      warnSpy.mockRestore();
+      server?.stop(true);
+      occupied.stop(true);
+    }
+  });
+
   test("a non-EADDRINUSE error is rethrown unchanged", () => {
     expect(() =>
       serveWithPortRetry(
@@ -129,52 +224,42 @@ describe("serveWithPortRetry", () => {
   });
 });
 
-describe("addPublicDirRoutes", () => {
-  test("registers files as exact routes and does not overwrite existing ones", async () => {
+describe("listPublicFiles", () => {
+  const urlPaths = async (dir: string) =>
+    (await listPublicFiles(dir)).map((f) => f.urlPath).sort();
+
+  test("lists nested files by URL path", async () => {
     const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
     writeFileSync(join(dir, "favicon.ico"), "icon");
     mkdirSync(join(dir, "img"));
     writeFileSync(join(dir, "img", "logo.png"), "png");
-    const routes: Record<string, unknown> = {
-      "/favicon.ico": "keep",
-    };
-    await addPublicDirRoutes(routes, dir);
-    expect(routes["/favicon.ico"]).toBe("keep");
-    expect(routes["/img/logo.png"]).toBeInstanceOf(Blob);
+    expect(await urlPaths(dir)).toEqual(["/favicon.ico", "/img/logo.png"]);
   });
 
   test("missing publicDir is a no-op", async () => {
-    const routes: Record<string, unknown> = {};
-    await addPublicDirRoutes(routes, join(tmpdir(), "steambun-no-public"));
-    expect(routes).toEqual({});
+    expect(await urlPaths(join(tmpdir(), "steambun-no-public"))).toEqual([]);
   });
 
-  test("filenames with spaces are registered percent-encoded", async () => {
+  test("filenames with spaces are percent-encoded", async () => {
     const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
     writeFileSync(join(dir, "my file.png"), "png");
-    const routes: Record<string, unknown> = {};
-    await addPublicDirRoutes(routes, dir);
-    expect(routes["/my%20file.png"]).toBeInstanceOf(Blob);
+    expect(await urlPaths(dir)).toEqual(["/my%20file.png"]);
   });
 
-  test("dotfiles and nested dotfile directories are excluded from routes", async () => {
+  test("dotfiles and nested dotfile directories are excluded", async () => {
     const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
     writeFileSync(join(dir, ".DS_Store"), "junk");
     mkdirSync(join(dir, ".git"));
     writeFileSync(join(dir, ".git", "config"), "junk");
-    const routes: Record<string, unknown> = {};
-    await addPublicDirRoutes(routes, dir);
-    expect(routes).toEqual({});
+    expect(await urlPaths(dir)).toEqual([]);
   });
 
-  test("a stray .html file is still routed but warns", async () => {
+  test("a stray .html file is still listed but warns", async () => {
     const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
     writeFileSync(join(dir, "stray.html"), "<h1>stray</h1>");
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const routes: Record<string, unknown> = {};
-      await addPublicDirRoutes(routes, dir);
-      expect(routes["/stray.html"]).toBeInstanceOf(Blob);
+      expect(await urlPaths(dir)).toEqual(["/stray.html"]);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("HTML under publicDir is not an app entry"),
       );
@@ -183,15 +268,13 @@ describe("addPublicDirRoutes", () => {
     }
   });
 
-  test(".env and .env.local are excluded from routes and each warns", async () => {
+  test(".env and .env.local are excluded and each warns", async () => {
     const dir = mkdtempSync(join(tmpdir(), "steambun-public-"));
     writeFileSync(join(dir, ".env"), "SECRET=1");
     writeFileSync(join(dir, ".env.local"), "SECRET=2");
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const routes: Record<string, unknown> = {};
-      await addPublicDirRoutes(routes, dir);
-      expect(routes).toEqual({});
+      expect(await urlPaths(dir)).toEqual([]);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining(".env — .env files should not be published"),
       );
@@ -203,48 +286,5 @@ describe("addPublicDirRoutes", () => {
     } finally {
       warnSpy.mockRestore();
     }
-  });
-});
-
-describe("createAliasPlugin", () => {
-  test("rewrites @/ specifiers to the aliased directory", () => {
-    const plugin = createAliasPlugin({ "@": "/project/src" }, "/project");
-    let resolve:
-      | ((args: { path: string }) => { path: string } | undefined)
-      | undefined;
-    plugin.setup({
-      onResolve(_opts: unknown, cb: typeof resolve) {
-        resolve = cb;
-      },
-    } as import("bun").PluginBuilder);
-    expect(resolve?.({ path: "@/foo.ts" })).toEqual({
-      path: join("/project/src", "foo.ts"),
-    });
-    expect(resolve?.({ path: "./local.ts" })).toBeUndefined();
-  });
-});
-
-describe("serializeMergedBunfig", () => {
-  test("writes plugins and a single env glob", () => {
-    const source = serializeMergedBunfig({}, ["./env-plugin.ts"], "PUBLIC_*");
-    expect(source).toContain('plugins = ["./env-plugin.ts"]');
-    expect(source).toContain('env = "PUBLIC_*"');
-  });
-
-  test("omits env when there is no single prefix", () => {
-    expect(
-      serializeMergedBunfig({}, ["./env-plugin.ts"], undefined),
-    ).not.toContain("env =");
-  });
-});
-
-describe("generateEnvPluginSource", () => {
-  test("replaces user define keys, not only import.meta.env", () => {
-    const source = generateEnvPluginSource(
-      { "import.meta.env.FOO": '"bar"', __APP_VERSION__: '"1"' },
-      { root: "/app" },
-    );
-    expect(source).toContain("__APP_VERSION__");
-    expect(source).toContain("KEYS = Object.keys(DEFINES)");
   });
 });

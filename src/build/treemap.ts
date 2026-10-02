@@ -1,4 +1,4 @@
-import { formatSize } from "../util/format";
+import { escapeHtml, formatSize } from "../util/format";
 import type { AnalyzeReport } from "./analyze";
 
 export interface TreemapNode {
@@ -13,7 +13,7 @@ export interface TreemapRect extends TreemapNode {
   h: number;
 }
 
-/** Squarified treemap layout (Bruls/Huizing/van Wijk). No re-layout in the browser. */
+/** Squarified treemap layout (Bruls/Huizing/van Wijk), computed once so the page needs no layout code. */
 export function squarify(
   nodesIn: TreemapNode[],
   x: number,
@@ -83,14 +83,7 @@ export function squarify(
 const WIDTH = 960;
 const HEIGHT = 600;
 const MAX_INPUTS_PER_LEVEL = 30;
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+const OTHER_ID = "(other)";
 
 function renderLevel(
   id: string,
@@ -106,29 +99,31 @@ function renderLevel(
   return `<g data-level="${escapeHtml(id)}"${hidden ? ' style="display:none"' : ""}>${boxes}</g>`;
 }
 
-/** ONE self-contained HTML file: a squarified treemap over outputs, drilling into each output's top inputs. */
-export function renderTreemapHtml(report: AnalyzeReport): string {
-  const rootRects = squarify(
-    report.outputs.map((o) => ({ id: o.path, value: o.bytes })),
-    0,
-    0,
-    WIDTH,
-    HEIGHT,
-  );
+/** An output's largest inputs plus an "other" cell, so the cells sum to the output's size. */
+export function outputNodes(
+  output: AnalyzeReport["outputs"][number],
+): TreemapNode[] {
+  const shown = output.inputs
+    .slice(0, MAX_INPUTS_PER_LEVEL)
+    .map((i) => ({ id: i.path, value: i.bytes }));
+  const other = output.bytes - shown.reduce((sum, n) => sum + n.value, 0);
+  return other > 0 ? [...shown, { id: OTHER_ID, value: other }] : shown;
+}
 
-  const levels = [renderLevel("root", rootRects, false)];
-  for (const output of report.outputs) {
-    const inputRects = squarify(
-      output.inputs
-        .slice(0, MAX_INPUTS_PER_LEVEL)
-        .map((i) => ({ id: i.path, value: i.bytes })),
-      0,
-      0,
-      WIDTH,
-      HEIGHT,
-    );
-    levels.push(renderLevel(output.path, inputRects, true));
-  }
+/** A self-contained HTML treemap over outputs, drilling into each output's largest inputs. */
+export function renderTreemapHtml(report: AnalyzeReport): string {
+  const layout = (nodes: TreemapNode[]) => squarify(nodes, 0, 0, WIDTH, HEIGHT);
+
+  const levels = [
+    renderLevel(
+      "root",
+      layout(report.outputs.map((o) => ({ id: o.path, value: o.bytes }))),
+      false,
+    ),
+    ...report.outputs.map((output) =>
+      renderLevel(output.path, layout(outputNodes(output)), true),
+    ),
+  ];
 
   return `<!doctype html>
 <html>

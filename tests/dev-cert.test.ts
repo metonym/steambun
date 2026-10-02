@@ -1,69 +1,72 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { X509Certificate } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bunfigToUserConfig } from "../src/config/bunfig";
 import { tlsFromHttps } from "../src/runtime/http";
 import {
+  devCertHosts,
   devCertPaths,
   ensureDevCert,
-  generateSelfSignedCert,
 } from "../src/util/dev-cert";
 
-describe("generateSelfSignedCert", () => {
-  test("covers every host, verifies against itself, and lasts 30 days", async () => {
-    const now = new Date("2026-01-01T00:00:00Z");
-    const { cert } = await generateSelfSignedCert(
-      ["localhost", "127.0.0.1", "::1", "192.168.1.20"],
-      now,
-    );
-    const x509 = new X509Certificate(cert);
-    expect(x509.subjectAltName).toBe(
-      "DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1, IP Address:192.168.1.20",
-    );
-    expect(x509.verify(x509.publicKey)).toBe(true);
-    expect(x509.checkHost("localhost")).toBe("localhost");
-    expect(x509.checkIP("::1")).toBe("::1");
-    expect(new Date(x509.validTo).getTime()).toBe(
-      now.getTime() + 30 * 24 * 60 * 60 * 1000,
-    );
+const loopback = ["localhost", "127.0.0.1", "::1"];
+const lan = () => ["192.168.1.4"];
+
+describe("devCertHosts", () => {
+  test("loopback names always, plus LAN addresses for true, 0.0.0.0 and ::", () => {
+    expect(devCertHosts(undefined, lan)).toEqual(loopback);
+    expect(devCertHosts(false, lan)).toEqual(loopback);
+    for (const host of [true, "0.0.0.0", "::", "[::]"] as const) {
+      expect(devCertHosts(host, lan)).toEqual([...loopback, "192.168.1.4"]);
+    }
   });
 
-  test("serves TLS that a client trusting the certificate accepts", async () => {
-    const { key, cert } = await generateSelfSignedCert([
-      "localhost",
-      "127.0.0.1",
+  test("a specific host is added, brackets dropped", () => {
+    expect(devCertHosts("[fe80::1]", lan)).toEqual([...loopback, "fe80::1"]);
+    expect(devCertHosts("dev.example.com", lan)).toEqual([
+      ...loopback,
+      "dev.example.com",
     ]);
-    using server = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      tls: { key, cert },
-      fetch: () => new Response("secure"),
-    });
-    const res = await fetch(`https://localhost:${server.port}/`, {
-      tls: { ca: cert },
-    });
-    expect(await res.text()).toBe("secure");
   });
 });
 
 describe("ensureDevCert", () => {
-  test("reuses the cached certificate until the hosts change", async () => {
+  test("fails without mkcert and names the alternative", async () => {
     const root = mkdtempSync(join(tmpdir(), "steambun-cert-"));
-    const first = await ensureDevCert(root, ["localhost", "127.0.0.1"], null);
-    expect(first).toMatchObject({ issuer: "self-signed", created: true });
-    const pem = readFileSync(first.cert, "utf8");
-
-    const again = await ensureDevCert(root, ["127.0.0.1", "localhost"], null);
-    expect(again.created).toBe(false);
-    expect(readFileSync(again.cert, "utf8")).toBe(pem);
-
-    const widened = await ensureDevCert(root, ["localhost", "10.0.0.5"], null);
-    expect(widened.created).toBe(true);
-    expect(new X509Certificate(readFileSync(widened.cert)).subjectAltName).toBe(
-      "IP Address:10.0.0.5, DNS:localhost",
+    await expect(ensureDevCert(root, loopback, null)).rejects.toThrow(
+      "needs mkcert on PATH",
     );
+  });
+
+  test("passes hosts after -- and reuses a cert that still covers them", async () => {
+    const openssl = Bun.which("openssl");
+    if (!openssl) return;
+    const root = mkdtempSync(join(tmpdir(), "steambun-cert-"));
+    // A stand-in mkcert that writes a real self-signed cert for the requested names.
+    const fake = join(root, "fake-mkcert.sh");
+    await Bun.write(
+      fake,
+      `#!/bin/sh
+echo "$@" > "${root}/args"
+key=$2; cert=$4; shift 5
+san=""; for h in "$@"; do case "$h" in *:*|[0-9]*.[0-9]*.[0-9]*.[0-9]*) san="$san,IP:$h";; *) san="$san,DNS:$h";; esac; done
+"${openssl}" req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=t -addext "subjectAltName=\${san#,}" -keyout "$key" -out "$cert" 2>/dev/null
+`,
+    );
+    Bun.spawnSync(["chmod", "+x", fake]);
+
+    const first = await ensureDevCert(root, [...loopback, "-x"], fake);
+    expect(first.created).toBe(true);
+    expect(readFileSync(join(root, "args"), "utf8")).toContain(
+      "-- localhost 127.0.0.1 ::1 -x",
+    );
+    const again = await ensureDevCert(root, loopback, null);
+    expect(again.created).toBe(false);
+    // A new host forces reissue, which needs mkcert.
+    await expect(
+      ensureDevCert(root, [...loopback, "10.0.0.5"], null),
+    ).rejects.toThrow("mkcert");
   });
 });
 

@@ -5,7 +5,11 @@ import {
   hostnameFromHost,
   localNetworkAddresses,
 } from "../src/util/hostname";
-import { openBrowser, resolveOpenUrl } from "../src/util/open-browser";
+import {
+  browserCommand,
+  openBrowser,
+  resolveOpenUrl,
+} from "../src/util/open-browser";
 
 describe("hostnameFromHost", () => {
   test("true binds all interfaces", () => {
@@ -20,12 +24,35 @@ describe("hostnameFromHost", () => {
   test("a string host is passed through", () => {
     expect(hostnameFromHost("192.168.1.4")).toBe("192.168.1.4");
   });
+
+  test("bracketed IPv6 is unwrapped for Bun", () => {
+    expect(hostnameFromHost("[::1]")).toBe("::1");
+    expect(hostnameFromHost("::")).toBe("::");
+  });
 });
 
 describe("displayServerUrl", () => {
   test("loopback is shown as localhost", () => {
     expect(displayServerUrl(new URL("http://127.0.0.1:5173/")).href).toBe(
       "http://localhost:5173/",
+    );
+  });
+
+  test("IPv6 loopback and IPv4-mapped loopback are shown as localhost", () => {
+    expect(displayServerUrl(new URL("http://[::1]:5173/")).href).toBe(
+      "http://localhost:5173/",
+    );
+    expect(
+      displayServerUrl(new URL("http://[::ffff:127.0.0.1]:5173/")).href,
+    ).toBe("http://localhost:5173/");
+    expect(displayServerUrl(new URL("http://localhost:5173/")).href).toBe(
+      "http://localhost:5173/",
+    );
+  });
+
+  test("other IPv6 literals stay bracketed", () => {
+    expect(displayServerUrl(new URL("http://[fe80::1]:5173/")).href).toBe(
+      "http://[fe80::1]:5173/",
     );
   });
 
@@ -116,11 +143,49 @@ describe("displayServerUrls", () => {
     ]);
   });
 
+  test("a :: bind is treated like 0.0.0.0", () => {
+    const { local, network } = displayServerUrls(new URL("http://[::]:5173/"), [
+      "192.168.1.4",
+    ]);
+    expect(local.href).toBe("http://localhost:5173/");
+    expect(network.map((u) => u.href)).toEqual(["http://192.168.1.4:5173/"]);
+  });
+
+  test("an IPv6 loopback bind has no network URLs and shows localhost", () => {
+    const { local, network } = displayServerUrls(
+      new URL("http://[::1]:5173/"),
+      ["192.168.1.4"],
+    );
+    expect(local.href).toBe("http://localhost:5173/");
+    expect(network).toEqual([]);
+  });
+
   test("a non-0.0.0.0 URL leaves network empty and local unchanged", () => {
     const url = new URL("http://192.168.1.4:5173/");
     const { local, network } = displayServerUrls(url);
     expect(network).toEqual([]);
     expect(local.href).toBe(displayServerUrl(url).href);
+  });
+});
+
+describe("browserCommand", () => {
+  test("picks the launcher per platform", () => {
+    expect(browserCommand("http://x/", "darwin")).toEqual([
+      "open",
+      "http://x/",
+    ]);
+    expect(browserCommand("http://x/", "linux")).toEqual([
+      "xdg-open",
+      "http://x/",
+    ]);
+  });
+
+  test("Windows passes the URL as one argument that cmd never parses", () => {
+    const url = "http://localhost:5173/?a=1&b=2^|";
+    const cmd = browserCommand(url, "win32");
+    expect(cmd[0]).not.toBe("cmd");
+    expect(cmd.at(-1)).toBe(url);
+    expect(cmd).toHaveLength(3);
   });
 });
 

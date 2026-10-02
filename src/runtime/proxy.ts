@@ -1,4 +1,5 @@
 import type { ProxyEntry, ProxyOptions } from "../config/types";
+import { errorResponse, isWebSocketUpgrade, upgradeOrFail } from "./http";
 import type { RouteHandler, ServerLike } from "./middleware";
 
 const HOP_BY_HOP_HEADERS = [
@@ -12,12 +13,12 @@ const HOP_BY_HOP_HEADERS = [
   "upgrade",
 ];
 
-/**
- * Deletes the hop-by-hop headers that are present. Eight `has()` probes beat
- * copying `headers.keys()` into an array, and deleting while iterating the
- * live iterator would skip entries.
- */
 function stripHopByHopHeaders(headers: Headers): void {
+  // `Connection` also names the headers that are hop-by-hop for this connection.
+  for (const token of headers.get("connection")?.split(",") ?? []) {
+    const name = token.trim();
+    if (name) headers.delete(name);
+  }
   for (const name of HOP_BY_HOP_HEADERS) {
     if (headers.has(name)) headers.delete(name);
   }
@@ -26,24 +27,17 @@ function stripHopByHopHeaders(headers: Headers): void {
 export interface ProxyWebSocketData {
   proxyTarget: string;
   upstream?: WebSocket;
-  // Buffers messages that arrive before the upstream connection finishes
-  // opening — sending while CONNECTING throws InvalidStateError.
+  /** Messages received while the upstream is still CONNECTING (sending then throws). */
   queue?: (string | Uint8Array)[];
 }
 
-function normalize(entry: ProxyEntry): ProxyOptions {
-  return typeof entry === "string" ? { target: entry } : entry;
-}
-
 /**
- * HTTP request handler for one `server.proxy` entry (string target or full
- * `ProxyOptions`). WebSocket upgrades are handled separately — pair this with
- * {@link createProxyWebSocketHandlers} when `ws: true`.
+ * Request handler for one `server.proxy` entry. With `ws: true`, an upgrade
+ * request is handed to `server.upgrade` and served by
+ * {@link proxyWebSocket}.
  *
  * @example
  * ```ts
- * import { createProxyRouteHandler } from "steambun/runtime";
- *
  * const routes = {
  *   "/api-legacy/*": createProxyRouteHandler("/api-legacy", "http://localhost:8080"),
  * };
@@ -53,14 +47,26 @@ export function createProxyRouteHandler(
   prefix: string,
   entry: ProxyEntry,
 ): RouteHandler {
-  const opts = normalize(entry);
+  const opts: ProxyOptions =
+    typeof entry === "string" ? { target: entry } : entry;
   const targetBase = new URL(opts.target);
+  const targetPrefix = targetBase.pathname.replace(/\/+$/, "");
 
-  function resolveTargetUrl(req: Request): { target: URL; reqUrl: URL } {
+  const prefixDir = prefix.endsWith("/") ? prefix : `${prefix}/`;
+
+  function resolveTargetUrl(req: Request): { target: URL; reqUrl: URL } | null {
     const reqUrl = new URL(req.url);
+    // Bun routes by the raw path, but `req.url` is normalized: `/api/%2e%2e/x` arrives as `/x`.
+    if (reqUrl.pathname !== prefix && !reqUrl.pathname.startsWith(prefixDir)) {
+      return null;
+    }
     let path = reqUrl.pathname.slice(prefix.length) || "/";
     if (opts.rewrite) path = opts.rewrite(path);
-    return { target: new URL(path + reqUrl.search, targetBase), reqUrl };
+    // Joined like http-proxy: the target's own path prefix stays in front.
+    const target = new URL(targetBase);
+    target.pathname = targetPrefix + (path.startsWith("/") ? path : `/${path}`);
+    target.search = reqUrl.search;
+    return { target, reqUrl };
   }
 
   let loggedUnreachable = false;
@@ -69,16 +75,17 @@ export function createProxyRouteHandler(
     req: Request,
     server?: ServerLike,
   ): Response | Promise<Response> | undefined => {
-    if (opts.ws && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      const { target: targetUrl } = resolveTargetUrl(req);
+    const resolved = resolveTargetUrl(req);
+    if (!resolved) return errorResponse(404, "Not Found");
+    const { target, reqUrl } = resolved;
+
+    if (opts.ws && isWebSocketUpgrade(req)) {
+      const targetUrl = new URL(target);
       targetUrl.protocol = targetUrl.protocol === "https:" ? "wss:" : "ws:";
       const data: ProxyWebSocketData = { proxyTarget: targetUrl.toString() };
-      const upgraded = server?.upgrade(req, { data });
-      if (upgraded) return undefined;
-      return new Response("WebSocket upgrade failed", { status: 500 });
+      return upgradeOrFail(req, server, data);
     }
 
-    const { target, reqUrl } = resolveTargetUrl(req);
     const headers = new Headers(req.headers);
     if (opts.changeOrigin) {
       headers.set("host", target.host);
@@ -101,7 +108,9 @@ export function createProxyRouteHandler(
       headers,
       body: req.body,
       redirect: "manual",
-    };
+      // Keep the body encoded: fetch() would otherwise decode it but leave `content-encoding` set.
+      decompress: false,
+    } as RequestInit;
     if (req.body) (init as { duplex?: string }).duplex = "half";
 
     return fetch(target, init).then(
@@ -119,10 +128,9 @@ export function createProxyRouteHandler(
           loggedUnreachable = true;
           console.error(`[steambun] proxy target unreachable: ${opts.target}`);
         }
-        return Response.json(
-          { error: "proxy target unreachable", target: opts.target },
-          { status: 502 },
-        );
+        return errorResponse(502, "proxy target unreachable", {
+          target: opts.target,
+        });
       },
     );
   };
@@ -134,40 +142,31 @@ interface ProxyServerWebSocket {
   close: () => void;
 }
 
-/**
- * `Bun.serve` `websocket` handlers that pipe a proxied connection to its
- * upstream target (set on `ws.data.proxyTarget` by `server.upgrade(req, { data })`).
- * Internal — {@link createWsRouter} in `ws-routes.ts` merges this in with
- * file-based WebSocket routes into the single `websocket` handler
- * `Bun.serve` allows.
- */
-export function createProxyWebSocketHandlers() {
-  return {
-    open(ws: ProxyServerWebSocket) {
-      const upstream = new WebSocket(ws.data.proxyTarget);
-      upstream.binaryType = "arraybuffer";
-      const queue: (string | Uint8Array)[] = [];
-      ws.data.queue = queue;
-      upstream.onopen = () => {
-        for (const message of queue) upstream.send(message as string);
-        queue.length = 0;
-      };
-      upstream.onmessage = (event) =>
-        ws.send(event.data as string | ArrayBuffer);
-      upstream.onclose = () => ws.close();
-      ws.data.upstream = upstream;
-    },
-    message(ws: ProxyServerWebSocket, message: string | Uint8Array) {
-      const upstream = ws.data.upstream;
-      if (!upstream) return;
-      if (upstream.readyState === WebSocket.OPEN) {
-        upstream.send(message as string);
-      } else {
-        ws.data.queue?.push(message);
-      }
-    },
-    close(ws: ProxyServerWebSocket) {
-      ws.data.upstream?.close();
-    },
-  };
-}
+/** `websocket` handlers that pipe a connection to `ws.data.proxyTarget`; shared with file-based routes in `serverWebSocket`. */
+export const proxyWebSocket = {
+  open(ws: ProxyServerWebSocket) {
+    const upstream = new WebSocket(ws.data.proxyTarget);
+    upstream.binaryType = "arraybuffer";
+    const queue: (string | Uint8Array)[] = [];
+    ws.data.queue = queue;
+    upstream.onopen = () => {
+      for (const message of queue) upstream.send(message as string);
+      queue.length = 0;
+    };
+    upstream.onmessage = (event) => ws.send(event.data as string | ArrayBuffer);
+    upstream.onclose = () => ws.close();
+    ws.data.upstream = upstream;
+  },
+  message(ws: ProxyServerWebSocket, message: string | Uint8Array) {
+    const upstream = ws.data.upstream;
+    if (!upstream) return;
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(message as string);
+    } else {
+      ws.data.queue?.push(message);
+    }
+  },
+  close(ws: ProxyServerWebSocket) {
+    ws.data.upstream?.close();
+  },
+};

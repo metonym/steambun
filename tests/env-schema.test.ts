@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { build } from "../src/build/build";
-import { generateProdServeSource } from "../src/build/prod-server";
-import { resolveDefaults } from "../src/config/loader";
 import { buildImportMetaEnvDefine } from "../src/env/loader";
 import {
   EnvValidationError,
@@ -80,13 +78,55 @@ describe("typed public env", () => {
     expect(define["import.meta.env.PUBLIC_DEFAULTED"]).toBe("5");
   });
 
+  test("a schema default absent from the raw env is not defined for process.env", () => {
+    const define = buildImportMetaEnvDefine(
+      {},
+      { mode: "production", command: "build", base: "/" },
+      { PUBLIC_D: false },
+    );
+    expect(define["import.meta.env.PUBLIC_D"]).toBe("false");
+    expect("process.env.PUBLIC_D" in define).toBe(false);
+  });
+
+  test("publicOutput accepts nested JSON values", () => {
+    const value = { a: [1, "x", null, { b: true }] };
+    expect(publicOutput({ PUBLIC_V: value }, ["PUBLIC_"])).toEqual({
+      PUBLIC_V: value,
+    });
+  });
+
+  test("publicOutput rejects values JSON can't carry, naming the key and type", () => {
+    const bad = {
+      PUBLIC_DATE: new Date(0),
+      PUBLIC_BIG: 10n,
+      PUBLIC_NAN: Number.NaN,
+      PUBLIC_NESTED: { when: new Date(0) },
+      PUBLIC_FN: () => 1,
+      SERVER_ONLY: new Date(0),
+    };
+    let error: unknown;
+    try {
+      publicOutput(bad, ["PUBLIC_"]);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(EnvValidationError);
+    const message = (error as Error).message;
+    expect(message).toContain("PUBLIC_DATE: output is a Date");
+    expect(message).toContain("PUBLIC_BIG: output is a bigint");
+    expect(message).toContain("PUBLIC_NAN: output is a non-finite number");
+    expect(message).toContain("PUBLIC_NESTED: output is a Date");
+    expect(message).toContain("PUBLIC_FN: output is a function");
+    expect(message).not.toContain("SERVER_ONLY");
+  });
+
   test("generateEnvDts types schema keys from the config and the rest as strings", () => {
     const generated = generateEnvDts(["PUBLIC_FLAG", "PUBLIC_EXTRA"], false, {
       configSpecifier: "../steambun.config",
       prefixes: ["PUBLIC_"],
       schemaKeys: ["PUBLIC_FLAG"],
     });
-    // The type test (tests/types/env.test-d.ts) compiles this same fixture.
+    // tests/types/env.test-d.ts compiles this same fixture.
     expect(generated).toBe(
       readFileSync(
         join(import.meta.dir, "fixtures/env-schema/generated/env.d.ts"),
@@ -97,7 +137,7 @@ describe("typed public env", () => {
 });
 
 describe("envSchema in build and the prod server", () => {
-  // A hand-rolled Standard Schema, since a temp project can't resolve zod.
+  // Hand-rolled Standard Schema: a temp project can't resolve zod.
   const CONFIG = `export default {
   build: { server: false },
   envSchema: {
@@ -147,29 +187,5 @@ describe("envSchema in build and the prod server", () => {
   test("build fails on an invalid env", async () => {
     const root = project("PUBLIC_FLAG=true\n");
     await expect(build({ root })).rejects.toThrow("DATABASE_URL: Required");
-  });
-
-  test("the prod server checks process.env over build-time public values", () => {
-    const config = resolveDefaults(
-      { envSchema: schema },
-      {
-        root: "/app",
-        command: "build",
-        mode: "production",
-        configFile: "/app/steambun.config.ts",
-      },
-    );
-    const source = generateProdServeSource(config, "/app/dist", {
-      envCheck: { PUBLIC_FLAG: "true" },
-    });
-    expect(source).toContain(
-      'import { resolveDefaults, validateEnv } from "steambun";',
-    );
-    expect(source).toContain(
-      'await validateEnv(config.envSchema, {\n    ...{"PUBLIC_FLAG":"true"},\n    ...process.env,\n  });',
-    );
-    expect(generateProdServeSource(config, "/app/dist")).not.toContain(
-      "validateEnv",
-    );
   });
 });

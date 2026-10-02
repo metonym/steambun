@@ -1,13 +1,15 @@
 import type { BunPlugin, Plugin, SteambunHooks } from "../config/types";
 
-const HOOK_KEYS = [
-  "configResolved",
-  "configureApp",
-  "buildStart",
-  "transformHtml",
-  "onBuildEnd",
-  "closeBundle",
-] as const;
+// A Record over the hook names, so adding a hook to SteambunHooks without listing it here is a type error.
+const HOOKS: Record<Exclude<keyof SteambunHooks, "name">, true> = {
+  configResolved: true,
+  configureApp: true,
+  buildStart: true,
+  transformHtml: true,
+  closeBundle: true,
+};
+
+export const HOOK_KEYS = Object.keys(HOOKS) as Array<keyof typeof HOOKS>;
 
 export function isBunPlugin(plugin: unknown): plugin is BunPlugin {
   return !!plugin && typeof (plugin as BunPlugin).setup === "function";

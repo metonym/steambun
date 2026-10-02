@@ -1,12 +1,7 @@
 import { group, task } from "ostia";
 import { createProxyRouteHandler } from "../src/runtime/proxy";
 
-// The proxy handler calls the global `fetch` for every forwarded request —
-// stub it once for the whole file so these benchmarks measure our own
-// URL/header construction overhead, not real network I/O. The response
-// carries a realistic upstream header set (including a couple of
-// hop-by-hop ones) so every task exercises response-side header stripping
-// too, not just the request side.
+// `fetch` is stubbed so these measure URL/header handling, not network I/O.
 const UPSTREAM_RESPONSE = new Response("ok", {
   headers: {
     "content-type": "application/json",
@@ -65,10 +60,7 @@ group("runtime/proxy: createProxyRouteHandler (construction)", () => {
   );
 });
 
-// Realistic browser request headers, including a couple of hop-by-hop ones,
-// so stripHopByHopHeaders and the duplicate-URL-parse fix have something
-// representative to measure against — the existing tasks above reuse a
-// header-less Request across trials, which hides that cost entirely.
+// Realistic browser headers (including hop-by-hop ones).
 const BROWSER_HEADERS = {
   accept: "application/json, text/plain, */*",
   "accept-encoding": "gzip, deflate, br, zstd",
@@ -89,9 +81,7 @@ group("runtime/proxy: realistic headers (per-request hot path)", () => {
     target: "http://localhost:4100",
     changeOrigin: true,
   });
-  // A fresh Request per trial — the groups above reuse one Request across
-  // trials (fine there since headers are minimal), but that would hide
-  // per-request Request construction cost for a realistic header set.
+  // A fresh Request per trial.
   const req = () =>
     new Request("http://localhost:5173/api/users/42?sort=asc", {
       headers: BROWSER_HEADERS,

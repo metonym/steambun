@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createRestartTrigger,
   setupDevWatchers,
@@ -15,6 +18,34 @@ describe("shouldTriggerRestart", () => {
     envDir: "/project",
     configFileName: "steambun.config.ts",
   };
+
+  test("ignores html added or removed under dist, node_modules, public, or dot-directories", () => {
+    for (const filename of [
+      "dist/index.html",
+      "node_modules/pkg/x.html",
+      "public/a.html",
+      ".steambun/x.html",
+    ]) {
+      expect(
+        shouldTriggerRestart("rename", "/project", filename, targets),
+      ).toBe(false);
+    }
+  });
+
+  test("ignores html under a custom outDir or publicDir from the config", () => {
+    const skipTargets = {
+      ...targets,
+      skip: { skipDirs: ["static"], skipPaths: ["build/out"] },
+    };
+    for (const filename of ["build/out/index.html", "a/static/x.html"]) {
+      expect(
+        shouldTriggerRestart("rename", "/project", filename, skipTargets),
+      ).toBe(false);
+    }
+    expect(
+      shouldTriggerRestart("rename", "/project", "build/x.html", skipTargets),
+    ).toBe(true);
+  });
 
   test("matches the config file and bunfig.toml in root", () => {
     expect(
@@ -199,5 +230,37 @@ describe("setupDevWatchers", () => {
     });
     expect(dirs.sort()).toEqual(["/project", "/project/config"]);
     controller.close();
+  });
+});
+
+describe("setupDevWatchers (real filesystem)", () => {
+  test("html added under node_modules or a skipped outDir does not restart; elsewhere it does", async () => {
+    const root = mkdtempSync(join(tmpdir(), "steambun-watch-"));
+    mkdirSync(join(root, "node_modules", "pkg"), { recursive: true });
+    mkdirSync(join(root, "out"));
+    mkdirSync(join(root, "pages"));
+    const restarts: Array<string | null> = [];
+    const watcher = setupDevWatchers({
+      root,
+      envDir: root,
+      configFileName: null,
+      skip: { skipPaths: ["out"] },
+      debounceMs: 10,
+      onRestart: (filename) => restarts.push(filename),
+    });
+    try {
+      await sleep(50);
+      writeFileSync(join(root, "node_modules", "pkg", "a.html"), "");
+      writeFileSync(join(root, "out", "b.html"), "");
+      await sleep(150);
+      expect(restarts).toEqual([]);
+
+      writeFileSync(join(root, "pages", "c.html"), "");
+      await sleep(150);
+      expect(restarts).toEqual([join("pages", "c.html")]);
+    } finally {
+      watcher.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

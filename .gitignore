@@ -1,6 +1,5 @@
 node_modules/
 dist/
-package/
 .steambun/
 *.tsbuildinfo
 *.log

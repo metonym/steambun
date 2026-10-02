@@ -11,10 +11,7 @@ afterEach(() => {
 
 type ClientModule = typeof import("../src/client");
 
-// client.ts reads `import.meta.env.BASE_URL` as a plain member expression so
-// Bun's build-time `define` can replace it (see the comment in client.ts) —
-// meaning it only resolves once bundled, same as Vite. Bundle it fresh per
-// test so BASE_URL is always defined, never `undefined` at runtime.
+// `import.meta.env.BASE_URL` only resolves once bundled, so bundle per test.
 async function loadClient(base = "/"): Promise<ClientModule> {
   const outdir = mkdtempSync(join(tmpdir(), "steambun-client-build-"));
   const result = await Bun.build({
@@ -129,16 +126,68 @@ describe("api()", () => {
 describe("href()", () => {
   test("substitutes :param segments", async () => {
     const { href } = await loadClient();
-    expect(href("/api/users/:id", { id: "7" })).toBe("/api/users/7");
+    expect(href("/api/users/:id", { params: { id: "7" } })).toBe(
+      "/api/users/7",
+    );
     expect(href("/about")).toBe("/about");
   });
 
   test("appends a query string", async () => {
     const { href } = await loadClient();
-    expect(href("/about", undefined, { tab: "info" })).toBe("/about?tab=info");
-    expect(href("/api/users/:id", { id: "7" }, { debug: "1" })).toBe(
-      "/api/users/7?debug=1",
+    expect(href("/about", { query: { tab: "info" } })).toBe("/about?tab=info");
+    expect(
+      href("/api/users/:id", {
+        params: { id: "7" },
+        query: { debug: "1" },
+      }),
+    ).toBe("/api/users/7?debug=1");
+  });
+});
+
+describe("missing params and array queries", () => {
+  test("api(), href(), and ws() throw on an unsubstituted :param", async () => {
+    const { api, href, ws } = await loadClient();
+    stubFetch(() => new Response("{}", { status: 200 }));
+    await expect(api("get", "/api/users/:id")).rejects.toThrow(
+      'missing value for ":id"',
     );
+    expect(() => href("/api/users/:id")).toThrow('missing value for ":id"');
+    const { restore } = stubWebSocket();
+    try {
+      expect(() => ws("/api/chat/:room")).toThrow('missing value for ":room"');
+    } finally {
+      restore();
+    }
+  });
+
+  test("a host port in an absolute ws() url is not a param", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      ws("http://example.test:8080/api/chat");
+      expect(instances[0]?.url).toBe("ws://example.test:8080/api/chat");
+    } finally {
+      restore();
+    }
+  });
+
+  test("array query values repeat the key in href() and ws()", async () => {
+    const { href, ws } = await loadClient();
+    expect(href("/about", { query: { tag: ["a", "b"], q: "1" } })).toBe(
+      "/about?tag=a&tag=b&q=1",
+    );
+    const { instances, restore } = stubWebSocket();
+    try {
+      ws("/api/chat/:room", {
+        params: { room: "1" },
+        query: { tag: ["a", "b"] },
+      });
+      expect(instances[0]?.url).toBe(
+        "ws://example.test/api/chat/1?tag=a&tag=b",
+      );
+    } finally {
+      restore();
+    }
   });
 });
 
@@ -257,6 +306,23 @@ describe("ws()", () => {
     }
   });
 
+  test("close() while a reconnect is pending cancels it", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      const socket = ws("/api/chat/:room", {
+        params: { room: "42" },
+        reconnect: { baseDelayMs: 5 },
+      });
+      instances[0]?.fireClose();
+      socket.close();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(instances).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
   test("maxAttempts: 0 disables reconnecting (0 is not treated as unset)", async () => {
     const { ws } = await loadClient();
     const { instances, restore } = stubWebSocket();
@@ -269,6 +335,41 @@ describe("ws()", () => {
       instances[0]?.fireClose();
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(instances).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test("on() returns an unsubscribe function", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      const socket = ws("/api/chat/:room", { params: { room: "1" } });
+      let count = 0;
+      const off = socket.on("message", () => count++);
+      instances[0]?.fireMessage();
+      off();
+      instances[0]?.fireMessage();
+      expect(count).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test("send() throws while a reconnect is pending, then works again once reconnected", async () => {
+    const { ws } = await loadClient();
+    const { instances, restore } = stubWebSocket();
+    try {
+      const socket = ws("/api/chat/:room", {
+        params: { room: "1" },
+        reconnect: { baseDelayMs: 5 },
+      });
+      instances[0]?.fireClose();
+      expect(() => socket.send("hi")).toThrow("reconnect is pending");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(instances).toHaveLength(2);
+      expect(() => socket.send("hi")).not.toThrow();
+      socket.close();
     } finally {
       restore();
     }

@@ -1,14 +1,11 @@
-import { existsSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import type {
-  AnalyzeReport,
-  BudgetViolation,
-  CompareRow,
-  CompressedSizes,
-} from "./build/analyze";
 import {
+  type AnalyzeReport,
   analyzeMetafile,
+  type BudgetViolation,
+  type CompareRow,
+  type CompressedSizes,
   checkBudgets,
   compareMetafiles,
   computeCompressedSizes,
@@ -20,17 +17,11 @@ import { renderTreemapHtml } from "./build/treemap";
 import { loadConfig } from "./config/loader";
 import { migrate } from "./config/migrate";
 import { dev } from "./dev/dev";
-import {
-  discoverHtmlEntries,
-  discoverSkipDirs,
-  htmlServePath,
-} from "./dev/discover";
+import { discoverConfigHtmlEntries, htmlServePath } from "./dev/discover";
 import { runDoctor } from "./doctor";
-import { writeRoutesDts } from "./routes-dts";
-import { createApp, formatApiRouteCollision } from "./runtime/app";
-import { ciAnnotation } from "./util/annotations";
+import { createApp } from "./runtime/app";
 import { formatSize } from "./util/format";
-import { STEAMBUN_DIR_NAME } from "./util/paths";
+import { resolveFrom, STEAMBUN_DIR_NAME } from "./util/paths";
 import { type LogLevel, log, pad, setLogLevel } from "./util/terminal";
 
 const USAGE = `steambun — a Bun-native, Vite-class dev & bundle toolkit
@@ -46,19 +37,17 @@ Usage:
 
 Flags:
   --port <n>       Port for dev/preview
-  --host [addr]    Expose on network (dev/preview)
+  --host [addr]    Bind address; without a value, bind every interface (dev, preview)
   --strictPort     Fail instead of trying the next port (dev, preview)
-  --open           Open a browser after listen (dev, preview)
-  --emptyOutDir <true|false>  Empty outDir before building (build)
+  --open           Open a browser after listen (dev, preview); --no-open overrides server.open
+  --[no-]emptyOutDir  Empty outDir before building (build)
   --logLevel <silent|error|warn|info>  Set log verbosity (default: info)
-  --mode <name>    Set mode (default: development for dev, production for build)
+  --mode <name>    Mode (default: production for build, preview, analyze; development otherwise)
   --config <path>  Explicit config file path
   --root <path>    Project root (default: cwd)
   --json           Machine-readable output (analyze, routes, doctor)
   --why <text>     Print import chains to an output/input path containing <text> (analyze)
   --compare <metafile>  Diff outputs against a prior build's metafile.json (analyze)
-  --ci             Print ::error/::warning annotations for budgets/growth (analyze) or failing/warning checks (doctor); implied by GITHUB_ACTIONS
-  --md             Print the report as GitHub-flavored Markdown tables (analyze)
   --html [out]     Write a treemap HTML report (default <root>/analyze.html) (analyze)
   --brotli         Also compute brotli sizes (slow; opt-in) (analyze)
 `;
@@ -70,7 +59,7 @@ const OPTIONS = {
   host: { type: "string" },
   strictPort: { type: "boolean" },
   open: { type: "boolean" },
-  emptyOutDir: { type: "string" },
+  emptyOutDir: { type: "boolean" },
   logLevel: { type: "string" },
   mode: { type: "string" },
   config: { type: "string" },
@@ -78,278 +67,233 @@ const OPTIONS = {
   json: { type: "boolean" },
   why: { type: "string" },
   compare: { type: "string" },
-  ci: { type: "boolean" },
-  md: { type: "boolean" },
-  html: { type: "boolean" },
+  html: { type: "string" },
   brotli: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
 
-/** Shared by `dev` and `preview`: `--port`/`--host`/`--strictPort`/`--open`. */
-function serverFlags(values: {
-  port?: string;
-  host?: string;
-  strictPort?: boolean;
-  open?: boolean;
-}): {
-  port: number | undefined;
-  host: string | boolean | undefined;
-  strictPort: boolean | undefined;
-  open: boolean | undefined;
-} {
+const SERVER_COMMANDS = ["dev", "preview"];
+const CONFIGURED_COMMANDS = [
+  ...SERVER_COMMANDS,
+  "build",
+  "analyze",
+  "routes",
+  "doctor",
+];
+
+// Flags absent here (root, logLevel, help) apply to every command.
+const FLAG_COMMANDS: Partial<Record<keyof typeof OPTIONS, readonly string[]>> =
+  {
+    config: CONFIGURED_COMMANDS,
+    mode: CONFIGURED_COMMANDS,
+    port: SERVER_COMMANDS,
+    host: SERVER_COMMANDS,
+    strictPort: SERVER_COMMANDS,
+    open: SERVER_COMMANDS,
+    emptyOutDir: ["build"],
+    json: ["analyze", "routes", "doctor"],
+    why: ["analyze"],
+    compare: ["analyze"],
+    html: ["analyze"],
+    brotli: ["analyze"],
+  };
+
+// Flag -> flags that make no sense alongside it in `analyze`.
+const ANALYZE_CONFLICTS: Array<[string, string[]]> = [
+  ["json", ["html", "why", "brotli"]],
+  ["why", ["html", "compare", "brotli"]],
+];
+
+function assertFlagsApply(values: Values, command: string): void {
+  for (const flag of Object.keys(values)) {
+    const commands = FLAG_COMMANDS[flag as keyof typeof OPTIONS];
+    if (commands && !commands.includes(command)) {
+      throw new Error(`[steambun] --${flag} does not apply to \`${command}\``);
+    }
+  }
+}
+
+function assertAnalyzeFlagsCompatible(values: Values): void {
+  const given = (flag: string) => values[flag as keyof Values] !== undefined;
+  for (const [flag, conflicts] of ANALYZE_CONFLICTS) {
+    const other = given(flag) ? conflicts.find(given) : undefined;
+    if (other) {
+      throw new Error(
+        `[steambun] --${flag} cannot be combined with --${other}`,
+      );
+    }
+  }
+}
+
+// parseArgs has no optional-value options; `--flag=` (empty value) means "flag without a value".
+const OPTIONAL_VALUE_FLAGS = new Set(["--host", "--html"]);
+
+function withEmptyOptionalValues(args: string[]): string[] {
+  return args.map((arg, i) =>
+    OPTIONAL_VALUE_FLAGS.has(arg) &&
+    (args[i + 1] === undefined || args[i + 1]!.startsWith("-"))
+      ? `${arg}=`
+      : arg,
+  );
+}
+
+type Values = ReturnType<typeof parseCliArgs>["values"];
+
+function parseCliArgs(args: string[]) {
+  try {
+    return parseArgs({
+      args,
+      options: OPTIONS,
+      allowPositionals: true,
+      allowNegative: true,
+    });
+  } catch (err) {
+    throw new Error(`[steambun] ${(err as Error).message}`);
+  }
+}
+
+function flagError(flag: string, expected: string, got: string): Error {
+  return new Error(`[steambun] --${flag} expects ${expected}, got "${got}"`);
+}
+
+function parsePort(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw flagError("port", "an integer from 1 to 65535", value);
+  }
+  return port;
+}
+
+function serverFlags(values: Values) {
   return {
-    port: values.port ? Number(values.port) : undefined,
-    host: values.host !== undefined ? values.host || true : undefined,
+    port: parsePort(values.port),
+    host: values.host === undefined ? undefined : values.host || true,
     strictPort: values.strictPort,
     open: values.open,
   };
 }
 
-/** `undefined` in → `undefined` out; anything besides `"true"`/`"false"` warns and is ignored. */
-export function parseBooleanFlag(
-  value: string | undefined,
-  flag: string,
-): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (value === "true") return true;
-  if (value === "false") return false;
-  console.warn(
-    `[steambun] --${flag} expects "true" or "false", got "${value}" — ignored.`,
-  );
-  return undefined;
+interface Ctx {
+  values: Values;
+  root: string;
 }
 
-interface AnalyzeCliOptions {
-  json: boolean;
-  why: string | undefined;
-  compare: string | undefined;
-  md: boolean;
-  html: boolean;
-  htmlOut: string | undefined;
+const projectOptions = ({ values, root }: Ctx) => ({
+  root,
+  configFile: values.config,
+  mode: values.mode,
+});
+
+const sizeOrDash = (bytes: number | undefined) =>
+  bytes === undefined ? "-" : formatSize(bytes);
+
+const signedSize = (delta: number) =>
+  `${delta >= 0 ? "+" : "-"}${formatSize(Math.abs(delta))}`;
+
+interface AnalyzeView {
+  report: AnalyzeReport;
+  compressed: Map<string, CompressedSizes>;
+  violations: BudgetViolation[];
+  compareRows: CompareRow[];
   brotli: boolean;
 }
 
-/** `"  gzip     800 B  zstd     750 B"`, plus `br` when `brotli` is on. */
-function compressedCols(
-  sizes: CompressedSizes | undefined,
-  brotli: boolean,
-): string {
-  const cols = [
-    `gzip ${pad(sizes ? formatSize(sizes.gzip) : "-", 9, "start")}`,
-    `zstd ${pad(sizes ? formatSize(sizes.zstd) : "-", 9, "start")}`,
-  ];
-  if (brotli) {
-    cols.push(
-      `br ${pad(sizes?.br !== undefined ? formatSize(sizes.br) : "-", 9, "start")}`,
-    );
-  }
-  return `  ${cols.join("  ")}`;
-}
+const PACKAGE_LIMIT = 15;
+const INPUTS_PER_OUTPUT = 5;
 
-function printTextReport(
-  report: AnalyzeReport,
-  compressed: Map<string, CompressedSizes>,
-  violations: BudgetViolation[],
-  compareRows: CompareRow[] | undefined,
-  brotli: boolean,
-): void {
-  log.info("[steambun] outputs (largest first):");
+function printTextReport(view: AnalyzeView): void {
+  const { report, compressed, violations, compareRows, brotli } = view;
+  const size = (bytes: number | undefined) =>
+    pad(sizeOrDash(bytes), 9, "start");
+
+  console.log("[steambun] outputs (largest first):");
   for (const output of report.outputs) {
-    log.info(
-      `  ${pad(formatSize(output.bytes), 9, "start")}${compressedCols(compressed.get(output.path), brotli)}  ${output.path}`,
-    );
-    for (const input of output.inputs.slice(0, 5)) {
-      log.info(
-        `      ${pad(formatSize(input.bytes), 9, "start")}  ${input.path}`,
-      );
+    const sizes = compressed.get(output.path);
+    const cols = [
+      `gzip ${size(sizes?.gzip)}`,
+      `zstd ${size(sizes?.zstd)}`,
+      ...(brotli ? [`br ${size(sizes?.br)}`] : []),
+    ];
+    console.log(`  ${size(output.bytes)}  ${cols.join("  ")}  ${output.path}`);
+    for (const input of output.inputs.slice(0, INPUTS_PER_OUTPUT)) {
+      console.log(`      ${size(input.bytes)}  ${input.path}`);
     }
   }
-  log.info(`  ${pad(formatSize(report.total), 9, "start")}  total`);
+  console.log(`  ${size(report.total)}  total`);
 
   if (report.packages.length > 0) {
-    log.info("\n[steambun] packages (largest first):");
-    for (const pkg of report.packages.slice(0, 15)) {
+    console.log("\n[steambun] packages (largest first):");
+    for (const pkg of report.packages.slice(0, PACKAGE_LIMIT)) {
       const files = pkg.files === 1 ? "1 file" : `${pkg.files} files`;
-      log.info(
-        `  ${pad(formatSize(pkg.bytes), 9, "start")}  ${pkg.name}@${pkg.versions.join(",")} (${files})`,
+      console.log(
+        `  ${size(pkg.bytes)}  ${pkg.name}@${pkg.versions.join(",")} (${files})`,
       );
     }
   }
 
   if (report.duplicates.length > 0) {
-    log.info("\n[steambun] duplicate packages:");
+    console.log("\n[steambun] duplicate packages:");
     for (const dup of report.duplicates) {
-      log.info(`  ${dup.name}: ${dup.versions.join(", ")}`);
+      console.log(`  ${dup.name}: ${dup.versions.join(", ")}`);
     }
   }
 
   if (violations.length > 0) {
-    log.info("\n[steambun] budget violations:");
+    console.log("\n[steambun] budget violations:");
     for (const v of violations) {
-      log.info(
+      console.log(
         `  ${v.path}  ${formatSize(v.bytes)} > ${formatSize(v.limit)} ("${v.glob}")`,
       );
     }
   }
 
-  if (compareRows && compareRows.length > 0) {
-    log.info("\n[steambun] compared to baseline:");
+  if (compareRows.length > 0) {
+    console.log("\n[steambun] compared to baseline:");
     for (const row of compareRows) {
-      const sign = row.delta >= 0 ? "+" : "-";
-      log.info(
-        `  ${pad(row.status, 8)} ${pad(formatSize(row.before), 9, "start")} -> ${pad(formatSize(row.after), 9, "start")}  (${sign}${formatSize(Math.abs(row.delta))})  ${row.path}`,
+      console.log(
+        `  ${pad(row.status, 8)} ${size(row.before)} -> ${size(row.after)}  (${signedSize(row.delta)})  ${row.path}`,
       );
     }
   }
 }
 
-function mdTable(headers: string[], rows: string[][]): void {
-  log.info(`| ${headers.join(" | ")} |`);
-  log.info(`| ${headers.map(() => "---").join(" | ")} |`);
-  for (const row of rows) log.info(`| ${row.join(" | ")} |`);
-}
+const readMetafile = async (path: string) =>
+  (await Bun.file(path).json()) as Bun.BuildMetafile;
 
-function printMarkdownReport(
-  report: AnalyzeReport,
-  compressed: Map<string, CompressedSizes>,
-  violations: BudgetViolation[],
-  compareRows: CompareRow[] | undefined,
-  brotli: boolean,
-): void {
-  const headers = ["Path", "Size", "Gzip", "Zstd", ...(brotli ? ["Br"] : [])];
-  log.info("### Outputs\n");
-  mdTable(
-    headers,
-    report.outputs.map((output) => {
-      const c = compressed.get(output.path);
-      return [
-        output.path,
-        formatSize(output.bytes),
-        c ? formatSize(c.gzip) : "-",
-        c ? formatSize(c.zstd) : "-",
-        ...(brotli ? [c?.br !== undefined ? formatSize(c.br) : "-"] : []),
-      ];
-    }),
-  );
-  log.info(`\n**total**: ${formatSize(report.total)}`);
-
-  if (report.packages.length > 0) {
-    log.info("\n### Packages\n");
-    mdTable(
-      ["Package", "Size", "Files"],
-      report.packages
-        .slice(0, 15)
-        .map((pkg) => [
-          `${pkg.name}@${pkg.versions.join(",")}`,
-          formatSize(pkg.bytes),
-          String(pkg.files),
-        ]),
-    );
-  }
-
-  if (report.duplicates.length > 0) {
-    log.info("\n### Duplicate packages\n");
-    mdTable(
-      ["Package", "Versions"],
-      report.duplicates.map((dup) => [dup.name, dup.versions.join(", ")]),
-    );
-  }
-
-  if (violations.length > 0) {
-    log.info("\n### Budget violations\n");
-    mdTable(
-      ["Path", "Size", "Limit", "Glob"],
-      violations.map((v) => [
-        v.path,
-        formatSize(v.bytes),
-        formatSize(v.limit),
-        `\`${v.glob}\``,
-      ]),
-    );
-  }
-
-  if (compareRows && compareRows.length > 0) {
-    log.info("\n### Compared to baseline\n");
-    mdTable(
-      ["Path", "Status", "Before", "After", "Delta"],
-      compareRows.map((row) => [
-        row.path,
-        row.status,
-        formatSize(row.before),
-        formatSize(row.after),
-        `${row.delta >= 0 ? "+" : "-"}${formatSize(Math.abs(row.delta))}`,
-      ]),
-    );
-  }
-}
-
-function printCiAnnotations(
-  violations: BudgetViolation[],
-  compareRows: CompareRow[] | undefined,
-): void {
-  for (const v of violations) {
-    ciAnnotation(
-      "error",
-      `budget exceeded: ${formatSize(v.bytes)} > ${formatSize(v.limit)} ("${v.glob}")`,
-      { file: v.path },
-    );
-  }
-  if (!compareRows) return;
-  for (const row of compareRows) {
-    if (row.status !== "changed" || row.delta / row.before <= 0.1) continue;
-    const pct = ((row.delta / row.before) * 100).toFixed(0);
-    ciAnnotation(
-      "warning",
-      `grew ${formatSize(row.delta)} (${pct}%) vs the compared build`,
-      { file: row.path },
-    );
-  }
-}
-
-async function runAnalyze(
-  root: string,
-  configFile: string | undefined,
-  opts: AnalyzeCliOptions,
-): Promise<void> {
+async function runAnalyze(ctx: Ctx): Promise<void> {
+  const { values } = ctx;
+  assertAnalyzeFlagsCompatible(values);
   const config = await loadConfig({
-    root,
+    ...projectOptions(ctx),
     command: "build",
-    mode: "production",
-    configFile,
+    mode: values.mode ?? "production",
   });
   const metafilePath = join(config.root, STEAMBUN_DIR_NAME, "metafile.json");
-  if (!existsSync(metafilePath)) {
+  if (!(await Bun.file(metafilePath).exists())) {
     log.error(
       "[steambun] No build metafile found. Run `steambun build` first.",
     );
     process.exitCode = 1;
     return;
   }
-  const metafile = JSON.parse(
-    await Bun.file(metafilePath).text(),
-  ) as Bun.BuildMetafile;
+  const metafile = await readMetafile(metafilePath);
 
-  if (opts.why) {
-    const chains = explainImport(metafile, opts.why);
+  if (values.why) {
+    const chains = explainImport(metafile, values.why);
     if (chains.length === 0) {
-      log.info(`[steambun] No import chain found to "${opts.why}".`);
-      return;
+      console.log(`[steambun] No import chain found to "${values.why}".`);
     }
-    for (const chain of chains) log.info(chain.join(" -> "));
+    for (const chain of chains) console.log(chain.join(" -> "));
     return;
   }
 
   const report = analyzeMetafile(metafile);
+  const compareRows = values.compare
+    ? compareMetafiles(await readMetafile(values.compare), metafile)
+    : undefined;
 
-  let compareRows: CompareRow[] | undefined;
-  if (opts.compare) {
-    const baseline = JSON.parse(
-      await Bun.file(opts.compare).text(),
-    ) as Bun.BuildMetafile;
-    compareRows = compareMetafiles(baseline, metafile);
-  }
-
-  if (opts.json) {
+  if (values.json) {
     console.log(
       JSON.stringify(
         compareRows ? { ...report, compare: compareRows } : report,
@@ -360,160 +304,99 @@ async function runAnalyze(
     return;
   }
 
-  const outDir = join(config.root, config.build.outDir);
-  const compressed = await computeCompressedSizes(report.outputs, outDir, {
-    brotli: opts.brotli,
-  });
+  const brotli = !!values.brotli;
+  const view: AnalyzeView = {
+    report,
+    compressed: await computeCompressedSizes(
+      report.outputs,
+      resolveFrom(config.root, config.build.outDir),
+      { brotli },
+    ),
+    violations: config.build.budgets
+      ? checkBudgets(report.outputs, config.build.budgets)
+      : [],
+    compareRows: compareRows ?? [],
+    brotli,
+  };
 
-  if (opts.html) {
-    const htmlOutPath = opts.htmlOut
-      ? resolve(process.cwd(), opts.htmlOut)
+  if (values.html !== undefined) {
+    const htmlOutPath = values.html
+      ? resolve(values.html)
       : join(config.root, "analyze.html");
     await Bun.write(htmlOutPath, renderTreemapHtml(report));
     log.info(`[steambun] wrote ${htmlOutPath}`);
   }
 
-  const violations = config.build.budgets
-    ? checkBudgets(report.outputs, config.build.budgets)
-    : [];
-
-  if (opts.md) {
-    printMarkdownReport(
-      report,
-      compressed,
-      violations,
-      compareRows,
-      opts.brotli,
-    );
-  } else {
-    printTextReport(report, compressed, violations, compareRows, opts.brotli);
-  }
-
-  printCiAnnotations(violations, compareRows);
+  printTextReport(view);
+  if (view.violations.length > 0) process.exitCode = 1;
 }
 
-async function runRoutes(
-  root: string | undefined,
-  configFile: string | undefined,
-  mode: string | undefined,
-  json: boolean,
-): Promise<void> {
+async function runRoutes(ctx: Ctx): Promise<void> {
+  const { values } = ctx;
   const config = await loadConfig({
-    root,
+    ...projectOptions(ctx),
     command: "dev",
-    mode: mode ?? "development",
-    configFile,
+    mode: values.mode ?? "development",
   });
-  const { skipDirs, skipPaths } = discoverSkipDirs(config);
-  const htmlEntries = await discoverHtmlEntries(config.root, {
-    skipDirs,
-    skipPaths,
+  const htmlEntries = await discoverConfigHtmlEntries(config);
+  const app = await createApp({
+    config,
+    mode: "dev",
+    htmlRoutes: Object.fromEntries(
+      htmlEntries.map((entry) => [htmlServePath(entry, config.appType), {}]),
+    ),
   });
-  const htmlRoutes: Record<string, unknown> = {};
-  for (const entry of htmlEntries) {
-    htmlRoutes[htmlServePath(entry, config.appType)] = {};
-  }
-  await writeRoutesDts(config.root, config.api, htmlEntries, config.appType);
-  const app = await createApp({ config, mode: "dev", htmlRoutes });
   const rows = app.routeTable();
-  const source = config.api ? relative(config.root, config.api) : "";
-  if (json) {
-    console.log(JSON.stringify(rows, null, 2));
-    for (const collision of app.collisions) {
-      console.error(formatApiRouteCollision(collision, source));
-    }
-  } else {
-    console.log(Bun.inspect.table(rows));
-    for (const collision of app.collisions) {
-      console.log(formatApiRouteCollision(collision, source));
-    }
-  }
+  console.log(
+    values.json ? JSON.stringify(rows, null, 2) : Bun.inspect.table(rows),
+  );
 }
 
-interface CommandContext {
-  values: {
-    mode?: string;
-    port?: string;
-    host?: string;
-    strictPort?: boolean;
-    open?: boolean;
-    emptyOutDir?: string;
-    json?: boolean;
-    why?: string;
-    compare?: string;
-    md?: boolean;
-    html?: boolean;
-    brotli?: boolean;
-  };
-  positionals: string[];
-  root: string;
-  configFile: string | undefined;
-}
-
-// The single source of truth for both "is this argv[0] a known command" and
-// the dispatch itself — no separate array to keep in sync with a switch.
-const COMMANDS: Record<string, (ctx: CommandContext) => Promise<void>> = {
-  dev: ({ values, root, configFile }) =>
-    dev({ root, configFile, mode: values.mode, ...serverFlags(values) }),
-  build: ({ values, root, configFile }) =>
+const COMMANDS: Record<string, (ctx: Ctx) => Promise<void>> = {
+  dev: (ctx) => dev({ ...projectOptions(ctx), ...serverFlags(ctx.values) }),
+  build: (ctx) =>
     build({
-      root,
-      configFile,
-      mode: values.mode,
-      emptyOutDir: parseBooleanFlag(values.emptyOutDir, "emptyOutDir"),
+      ...projectOptions(ctx),
+      emptyOutDir: ctx.values.emptyOutDir,
     }),
-  preview: ({ values, root, configFile }) =>
-    preview({ root, configFile, mode: values.mode, ...serverFlags(values) }),
-  analyze: ({ values, positionals, root, configFile }) =>
-    runAnalyze(root, configFile, {
-      json: !!values.json,
-      why: values.why,
-      compare: values.compare,
-      md: !!values.md,
-      html: !!values.html,
-      htmlOut: positionals[0],
-      brotli: !!values.brotli,
-    }),
-  routes: ({ values, root, configFile }) =>
-    runRoutes(root, configFile, values.mode, !!values.json),
+  preview: (ctx) =>
+    preview({ ...projectOptions(ctx), ...serverFlags(ctx.values) }),
+  analyze: runAnalyze,
+  routes: runRoutes,
   migrate: ({ root }) => migrate(root),
-  doctor: async ({ values, root, configFile }) => {
-    const result = await runDoctor({ root, configFile, json: !!values.json });
-    if (!result.ok) process.exitCode = 1;
+  doctor: async (ctx) => {
+    const { ok } = await runDoctor({
+      ...projectOptions(ctx),
+      json: ctx.values.json,
+    });
+    if (!ok) process.exitCode = 1;
   },
 };
 
 export async function main(argv: string[]): Promise<void> {
-  const [command, ...rest] = argv;
-  const isKnownCommand = command !== undefined && command in COMMANDS;
-  const args = isKnownCommand ? rest : argv;
-  const resolvedCommand = isKnownCommand ? command! : "dev";
-
-  const { values, positionals } = parseArgs({
-    args,
-    options: OPTIONS,
-    allowPositionals: true,
-  });
+  const { values, positionals } = parseCliArgs(withEmptyOptionalValues(argv));
+  const [command = "dev", ...extra] = positionals;
 
   if (values.help) {
-    log.info(USAGE);
+    console.log(USAGE);
     return;
   }
 
-  if (values.logLevel !== undefined) {
-    if ((LOG_LEVELS as string[]).includes(values.logLevel)) {
-      setLogLevel(values.logLevel as LogLevel);
-    } else {
-      console.warn(
-        `[steambun] --logLevel expects one of ${LOG_LEVELS.join(", ")}, got "${values.logLevel}" — ignored.`,
-      );
-    }
+  if (!Object.hasOwn(COMMANDS, command)) {
+    throw new Error(`[steambun] unknown command "${command}"`);
   }
+  if (extra.length > 0) {
+    throw new Error(
+      `[steambun] unexpected argument "${extra[0]}" for \`${command}\``,
+    );
+  }
+  assertFlagsApply(values, command);
 
-  if (values.ci) process.env.STEAMBUN_CI = "1";
+  const logLevel = values.logLevel ?? "info";
+  if (!LOG_LEVELS.includes(logLevel as LogLevel)) {
+    throw flagError("logLevel", `one of ${LOG_LEVELS.join(", ")}`, logLevel);
+  }
+  setLogLevel(logLevel as LogLevel);
 
-  const root = resolve(values.root ?? ".");
-  const configFile = values.config;
-
-  await COMMANDS[resolvedCommand]!({ values, positionals, root, configFile });
+  await COMMANDS[command]!({ values, root: resolve(values.root ?? ".") });
 }

@@ -5,17 +5,7 @@ export interface ServerEnvOverrides {
   open?: boolean;
 }
 
-/**
- * Encodes CLI overrides for PORT/HOST/STRICT_PORT/OPEN into env vars for a
- * spawned dev/preview child process. Only opts that were actually passed
- * produce a key, so the generated server script's own config-based defaults
- * (decoded by {@link SERVER_ENV_DECODER_SOURCE}) still apply otherwise.
- *
- * @example
- * ```ts
- * childEnv({ port: 5999, host: true }); // { PORT: "5999", HOST: "" }
- * ```
- */
+/** Encodes CLI overrides as env vars for the dev/preview child; unset opts produce no key. `host: true` is `HOST=""`. */
 export function childEnv(opts: ServerEnvOverrides): Record<string, string> {
   const env: Record<string, string> = {};
   if (opts.port !== undefined) env.PORT = String(opts.port);
@@ -28,25 +18,27 @@ export function childEnv(opts: ServerEnvOverrides): Record<string, string> {
   return env;
 }
 
-/**
- * The decoder half of {@link childEnv}, emitted verbatim (as source text,
- * not a `steambun/runtime` import — these generated scripts run as
- * standalone entrypoints) into both the dev server (`synth.ts`) and the
- * preview/`--compile` server (`prod-server.ts`), so PORT/HOST/STRICT_PORT/
- * OPEN are decoded identically in both: an empty `HOST` means "bind every
- * interface" (mirrors `childEnv`'s `host: true` → `HOST: ""`), and
- * `STRICT_PORT`/`OPEN` only override their default when explicitly `"1"` or
- * `"0"`.
- */
+/** Decoder half of {@link childEnv}, inlined as source into the generated dev and preview/compile scripts, which run standalone. A malformed value warns and falls back to the default. */
 export const SERVER_ENV_DECODER_SOURCE = `function serverOverridesFromEnv(env, defaults) {
-  const envPort = Number(env.PORT);
-  if (env.PORT && (!Number.isInteger(envPort) || envPort <= 0)) {
-    console.warn(\`[steambun] ignoring invalid PORT "\${env.PORT}"\`);
+  const ignore = (name) => console.warn(\`[steambun] ignoring invalid \${name} "\${env[name]}"\`);
+  const flag = (name, fallback) => {
+    const value = env[name];
+    if (!value) return fallback;
+    if (value === "1" || value === "true") return true;
+    if (value === "0" || value === "false") return false;
+    ignore(name);
+    return fallback;
+  };
+  let port = defaults.port;
+  if (env.PORT) {
+    const parsed = Number(env.PORT);
+    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) port = parsed;
+    else ignore("PORT");
   }
-  const port = env.PORT && Number.isInteger(envPort) && envPort > 0 ? envPort : defaults.port;
-  const host = env.HOST !== undefined ? env.HOST || true : defaults.host;
-  const strictPort =
-    env.STRICT_PORT === "1" ? true : env.STRICT_PORT === "0" ? false : defaults.strictPort;
-  const open = env.OPEN === "1" ? true : env.OPEN === "0" ? false : defaults.open;
-  return { port, host, strictPort, open };
+  return {
+    port,
+    host: env.HOST !== undefined ? env.HOST || true : defaults.host,
+    strictPort: flag("STRICT_PORT", defaults.strictPort),
+    open: flag("OPEN", defaults.open),
+  };
 }`;

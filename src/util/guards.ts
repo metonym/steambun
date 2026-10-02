@@ -1,6 +1,4 @@
-/** A plain `{}`/`Object.create(null)` object — excludes arrays, `null`, class
- * instances, and (since a `RegExp`'s prototype is never `Object.prototype`)
- * regexes. */
+/** A `{}` or `Object.create(null)` object: not an array, `null`, class instance, or regex. */
 export function isPlainObject(
   value: unknown,
 ): value is Record<string, unknown> {
@@ -15,11 +13,14 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return isPlainObject(value) ? value : undefined;
 }
 
-/** `undefined` unless every element is a string — a partially-string array is
- * rejected outright rather than silently filtered. */
+/** `undefined` unless every element is a string (nothing is silently filtered). */
 export function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     return undefined;
   }
   return value;
+}
+
+export function isIdentifier(value: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
 }

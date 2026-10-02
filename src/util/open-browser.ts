@@ -1,42 +1,31 @@
-/**
- * Best-effort `open` / `xdg-open` / `cmd start`. Failures are ignored.
- *
- * @example
- * ```ts
- * openBrowser("http://localhost:5173");
- * ```
- */
+import { log } from "./terminal";
+
+/** The launcher command for `url`. Windows avoids `cmd /c start`, where `&` in the URL would start a second command. */
+export function browserCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  if (platform === "darwin") return ["open", url];
+  if (platform === "win32")
+    return ["rundll32", "url.dll,FileProtocolHandler", url];
+  return ["xdg-open", url];
+}
+
+/** Best-effort `open` / `xdg-open` / `rundll32`; failures only warn. */
 export function openBrowser(url: string): void {
-  const cmd =
-    process.platform === "darwin"
-      ? ["open", url]
-      : process.platform === "win32"
-        ? ["cmd", "/c", "start", "", url]
-        : ["xdg-open", url];
   try {
-    const proc = Bun.spawn({
-      cmd,
+    Bun.spawn({
+      cmd: browserCommand(url),
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",
-    });
-    proc.unref();
+    }).unref();
   } catch (err) {
-    console.warn(
-      `[steambun] could not open a browser: ${(err as Error).message}`,
-    );
+    log.warn(`[steambun] could not open a browser: ${(err as Error).message}`);
   }
 }
 
-/**
- * Vite-shaped `server.open` resolved against the dev server's own URL.
- *
- * @example
- * ```ts
- * resolveOpenUrl(new URL("http://localhost:5173"), "/about"); // ".../about"
- * resolveOpenUrl(new URL("http://localhost:5173"), true);     // the server URL itself
- * ```
- */
+/** Vite-shaped `server.open` resolved against the server's URL; `null` when disabled. */
 export function resolveOpenUrl(
   serverUrl: URL,
   open: boolean | string | undefined,

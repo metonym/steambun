@@ -1,4 +1,4 @@
-/** `config.build.features` merged with `STEAMBUN_FEATURES` (comma-separated), deduped. */
+/** `config.build.features` merged with comma-separated `STEAMBUN_FEATURES`, deduped. */
 export function mergeFeatures(
   configFeatures: string[] | undefined,
   envValue: string | undefined,
