@@ -34,6 +34,8 @@ export interface ServerOptions {
   idleTimeout?: number;
   /** Max request body size in bytes. Bun default is 128MB. */
   maxRequestBodySize?: number;
+  /** Extra hostnames allowed in `Host` (and a WebSocket `Origin`); `.example.com` also matches subdomains. `true` disables the check. `dev` and `preview` always allow localhost and IP literals; `dist/server.js` and compiled binaries check only when this is set. */
+  allowedHosts?: string[] | true;
   /** Fail instead of trying the next port when `port` is taken. Default `false` for `dev` and `preview`, `true` for `dist/server.js` and compiled binaries. */
   strictPort?: boolean;
 }

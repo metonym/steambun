@@ -336,6 +336,7 @@ const SERVER_TABLE: KeyTable<ServerOptions> = {
   idleTimeout: num,
   maxRequestBodySize: num,
   strictPort: bool,
+  allowedHosts: union(oneOf(true), strArray),
 };
 
 const RESOLVE_TABLE: KeyTable<ResolveOptions> = {

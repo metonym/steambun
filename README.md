@@ -131,7 +131,7 @@ Discovery order:
 
 Config is validated when loaded; an invalid value throws a `[steambun] ...` error:
 
-- `server.port` is an integer 0-65535; `server.maxRequestBodySize` a positive integer
+- `server.port` is an integer 0-65535; `server.maxRequestBodySize` a positive integer; `server.allowedHosts` is `true` or an array of non-empty strings
 - each `envPrefix` entry is a non-empty string; `appType` is `"spa"` or `"mpa"`
 - each `build.budgets` size is parseable
 - `build.outDir` is neither the project root, nor inside `publicDir`, nor an ancestor of `publicDir` or `api`
@@ -203,7 +203,7 @@ precompress = ["gzip", "br"]
 
 ### Migrating from Vite
 
-If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vite.config.{ts,mts,js,mjs}` and loads it (calling it with the same `{ command, mode, isPreview }` if it exports a function), converting a static allowlist of keys: `server.{port,host,open,cors,headers,proxy,https}` (`https` only as `{ key, cert }` file paths; `true` and inline PEM values are ignored), `build.{outDir,assetsDir,sourcemap,minify,manifest,target}` (`minify: "esbuild"`, `"terser"`, and `"oxc"` become `true`; a `target` other than `"browser"`, `"bun"`, or `"node"`, such as `"esnext"`, is ignored), `resolve.alias` (array or object form; `resolve.extensions` is dropped silently), `define`, `envPrefix`, `envDir`, `base`, `publicDir`, `appType` (`"spa"`/`"mpa"` only), and `plugins` (always warned — Vite plugins can't run under Bun's bundler). `preview` is not converted: `steambun preview` uses `server.*`, so copy over any `preview.port` or `preview.host` you want. Every other key prints one `[steambun] Vite config key "..." is not supported and was ignored.` warning.
+If no `steambun.config.ts` or `bunfig.toml` exists, steambun also discovers `vite.config.{ts,mts,js,mjs}` and loads it (calling it with the same `{ command, mode, isPreview }` if it exports a function), converting a static allowlist of keys: `server.{port,host,open,cors,headers,proxy,https,allowedHosts}` (`https` only as `{ key, cert }` file paths; `true` and inline PEM values are ignored; `allowedHosts: "all"` becomes `true`), `build.{outDir,assetsDir,sourcemap,minify,manifest,target}` (`minify: "esbuild"`, `"terser"`, and `"oxc"` become `true`; a `target` other than `"browser"`, `"bun"`, or `"node"`, such as `"esnext"`, is ignored), `resolve.alias` (array or object form; `resolve.extensions` is dropped silently), `define`, `envPrefix`, `envDir`, `base`, `publicDir`, `appType` (`"spa"`/`"mpa"` only), and `plugins` (always warned — Vite plugins can't run under Bun's bundler). `preview` is not converted: `steambun preview` uses `server.*`, so copy over any `preview.port` or `preview.host` you want. Every other key prints one `[steambun] Vite config key "..." is not supported and was ignored.` warning.
 
 `steambun migrate` writes the converted config to `steambun.config.ts` once, so you're not running against a re-parsed `vite.config.*` on every command — it never overwrites an existing steambun config. Functions in the Vite config (`proxy.rewrite`, etc.) are inlined verbatim and listed in a header comment for review; ignored keys are listed in the same header. A function-form Vite config is evaluated for both dev and build, and the production result is written when they differ.
 
@@ -243,6 +243,7 @@ const icons = import.meta.glob<string>("@/icons/*.svg", {
 | `appType` | `"spa"` | `"spa"` or `"mpa"`. After file lookup, unmatched paths get `index.html` (`spa`) or 404 (`mpa`), except unmatched `/api` paths when `api` is set (they always 404 as JSON). Applies to `dev`, `preview`, and `compile` |
 | `server.port` | `5173` | Listen port for `dev`, `preview`, `dist/server.js`, and compiled binaries. `0` picks a free port from the config (the `--port` flag needs 1-65535) |
 | `server.host` | `false` (`127.0.0.1`) | `true` binds `0.0.0.0` |
+| `server.allowedHosts` | localhost and IP literals (`dev`, `preview`) | Extra hostnames allowed in `Host` (and a WebSocket's `Origin`), as an array of exact names or `.example.com` (that domain and its subdomains); `true` disables the check. `dist/server.js` and compiled binaries check only when this is set — see [Host and Origin checks](#host-and-origin-checks) |
 | `server.open` | off | Open a browser after listen (`dev` and `preview`). `true` opens `/`. A string is a path. If no browser opener is available, a warning is printed and startup continues. Binding `0.0.0.0` prints one `Local:` and one `Network:` line per non-internal IPv4 interface instead of a single ready line |
 | `server.cors` | `false` | Permissive CORS (`Access-Control-Allow-Origin: *`, preflights answered directly), applied like [`middleware`](#middleware) |
 | `server.headers` | | Extra response headers, applied like [`middleware`](#middleware) |
@@ -293,6 +294,26 @@ export default defineConfig({ server: { https: { key: "key.pem", cert: "cert.pem
 ```
 
 `server.https: true` is an error in a TypeScript config, and is warned about and dropped from `bunfig.toml` and Vite configs.
+
+### Host and Origin checks
+
+A page on a hostile site can point its own domain at `127.0.0.1` (DNS rebinding) and then read your local dev server's API as if it were same-origin. To stop that, `dev` and `preview` answer `403` when the request's `Host` isn't allowed:
+
+```json
+{ "error": "Blocked request. Host \"evil.com\" is not allowed. To allow it, add it to server.allowedHosts." }
+```
+
+Allowed by default: `localhost`, any `*.localhost`, any IPv4 or IPv6 literal (`127.0.0.1`, `[::1]`, a LAN address; a literal can't be a rebinding target), and `server.host` when it's a hostname string. Add others to `server.allowedHosts`: `"app.test"` matches exactly, `".example.com"` matches `example.com` and every subdomain, and `true` turns the check off. The port is ignored.
+
+```ts
+export default defineConfig({ server: { host: true, allowedHosts: [".ngrok.app", "dev.box"] } });
+```
+
+A WebSocket upgrade (a file-based route or a `ws: true` proxy) is also rejected with `403` when it carries an `Origin` whose hostname isn't allowed, which stops a foreign page from opening a socket to your server. A same-origin page on an allowed host passes, and so does a client that sends no `Origin`.
+
+`dist/server.js` and compiled binaries run behind whatever hostnames you deploy them on, so they check nothing unless you set `server.allowedHosts` to an array; the list then also admits localhost and IP literals.
+
+The check covers what steambun's own handlers serve: API routes, WebSocket routes, `server.proxy`, and `preview`'s static files. In `dev`, HTML pages and `publicDir` files are Bun's native routes, which steambun can't wrap (oven-sh/bun#17608), so they are served for any `Host`; the API behind them is what the check protects.
 
 ## publicDir
 
@@ -499,7 +520,7 @@ A plugin object matching neither a Bun plugin (`setup`) nor any hook key throws 
 
 `dev`, `build`, and `preview` (options typed `DevCommandOptions`, `BuildCommandOptions`, `PreviewCommandOptions`) are exported from `"steambun"` alongside `defineConfig`, `loadConfig`, and `EnvValidationError` (thrown when `envSchema` fails; its `issues` list every failing key), for tooling that wants to drive steambun without the CLI. The config and plugin types (`UserConfig`, `UserConfigFn`, `ConfigEnv`, `Plugin`, `SteambunHooks`, `BuildOptions`, `ServerOptions`, `App`, `Middleware`, ...) are exported from there too.
 
-`createApp({ config, mode: "dev", htmlRoutes?, apiDir? })` or `createApp({ config, mode: "preview", outDir, cache?, apiDir? })`, exported from `"steambun/runtime"`, builds the same route table `dev` and `preview` serve from: HTML entries and `publicDir` files (`dev`), `server.proxy`, `api`, and (in `"preview"` mode) the static asset and SPA-fallback routes. `cache` (default `true`) remembers each path's resolved file; `steambun preview` passes `false` so a rebuild shows up without a restart, while `dist/server.js` and compiled binaries keep the startup cache. It returns `{ routes, middleware, serveOptions, fetch, close, routeTable, collisions }` — pass `serveOptions` to `Bun.serve` alongside `port`/`hostname`/`tls`, call `fetch(req)` to dispatch a request through a real, lazily started `Bun.serve` instance bound to those routes (handy in tests — call `close()` afterward to stop it), or call `routeTable()` to inspect the rows directly (not printed automatically).
+`createApp({ config, mode: "dev", htmlRoutes?, apiDir? })` or `createApp({ config, mode: "preview", outDir, cache?, deployed?, apiDir? })`, exported from `"steambun/runtime"`, builds the same route table `dev` and `preview` serve from: HTML entries and `publicDir` files (`dev`), `server.proxy`, `api`, and (in `"preview"` mode) the static asset and SPA-fallback routes. `cache` (default `true`) remembers each path's resolved file; `steambun preview` passes `false` so a rebuild shows up without a restart, while `dist/server.js` and compiled binaries keep the startup cache and pass `deployed: true`, which limits the [Host check](#host-and-origin-checks) to an explicit `server.allowedHosts`. It returns `{ routes, middleware, serveOptions, fetch, close, routeTable, collisions }` — pass `serveOptions` to `Bun.serve` alongside `port`/`hostname`/`tls`, call `fetch(req)` to dispatch a request through a real, lazily started `Bun.serve` instance bound to those routes (handy in tests — call `close()` afterward to stop it), or call `routeTable()` to inspect the rows directly (not printed automatically).
 
 ## Compile
 
