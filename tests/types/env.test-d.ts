@@ -1,4 +1,4 @@
-// Type-level test compiled by `bun run typecheck` (tsc), not `bun test`.
+// Type-level test compiled by `bun run typecheck` (`bun check`), not `bun test`.
 import "../fixtures/env-schema/generated/env.d.ts";
 
 type Equals<A, B> =

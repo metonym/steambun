@@ -1,7 +1,6 @@
 node_modules/
 dist/
 .steambun/
-*.tsbuildinfo
 *.log
 .DS_Store
 .ostia/

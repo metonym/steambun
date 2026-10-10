@@ -104,11 +104,11 @@ function printReport(result: DoctorResult, json: boolean | undefined): void {
 }
 
 function checkBunVersion(): Check {
-  return Bun.semver.satisfies(Bun.version, ">=1.4.0")
+  return Bun.semver.satisfies(Bun.version, ">=1.4.3")
     ? ok("bun-version", `Bun ${Bun.version}`)
     : fail(
         "bun-version",
-        `Bun ${Bun.version} is older than the required 1.4.0 — run \`bun upgrade\``,
+        `Bun ${Bun.version} is older than the required 1.4.3 — run \`bun upgrade\``,
       );
 }
 
