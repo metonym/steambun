@@ -28,7 +28,7 @@ If that's enough, use Bun directly. Reach for steambun when you're moving off Vi
 bun add -d steambun
 ```
 
-Requires Bun >= 1.4.0 and at least one `*.html` file (usually `index.html` at the project root).
+Requires Bun >= 1.4.3 and at least one `*.html` file (usually `index.html` at the project root).
 
 ## Quick start
 
@@ -87,7 +87,7 @@ A flag that doesn't apply to the invoked command is an error (for example `--por
 | Check id | Catches | Fails as |
 | --- | --- | --- |
 | `config-load` | The config can't be loaded or fails [validation](#configuration); no other check runs | `fail` |
-| `bun-version` | Bun older than the required 1.4.0 | `fail` |
+| `bun-version` | Bun older than the required 1.4.3 | `fail` |
 | `html-entries` | No `*.html` entrypoints under `root` | `fail` |
 | `config-conflict` | A `steambun.config.*` and a `bunfig.toml` `[steambun]` table both exist — the TS config wins and the table is silently ignored | `warn` |
 | `stray-vite-config` | A `vite.config.*` exists next to a `steambun.config.*` or a `bunfig.toml` — the Vite config is never read | `warn` |
@@ -100,7 +100,7 @@ A passing check is `"ok"`; the command exits `1` if any check is `"fail"`. `--js
 
 ```json
 {
-  "checks": [{ "id": "bun-version", "level": "ok", "message": "Bun 1.4.2" }],
+  "checks": [{ "id": "bun-version", "level": "ok", "message": "Bun 1.4.3" }],
   "ok": true
 }
 ```

@@ -1,4 +1,4 @@
-// Type-level test compiled by `bun run typecheck` (tsc), not `bun test` —
+// Type-level test compiled by `bun run typecheck` (`bun check`), not `bun test` —
 // no assertions run; a compile error here fails the typecheck script.
 import "../fixtures/typed/routes.d.ts";
 import { api, href, ws } from "steambun/client";
