@@ -16,14 +16,26 @@ type RouteSocketData = WsRouteData & { handlers: WebSocketRouteHandlers };
 
 type SocketData = RouteSocketData | ProxyWebSocketData;
 
+const routeHandlers = (ws: Bun.ServerWebSocket<SocketData>) =>
+  "handlers" in ws.data ? ws.data.handlers : undefined;
+
 const target = (ws: Bun.ServerWebSocket<SocketData>) =>
-  "handlers" in ws.data ? ws.data.handlers : proxyWebSocket;
+  routeHandlers(ws) ?? proxyWebSocket;
 
 /** The one `websocket` handler `Bun.serve` allows: file-based routes and `server.proxy` pass-through share it. */
 export const serverWebSocket: Bun.WebSocketHandler<SocketData> = {
   open: (ws) => target(ws).open?.(ws as never),
   message: (ws, message) => target(ws).message?.(ws as never, message as never),
   close: (ws, code, reason) => target(ws).close?.(ws as never, code, reason),
+  drain: (ws) => routeHandlers(ws)?.drain?.(ws as never),
+  ping: (ws, data) => routeHandlers(ws)?.ping?.(ws as never, data),
+  pong: (ws, data) => routeHandlers(ws)?.pong?.(ws as never, data),
+  error(error, ws) {
+    const handler = routeHandlers(ws)?.error;
+    // Rethrowing is what Bun does without an `error` handler: print it and keep the socket open.
+    if (!handler) throw error;
+    return handler(error, ws as never);
+  },
 };
 
 /** Upgrades a WebSocket request to `handlers`; anything else goes to `fallback`, or `426` without one. */

@@ -28,7 +28,7 @@ If that's enough, use Bun directly. Reach for steambun when you're moving off Vi
 bun add -d steambun
 ```
 
-Requires Bun >= 1.4.3 and at least one `*.html` file (usually `index.html` at the project root).
+Requires Bun >= 1.4.4 and at least one `*.html` file (usually `index.html` at the project root).
 
 ## Quick start
 
@@ -87,7 +87,7 @@ A flag that doesn't apply to the invoked command is an error (for example `--por
 | Check id | Catches | Fails as |
 | --- | --- | --- |
 | `config-load` | The config can't be loaded or fails [validation](#configuration); no other check runs | `fail` |
-| `bun-version` | Bun older than the required 1.4.3 | `fail` |
+| `bun-version` | Bun older than the required 1.4.4 | `fail` |
 | `html-entries` | No `*.html` entrypoints under `root` | `fail` |
 | `config-conflict` | A `steambun.config.*` and a `bunfig.toml` `[steambun]` table both exist — the TS config wins and the table is silently ignored | `warn` |
 | `stray-vite-config` | A `vite.config.*` exists next to a `steambun.config.*` or a `bunfig.toml` — the Vite config is never read | `warn` |
@@ -100,7 +100,7 @@ A passing check is `"ok"`; the command exits `1` if any check is `"fail"`. `--js
 
 ```json
 {
-  "checks": [{ "id": "bun-version", "level": "ok", "message": "Bun 1.4.3" }],
+  "checks": [{ "id": "bun-version", "level": "ok", "message": "Bun 1.4.4" }],
   "ok": true
 }
 ```
@@ -227,7 +227,7 @@ const icons = import.meta.glob<string>("@/icons/*.svg", {
 // { "/src/icons/home.svg": "<hashed asset URL>", ... }
 ```
 
-- Patterns start with `./`, `../`, `/` (the project root), or a `resolve.alias` key. An array mixes patterns and `!`-prefixed exclusions; a bare exclusion like `!**/*.test.ts` matches paths relative to the importing file.
+- Patterns start with `./`, `../`, `/` (the project root), or a `resolve.alias` key. An array mixes patterns and `!`-prefixed exclusions; a bare exclusion like `!**/*.test.ts` matches paths relative to the importing file. Extglobs (`!(a|b)`, `@(a|b)`, `+(a)`, ...) and brace ranges (`{1..3}`) work as in Vite; a `(` without a leading `!`, `@`, `+`, `?`, or `*` is literal, so `./(group)/*.ts` matches a directory named `(group)`.
 - Keys are importer-relative for `./`/`../` patterns and root-relative (`/src/...`) for `/` and alias patterns, sorted.
 - Options: `eager`, `import` (a named export, or `"*"`), and `query` (a string such as `"?raw"`). Any other option (`exhaustive`, `base`, `as`, `caseSensitive`, ...) is an error. Dotfiles and `node_modules` below the pattern's literal directory are skipped; symlinked directories are followed.
 - Arguments must be literals. The importing file is never part of its own result.
@@ -411,7 +411,7 @@ export const websocket = {
 export const GET = (req) => Response.json({ room: req.params.room }); // optional
 ```
 
-`ws.data.params` carries the route's `:param` values, same as `req.params`. Middleware still runs first — a middleware `Response` (401, etc.) blocks the upgrade. A request without an `Upgrade` header falls through to `GET` (or the default handler) if present, else `426`. Bun allows exactly one server-level `websocket` handler; steambun merges file-based WebSocket routes and `server.proxy`'s `ws: true` connections into it automatically.
+`ws.data.params` carries the route's `:param` values, same as `req.params`. `drain`, `ping`, `pong`, and `error(error, ws)` are forwarded too; without an `error` handler, a throw is printed and the socket stays open. Middleware still runs first — a middleware `Response` (401, etc.) blocks the upgrade. A request without an `Upgrade` header falls through to `GET` (or the default handler) if present, else `426`. Bun allows exactly one server-level `websocket` handler; steambun merges file-based WebSocket routes and `server.proxy`'s `ws: true` connections into it automatically.
 
 ```ts
 import { ws } from "steambun/client";
@@ -496,7 +496,7 @@ await api("patch", "/api/users/:id", { params: { id: "42" }, body: { name: 1 } }
 
 ## Proxy
 
-`server.proxy` maps a path prefix to a target string or `{ target, changeOrigin?, rewrite?, ws? }`. `ws: true` proxies WebSockets. The target's own path is kept in front of the (rewritten) request path, like Vite and http-proxy: `target: "http://host/v1"` with `rewrite: (p) => p.replace(/^\/api/, "")` sends `/api/foo` to `/v1/foo`.
+`server.proxy` maps a path prefix to a target string or `{ target, changeOrigin?, rewrite?, ws? }`. `ws: true` proxies WebSockets: close codes and reasons pass through both ways, the client socket is paused until the upstream connects, and an upstream that can't be reached or drops closes the client with `1014 Bad Gateway`. The target's own path is kept in front of the (rewritten) request path, like Vite and http-proxy: `target: "http://host/v1"` with `rewrite: (p) => p.replace(/^\/api/, "")` sends `/api/foo` to `/v1/foo`.
 
 An unreachable target (connection refused, DNS failure) returns `502` with `{ error: "proxy target unreachable", target }` instead of an unhandled rejection. `changeOrigin: true` rewrites `Host` and `Origin` to the target's and sets `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forwarded-For`, without overwriting a forwarded value the incoming request already carries. Hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`, and any header named in `Connection`) are stripped from both the outgoing request and the returned response. A request whose normalized path falls outside the prefix (`/api/%2e%2e/admin`) returns `404` instead of being proxied.
 

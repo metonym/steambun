@@ -108,6 +108,32 @@ describe("transformImportGlobs", () => {
     );
   });
 
+  test("extglob and brace-range segments are globs, a bare (group) is literal", () => {
+    const root = project({
+      "src/app/a.ts": "",
+      "src/lib/b.ts": "",
+      "src/internal/c.ts": "",
+      "src/(group)/d.ts": "",
+      "src/shard-1.json": "",
+      "src/shard-2.json": "",
+      "src/shard-5.json": "",
+    });
+    expect(
+      transform(root, 'import.meta.glob("./!(internal|*group*)/*.ts")'),
+    ).toBe(
+      '({"./app/a.ts": () => import("./app/a.ts"), "./lib/b.ts": () => import("./lib/b.ts")})',
+    );
+    expect(transform(root, 'import.meta.glob("./@(lib)/*.ts")')).toBe(
+      '({"./lib/b.ts": () => import("./lib/b.ts")})',
+    );
+    expect(transform(root, 'import.meta.glob("./(group)/*.ts")')).toBe(
+      '({"./(group)/d.ts": () => import("./(group)/d.ts")})',
+    );
+    expect(transform(root, 'import.meta.glob("./shard-{1..3}.json")')).toBe(
+      '({"./shard-1.json": () => import("./shard-1.json"), "./shard-2.json": () => import("./shard-2.json")})',
+    );
+  });
+
   test("a literal pattern matches files, not directories", () => {
     const root = project(MODS);
     expect(transform(root, 'import.meta.glob("./mods")')).toBe("({})");
