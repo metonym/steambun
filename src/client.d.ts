@@ -30,7 +30,8 @@ declare global {
 
 type ResolvedConfigExport<C> = Awaited<
   // biome-ignore lint/suspicious/noExplicitAny: matches config functions of any signature
-  C extends (...args: any[]) => infer R ? R : C>;
+  C extends (...args: any[]) => infer R ? R : C
+>;
 type SchemaOutput<S> = S extends {
   readonly "~standard": { readonly types?: infer T };
 }
