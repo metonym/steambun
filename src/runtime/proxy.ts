@@ -27,8 +27,6 @@ function stripHopByHopHeaders(headers: Headers): void {
 export interface ProxyWebSocketData {
   proxyTarget: string;
   upstream?: WebSocket;
-  /** Messages received while the upstream is still CONNECTING (sending then throws). */
-  queue?: (string | Uint8Array)[];
 }
 
 /**
@@ -139,7 +137,9 @@ export function createProxyRouteHandler(
 interface ProxyServerWebSocket {
   data: ProxyWebSocketData;
   send: (data: string | ArrayBuffer | Uint8Array) => void;
-  close: () => void;
+  close: (code?: number, reason?: string) => void;
+  pause: () => void;
+  resume: () => void;
 }
 
 /** `websocket` handlers that pipe a connection to `ws.data.proxyTarget`; shared with file-based routes in `serverWebSocket`. */
@@ -147,26 +147,29 @@ export const proxyWebSocket = {
   open(ws: ProxyServerWebSocket) {
     const upstream = new WebSocket(ws.data.proxyTarget);
     upstream.binaryType = "arraybuffer";
-    const queue: (string | Uint8Array)[] = [];
-    ws.data.queue = queue;
-    upstream.onopen = () => {
-      for (const message of queue) upstream.send(message as string);
-      queue.length = 0;
-    };
+    // Sending throws while the upstream is CONNECTING; paused, the client's messages wait in TCP instead.
+    ws.pause();
+    upstream.onopen = () => ws.resume();
     upstream.onmessage = (event) => ws.send(event.data as string | ArrayBuffer);
-    upstream.onclose = () => ws.close();
+    upstream.onclose = ({ code, reason }) => {
+      if (code === 1005) ws.close();
+      // 1006 (dropped or never connected) and 1015 (TLS) can't be sent in a Close frame; 1014 is WebSocket's 502.
+      else if (code === 1006 || code === 1015) ws.close(1014, "Bad Gateway");
+      else ws.close(code, reason);
+    };
     ws.data.upstream = upstream;
   },
   message(ws: ProxyServerWebSocket, message: string | Uint8Array) {
     const upstream = ws.data.upstream;
-    if (!upstream) return;
-    if (upstream.readyState === WebSocket.OPEN) {
+    // Only CLOSING/CLOSED is left once resumed; the close is on its way to the client.
+    if (upstream?.readyState === WebSocket.OPEN)
       upstream.send(message as string);
-    } else {
-      ws.data.queue?.push(message);
-    }
   },
-  close(ws: ProxyServerWebSocket) {
-    ws.data.upstream?.close();
+  close(ws: ProxyServerWebSocket, code: number, reason: string) {
+    const upstream = ws.data.upstream;
+    // A client WebSocket may only send 1000 or 3000-4999.
+    if (code === 1000 || (code >= 3000 && code <= 4999)) {
+      upstream?.close(code, reason);
+    } else upstream?.close();
   },
 };

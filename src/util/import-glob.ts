@@ -10,7 +10,8 @@ import { posixRelative, toPosix } from "./specifier";
 // line count so stack traces and sourcemaps stay aligned.
 
 const NEEDLE = "import.meta.glob";
-const GLOB_CHARS = /[*?[\]{}]/;
+// `!(`, `@(`, and `+(` open an extglob (Bun 1.4.4+); a bare `(` is literal, like a `(group)` directory.
+const GLOB_CHARS = /[*?[\]{}]|[!@+]\(/;
 
 export interface ImportGlobContext {
   /** Absolute path of the file being transformed. */

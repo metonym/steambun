@@ -71,6 +71,34 @@ describe("file-based WebSocket routes", () => {
     }
   });
 
+  test("a throwing handler reaches the route's error(error, ws)", async () => {
+    const apiDir = tmpApiDir();
+    writeFileSync(
+      join(apiDir, "boom.ts"),
+      `export const websocket = {
+  message() { throw new Error("boom"); },
+  error(error, ws) { ws.close(4000, error.message); },
+};
+`,
+    );
+    const app = await createApp({ config: baseConfig(apiDir), mode: "dev" });
+    const server = Bun.serve({
+      port: 0,
+      ...app.serveOptions,
+    } as Bun.Serve.Options<unknown>);
+
+    try {
+      const event = await new Promise<CloseEvent>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${server.port}/api/boom`);
+        ws.onopen = () => ws.send("hi");
+        ws.onclose = resolve;
+      });
+      expect([event.code, event.reason]).toEqual([4000, "boom"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("a websocket-only route answers a plain request with a JSON 426", async () => {
     const apiDir = tmpApiDir();
     writeFileSync(

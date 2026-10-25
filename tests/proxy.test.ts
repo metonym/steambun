@@ -224,6 +224,7 @@ describe("server.proxy with ws: true", () => {
   /** An echo WebSocket upstream that also reports the path it was dialed on. */
   function wsUpstream() {
     const paths: string[] = [];
+    const closes: Array<[number, string]> = [];
     const server = Bun.serve({
       port: 0,
       fetch(req, server) {
@@ -235,12 +236,16 @@ describe("server.proxy with ws: true", () => {
       websocket: {
         message(ws, message) {
           if (message === "bye") ws.close();
+          else if (message === "kick") ws.close(4001, "kicked");
           else ws.send(`echo: ${message}`);
+        },
+        close(_ws, code, reason) {
+          closes.push([code, reason]);
         },
       },
     });
     servers.push(server);
-    return { paths, port: server.port };
+    return { paths, closes, port: server.port };
   }
 
   function connect(url: string): Promise<WebSocket> {
@@ -269,7 +274,7 @@ describe("server.proxy with ws: true", () => {
       `ws://localhost:${server.port}/socket/chat?room=1`,
     );
     try {
-      // Sent immediately: the upstream may still be connecting, so this exercises the queue.
+      // Sent immediately: the upstream may still be connecting, so the client socket is paused.
       const reply = nextMessage(ws);
       ws.send("hi");
       expect(await reply).toBe("echo: hi");
@@ -290,6 +295,41 @@ describe("server.proxy with ws: true", () => {
     });
     ws.send("bye");
     await closed;
+  });
+
+  test("close codes and reasons pass through both ways", async () => {
+    const up = wsUpstream();
+    const server = await serveApp({
+      "/socket": { target: `http://localhost:${up.port}`, ws: true },
+    });
+    const kicked = await connect(`ws://localhost:${server.port}/socket`);
+    const event = await new Promise<CloseEvent>((resolve) => {
+      kicked.onclose = resolve;
+      kicked.send("kick");
+    });
+    expect([event.code, event.reason]).toEqual([4001, "kicked"]);
+
+    const leaving = await connect(`ws://localhost:${server.port}/socket`);
+    await new Promise<void>((resolve) => {
+      leaving.onclose = () => resolve();
+      leaving.close(4002, "bye");
+    });
+    await Bun.sleep(50);
+    expect(up.closes).toContainEqual([4002, "bye"]);
+  });
+
+  test("an unreachable upstream closes the client with 1014 Bad Gateway", async () => {
+    const dead = Bun.serve({ port: 0, fetch: () => new Response() });
+    const port = dead.port;
+    dead.stop(true);
+    const server = await serveApp({
+      "/socket": { target: `http://localhost:${port}`, ws: true },
+    });
+    const ws = await connect(`ws://localhost:${server.port}/socket`);
+    const event = await new Promise<CloseEvent>((resolve) => {
+      ws.onclose = resolve;
+    });
+    expect([event.code, event.reason]).toEqual([1014, "Bad Gateway"]);
   });
 
   test("without ws: true an upgrade request is not proxied as a socket", async () => {
