@@ -1,0 +1,6 @@
+node_modules/
+build/
+dist/
+.context/
+*.log
+.DS_Store

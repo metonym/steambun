@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>TodoBar</title>
+    <link rel="stylesheet" href="steambun/ui/native.css" />
+    <style>
+      body {
+        padding: 12px;
+      }
+      #text {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 4px 6px;
+        margin-bottom: 8px;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      li {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 4px 0;
+      }
+      li:has(:checked) span {
+        text-decoration: line-through;
+        opacity: 0.5;
+      }
+      li button {
+        margin-left: auto;
+        border: 0;
+        background: none;
+        opacity: 0.5;
+      }
+    </style>
+  </head>
+  <body>
+    <form id="add"><input id="text" placeholder="New to-do" autofocus /></form>
+    <ul id="list"></ul>
+    <template id="row">
+      <li>
+        <input type="checkbox" /><span></span><button title="Delete">✕</button>
+      </li>
+    </template>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

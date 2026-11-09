@@ -1,0 +1,20 @@
+{
+  "name": "load-bar",
+  "private": true,
+  "type": "module",
+  "steambun": {
+    "menuBar": {
+      "icon": "gauge.with.dots.needle.33percent",
+      "width": 300,
+      "height": 220
+    }
+  },
+  "scripts": {
+    "dev": "steambun dev",
+    "app": "steambun app --open",
+    "test": "steambun test"
+  },
+  "dependencies": {
+    "steambun": "workspace:*"
+  }
+}

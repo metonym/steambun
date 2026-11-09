@@ -1,0 +1,19 @@
+{
+  "name": "core",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "steambun dev",
+    "app": "steambun app --open",
+    "test": "steambun test"
+  },
+  "dependencies": {
+    "react": "^19",
+    "react-dom": "^19",
+    "steambun": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19"
+  }
+}

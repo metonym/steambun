@@ -1,0 +1,13 @@
+{
+  "name": "hello",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "steambun dev",
+    "app": "steambun app --open",
+    "test": "steambun test"
+  },
+  "dependencies": {
+    "steambun": "workspace:*"
+  }
+}

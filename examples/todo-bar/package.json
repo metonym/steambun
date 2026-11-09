@@ -1,0 +1,20 @@
+{
+  "name": "todo-bar",
+  "private": true,
+  "type": "module",
+  "steambun": {
+    "menuBar": {
+      "icon": "checklist",
+      "width": 320,
+      "height": 400
+    }
+  },
+  "scripts": {
+    "dev": "steambun dev",
+    "app": "steambun app --open",
+    "test": "steambun test"
+  },
+  "dependencies": {
+    "steambun": "workspace:*"
+  }
+}

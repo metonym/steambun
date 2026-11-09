@@ -1,0 +1,3 @@
+[install]
+# Keep a flat node_modules, so examples resolve steambun the same way.
+linker = "hoisted"

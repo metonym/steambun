@@ -1,0 +1,26 @@
+{
+  "name": "native-op",
+  "private": true,
+  "type": "module",
+  "steambun": {
+    "menus": {
+      "View": [
+        {
+          "title": "Play Sound",
+          "command": "play",
+          "key": "mod+shift+p"
+        },
+        "-",
+        "reload"
+      ]
+    }
+  },
+  "scripts": {
+    "dev": "steambun dev",
+    "app": "steambun app --open",
+    "test": "steambun test"
+  },
+  "dependencies": {
+    "steambun": "workspace:*"
+  }
+}

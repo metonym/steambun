@@ -1,0 +1,67 @@
+{
+  "name": "steambun",
+  "version": "0.1.0",
+  "description": "Bun + Swift: a local web app in Bun becomes a real Mac app.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "bun",
+    "swift",
+    "macos",
+    "desktop",
+    "webkit",
+    "appkit"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/metonym/steambun"
+  },
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "bin": {
+    "steambun": "./cli.ts"
+  },
+  "exports": {
+    "./config": "./config.ts",
+    "./schema": "./schema.ts",
+    "./bridge": "./bridge.ts",
+    "./core": "./core/index.ts",
+    "./ui": "./ui/index.ts",
+    "./tools": "./tools.ts",
+    "./test": "./test.ts",
+    "./plugins/svelte": "./plugins/svelte.ts",
+    "./*": "./*"
+  },
+  "workspaces": [
+    "examples/*"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "test:e2e": "bun run --filter '*' test",
+    "typecheck": "bun check"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "svelte": "^5.57.3"
+  },
+  "peerDependencies": {
+    "svelte": "^5"
+  },
+  "peerDependenciesMeta": {
+    "svelte": {
+      "optional": true
+    }
+  },
+  "files": [
+    "*.ts",
+    "!*.test.ts",
+    "core",
+    "ui",
+    "gen",
+    "native",
+    "plugins",
+    "tsconfig.json",
+    "README.md"
+  ]
+}
