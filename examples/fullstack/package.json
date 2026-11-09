@@ -1,0 +1,17 @@
+{
+  "name": "example-fullstack",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "steambun dev",
+    "build": "steambun build",
+    "preview": "steambun preview",
+    "legacy-api": "bun run legacy-api.ts"
+  },
+  "devDependencies": {
+    "steambun": "file:../..",
+    "bun-plugin-tailwind": "^0.1.2",
+    "tailwindcss": "^4"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "bench/**/*.bench.ts",
+        "tests/types/**/*.test-d.ts",
+        "tests/fixtures/*/steambun.config.ts",
+        "ostia.config.ts"
+      ]
+    },
+    "examples/minimal": {
+      "entry": ["src/main.ts", "steambun.config.ts"]
+    },
+    "examples/bunfig": {
+      "entry": ["index.html", "about.html", "src/main.ts", "src/about.ts"]
+    },
+    "examples/multi-page": {
+      "entry": [
+        "index.html",
+        "about.html",
+        "blog.html",
+        "src/index.ts",
+        "src/about.ts",
+        "src/blog.ts",
+        "steambun.config.ts"
+      ]
+    },
+    "examples/standalone": {
+      "entry": ["src/main.ts", "steambun.config.ts"]
+    },
+    "examples/fullstack": {
+      "entry": [
+        "index.html",
+        "about.html",
+        "src/main.ts",
+        "src/about.ts",
+        "src/git-sha.ts",
+        "src/style.css",
+        "steambun.config.ts",
+        "src/api/**/*.ts"
+      ]
+    },
+    "examples/testing": {
+      "entry": [
+        "index.html",
+        "src/main.ts",
+        "src/api/**/*.ts",
+        "steambun.config.ts",
+        "tests/**/*.test.ts"
+      ]
+    }
+  }
+}

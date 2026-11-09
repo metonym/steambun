@@ -1,0 +1,58 @@
+{
+  "name": "steambun",
+  "version": "0.1.0",
+  "description": "Vite-style config, proxy, env modes, publicDir, and file-based APIs on top of Bun's fullstack dev server",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "bun",
+    "vite",
+    "dev-server",
+    "bundler",
+    "fullstack"
+  ],
+  "bin": {
+    "steambun": "src/bin.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./runtime": "./src/runtime/index.ts",
+    "./internal": "./src/internal.ts",
+    "./client": {
+      "types": "./src/client.d.ts",
+      "default": "./src/client.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "workspaces": [
+    "examples/*"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bun check",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write . --unsafe",
+    "lint:fix:changed": "biome check --write --unsafe --changed --no-errors-on-unmatched .",
+    "knip": "knip-bun",
+    "bench": "ostia bench bench/*.bench.ts",
+    "bench:baseline": "ostia baseline save",
+    "bench:ci": "ostia ci"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.3",
+    "@types/bun": "^1.4.4",
+    "knip": "^6.43.0",
+    "ostia": "^0.2.12",
+    "typescript": "^7.0.2",
+    "zod": "^4.6.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/metonym/steambun"
+  }
+}

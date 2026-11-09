@@ -1,0 +1,33 @@
+/* Design-system base, imported by every page. */
+body {
+  font-family: system-ui, sans-serif;
+  max-width: 32rem;
+  margin: 4rem auto;
+  padding: 0 1rem;
+  color: #1a1a1a;
+}
+
+nav {
+  margin-bottom: 1.5rem;
+  font-size: 0.875rem;
+}
+
+nav a {
+  color: #555;
+  text-decoration: none;
+}
+
+nav a[aria-current="page"] {
+  color: #1a1a1a;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+h1 {
+  margin-bottom: 0.5rem;
+}
+
+p {
+  color: #444;
+  line-height: 1.5;
+}
