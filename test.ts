@@ -134,7 +134,9 @@ const wrapTest = (t: unknown) => (name: string, fn: TestFn, o?: Opts) =>
  * screenshot, HTML and logs, and print the folder.
  */
 export const test = Object.assign(wrapTest(bunTest), {
-  only: wrapTest(bunTest.only),
+  // Read on use: in CI, bun throws as soon as bunTest.only is read.
+  only: (name: string, fn: TestFn, o?: Opts) =>
+    wrapTest(bunTest.only)(name, fn, o),
   skip: bunTest.skip,
   todo: bunTest.todo,
   if: (c: boolean) => wrapTest(bunTest.if(c)),
