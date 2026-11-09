@@ -275,8 +275,15 @@ function wrap(
   }
 
   const evalJs = <T = unknown>(body: string) => s.eval<T>(body);
-  /** The value of a page expression. */
-  const js = <T = unknown>(expr: string) => evalJs<T>(`return (${expr});`);
+  // Only plain JSON crosses back from the page. Some WebKit versions throw
+  // on a DOM node ("unsupported type"), others pass it, so make it the
+  // same everywhere: a node is true, undefined is null, and anything else
+  // goes through JSON.
+  const plain = (v: string) =>
+    `(${v}) instanceof Node || (${v}) instanceof NodeList ? true : (${v}) === undefined ? null : JSON.parse(JSON.stringify(${v}))`;
+  /** The value of a page expression, as JSON. A DOM node comes back as true. */
+  const js = <T = unknown>(expr: string) =>
+    evalJs<T>(`const v = await (${expr}); return ${plain("v")};`);
 
   /**
    * Wait until a page expression is truthy; return its value. Polls in the
@@ -287,7 +294,7 @@ function wrap(
       const end = performance.now() + ${ms};
       for (;;) {
         let v; try { v = await (${expr}); } catch { v = undefined; }
-        if (v) return { ok: true, v };
+        if (v) return { ok: true, v: ${plain("v")} };
         if (performance.now() > end) return { ok: false, v: null };
         await new Promise((r) => setTimeout(r, 10));
       }`);
