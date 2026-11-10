@@ -1,0 +1,41 @@
+{
+  "name": "native-op",
+  "private": true,
+  "type": "module",
+  "steambun": {
+    "menus": {
+      "View": [
+        {
+          "title": "Play Sound",
+          "command": "play",
+          "key": "mod+shift+p"
+        },
+        "-",
+        "reload"
+      ]
+    },
+    "toolbar": [
+      {
+        "title": "Play Sound",
+        "command": "play",
+        "symbol": "speaker.wave.2"
+      },
+      "-",
+      {
+        "title": "Reload",
+        "command": "reload-page",
+        "symbol": "arrow.clockwise"
+      }
+    ]
+  },
+  "scripts": {
+    "dev": "bunx steambun dev",
+    "dev:native": "bunx steambun dev --native",
+    "build:web": "bunx steambun build --web",
+    "app": "bunx steambun app --open",
+    "test": "bunx steambun test"
+  },
+  "dependencies": {
+    "steambun": "workspace:*"
+  }
+}

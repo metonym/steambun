@@ -1,0 +1,436 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>TodoBar</title>
+    <link rel="stylesheet" href="steambun/native.css" />
+    <style>
+      /* Apple's system colors in the Mac app (WebKit knows them), plain
+         ones in a tab. They follow light and dark mode. */
+      :root {
+        --label: CanvasText;
+        --secondary: color-mix(in srgb, CanvasText 55%, transparent);
+        --tertiary: color-mix(in srgb, CanvasText 28%, transparent);
+        --fill: color-mix(in srgb, CanvasText 6%, transparent);
+        --hover: color-mix(in srgb, CanvasText 7%, transparent);
+        --separator: color-mix(in srgb, CanvasText 10%, transparent);
+        --accent: #007aff;
+        --orange: #ff9500;
+        --red: #ff3b30;
+      }
+      @supports (color: -apple-system-label) {
+        :root {
+          --label: -apple-system-label;
+          --secondary: -apple-system-secondary-label;
+          --tertiary: -apple-system-tertiary-label;
+          --separator: -apple-system-separator;
+          --accent: -apple-system-control-accent;
+          --orange: -apple-system-orange;
+          --red: -apple-system-red;
+        }
+      }
+      html {
+        color: var(--label);
+        /* A tab has no glass: give it a page. */
+        background: Canvas;
+      }
+      html[data-glass] {
+        background: none;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        -webkit-font-smoothing: antialiased;
+      }
+      button {
+        border: 0;
+        background: none;
+        padding: 0;
+        color: inherit;
+        cursor: default;
+      }
+      .icon {
+        display: inline-block;
+        flex: none;
+        width: var(--size);
+        height: var(--size);
+        background: currentColor;
+        mask: var(--icon) center / contain no-repeat;
+        -webkit-mask: var(--icon) center / contain no-repeat;
+      }
+
+      /* Header: a large title and the count, as in Reminders. */
+      header {
+        display: flex;
+        align-items: baseline;
+        padding: 14px 14px 6px 16px;
+      }
+      h1 {
+        font: 700 22px/1.1 system-ui;
+        letter-spacing: -0.02em;
+        margin: 0;
+        color: var(--accent);
+      }
+      #count {
+        margin-left: auto;
+        font: 600 22px/1.1 system-ui;
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+      #gear {
+        margin-left: 10px;
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: grid;
+        place-items: center;
+        color: var(--secondary);
+        align-self: center;
+      }
+      #gear:hover {
+        background: var(--hover);
+        color: var(--label);
+      }
+
+      /* New to-do: a quiet field with a filled plus. */
+      #add {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 4px 10px 6px;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: var(--fill);
+        color: var(--accent);
+      }
+      #add:focus-within {
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+      }
+      #text {
+        flex: 1;
+        border: 0;
+        outline: 0;
+        background: none;
+        color: var(--label);
+        font-size: 13px;
+        padding: 0;
+      }
+      #text::placeholder {
+        color: var(--tertiary);
+      }
+
+      /* The list */
+      main {
+        flex: 1;
+        overflow-y: auto;
+        padding: 2px 6px 6px;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .line,
+      .step {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        padding: 6px 8px;
+        border-radius: 7px;
+      }
+      .line:hover {
+        background: var(--hover);
+      }
+      /* A hairline between to-dos, from the text to the edge. */
+      .line {
+        position: relative;
+      }
+      .todo + .todo > .line::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 35px;
+        right: 8px;
+        border-top: 0.5px solid var(--separator);
+      }
+      .todo + .todo > .line:hover::before,
+      .todo:hover + .todo > .line::before {
+        display: none;
+      }
+      .body {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding-top: 1px;
+      }
+      .title {
+        line-height: 16px;
+        overflow-wrap: anywhere;
+      }
+      .done > .line .title,
+      .step.done .title {
+        color: var(--secondary);
+      }
+      .when {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 11px;
+        color: var(--secondary);
+      }
+      .when.late {
+        color: var(--red);
+      }
+      .thinking {
+        font-size: 11px;
+        background: linear-gradient(90deg, #a855f7, #3b82f6, #ec4899, #a855f7);
+        background-size: 300% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: shimmer 1.6s linear infinite;
+      }
+      @keyframes shimmer {
+        to {
+          background-position: -300% 0;
+        }
+      }
+
+      /* The round check */
+      .check {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        box-shadow: inset 0 0 0 1.5px var(--tertiary);
+        position: relative;
+        transition: box-shadow 0.15s;
+      }
+      .check:hover {
+        box-shadow: inset 0 0 0 1.5px var(--secondary);
+      }
+      .check[aria-checked="true"] {
+        box-shadow: inset 0 0 0 1.5px var(--accent);
+      }
+      .check[aria-checked="true"]::after {
+        content: "";
+        position: absolute;
+        inset: 3.5px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: pop 0.22s cubic-bezier(0.3, 1.6, 0.5, 1);
+      }
+      @keyframes pop {
+        from {
+          transform: scale(0.2);
+        }
+      }
+      .step .check {
+        width: 15px;
+        height: 15px;
+        margin-top: 0.5px;
+      }
+      .step .check[aria-checked="true"]::after {
+        inset: 3px;
+      }
+
+      /* Steps sit under their to-do, a hair smaller. */
+      .steps {
+        margin: -2px 0 4px 27px;
+        font-size: 12px;
+      }
+      .step {
+        padding: 3px 8px;
+        gap: 8px;
+      }
+
+      /* Row actions: on hover only, as in Mail and Reminders. */
+      .acts {
+        display: flex;
+        gap: 1px;
+        margin: -2px -4px -2px 0;
+        opacity: 0;
+        transition: opacity 0.12s;
+      }
+      .line:hover .acts,
+      .acts:focus-within {
+        opacity: 1;
+      }
+      .act {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: grid;
+        place-items: center;
+        color: var(--secondary);
+      }
+      .act:hover {
+        background: var(--hover);
+        color: var(--label);
+      }
+      .act[title="Break into Steps"] {
+        color: #a855f7;
+      }
+      .act[title="Cancel Reminder"] {
+        color: var(--orange);
+      }
+
+      /* Empty */
+      #empty {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: var(--tertiary);
+        padding-bottom: 30px;
+      }
+      #empty[hidden] {
+        display: none;
+      }
+      #empty-title {
+        font: 600 15px system-ui;
+        color: var(--secondary);
+      }
+
+      /* Footer: the completed count, as in Reminders. */
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 16px 9px;
+        font-size: 11px;
+        color: var(--secondary);
+        box-shadow: 0 -0.5px 0 var(--separator);
+      }
+      footer[hidden] {
+        display: none;
+      }
+      #done-count {
+        margin-right: auto;
+      }
+      footer button {
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 500;
+      }
+      footer .dot {
+        color: var(--tertiary);
+      }
+
+      #flash {
+        position: fixed;
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-size: 11px;
+        background: color-mix(in srgb, Canvas 92%, transparent);
+        box-shadow: 0 2px 12px rgb(0 0 0 / 0.18);
+      }
+
+      /* Settings in a tab */
+      dialog {
+        border: 0;
+        border-radius: 12px;
+        padding: 0;
+        width: 300px;
+        color: var(--label);
+        background: Canvas;
+        box-shadow: 0 10px 40px rgb(0 0 0 / 0.3);
+      }
+      dialog form {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 16px;
+      }
+      dialog h2 {
+        margin: 0 0 4px;
+        font-size: 15px;
+      }
+      dialog label {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      dialog menu {
+        display: flex;
+        justify-content: flex-end;
+        margin: 6px 0 0;
+        padding: 0;
+      }
+      dialog menu button {
+        background: var(--accent);
+        color: white;
+        border-radius: 6px;
+        padding: 3px 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>To-Dos</h1>
+      <span id="count">0</span>
+      <button id="gear" title="Settings" aria-label="Settings"></button>
+    </header>
+    <form id="add">
+      <i id="add-icon"></i>
+      <input id="text" placeholder="New To-Do" autocomplete="off" autofocus />
+    </form>
+    <main>
+      <ul id="list"></ul>
+    </main>
+    <div id="empty" hidden>
+      <i id="empty-icon"></i>
+      <span id="empty-title">No To-Dos</span>
+    </div>
+    <footer id="foot" hidden>
+      <span id="done-count"></span>
+      <button id="toggle-done">Hide</button>
+      <span class="dot">·</span>
+      <button id="clear-done">Clear</button>
+    </footer>
+    <div id="flash" hidden></div>
+
+    <dialog id="settings">
+      <form method="dialog">
+        <h2>Settings</h2>
+        <label
+          >Show count in title <input type="checkbox" name="showCount"
+        /></label>
+        <label
+          >Show completed <input type="checkbox" name="showCompleted"
+        /></label>
+        <label>Haptics <input type="checkbox" name="haptics" /></label>
+        <label
+          >Remind me in
+          <select name="remindIn">
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="120">2 hours</option>
+            <option value="240">4 hours</option>
+          </select></label
+        >
+        <label
+          >Snooze for
+          <select name="snooze">
+            <option value="5">5 minutes</option>
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+          </select></label
+        >
+        <menu><button>Done</button></menu>
+      </form>
+    </dialog>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

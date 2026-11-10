@@ -1,0 +1,22 @@
+{
+  "name": "load-bar",
+  "private": true,
+  "type": "module",
+  "steambun": {
+    "menuBar": {
+      "icon": "gauge.with.dots.needle.33percent",
+      "width": 300,
+      "height": 220
+    }
+  },
+  "scripts": {
+    "dev": "bunx steambun dev",
+    "dev:native": "bunx steambun dev --native",
+    "build:web": "bunx steambun build --web",
+    "app": "bunx steambun app --open",
+    "test": "bunx steambun test"
+  },
+  "dependencies": {
+    "steambun": "workspace:*"
+  }
+}

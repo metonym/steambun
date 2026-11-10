@@ -1,0 +1,27 @@
+/* A Mac app's defaults for a steambun page. Link it from index.html:
+ *   <link rel="stylesheet" href="steambun/native.css" />
+ * System font and colors, light and dark. In the Mac app, chrome isn't
+ * selectable and the pointer stays an arrow, as in AppKit; text you can
+ * edit or that you mark with .selectable still selects. */
+:root {
+  color-scheme: light dark;
+  font: 13px system-ui;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+html[data-shell="mac"] body {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+html[data-shell="mac"] :is(input, textarea, [contenteditable], .selectable) {
+  user-select: text;
+  -webkit-user-select: text;
+}

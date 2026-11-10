@@ -1,0 +1,43 @@
+[install]
+# Keep a flat node_modules, so examples resolve steambun the same way.
+linker = "hoisted"
+
+# `bun fmt`
+[fmt]
+ignorePatterns = [
+  "dist/**",
+  "examples/*/build/**",
+  "src/native/Sources/Bridge.gen.swift",
+]
+
+[fmt.sortImports]
+groups = [
+  "builtin",
+  "external",
+  ["internal", "subpath"],
+  "parent",
+  ["sibling", "index"],
+  "unknown",
+]
+newlinesBetween = false
+ignoreCase = false
+
+# `bun lint`
+[lint]
+ignorePatterns = ["dist/**", "examples/*/build/**"]
+
+[lint.rules]
+"eslint/eqeqeq" = ["error", "smart"]
+"eslint/no-nested-ternary" = "error"
+"eslint/no-param-reassign" = "error"
+"eslint/no-useless-rename" = "error"
+"import/no-cycle" = "error"
+"typescript/consistent-type-definitions" = ["error", "interface"]
+"typescript/consistent-type-imports" = "error"
+"typescript/no-explicit-any" = "error"
+"typescript/no-shadow" = "error"
+"unicorn/explicit-length-check" = "error"
+"unicorn/no-array-for-each" = "error"
+"unicorn/prefer-node-protocol" = "error"
+"unicorn/prefer-regexp-test" = "error"
+"unicorn/prefer-string-starts-ends-with" = "error"
