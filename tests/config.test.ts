@@ -1,5 +1,11 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig, resolve } from "../src/config.ts";
@@ -154,4 +160,44 @@ test("a menu bar app has no toolbar", async () => {
     }),
   );
   expect(c.toolbar).toEqual([]);
+});
+
+test("inline: bakes the listed vars into the core, and only those", () => {
+  const d = app({
+    "package.json": JSON.stringify({
+      name: "envy",
+      steambun: { core: "core.ts", bun: "system", inline: ["ENVY_ID"] },
+    }),
+    "index.html": "<p>hi</p>",
+    "core.ts": "console.log(process.env.ENVY_ID, process.env.ENVY_TOKEN);",
+    // Bun loads .env on its own; a var that shares the name's prefix must
+    // not ship.
+    ".env": "ENVY_TOKEN=ghp_personal",
+  });
+  // Bun.build reads the env from when its process started, so build in a
+  // child, as `steambun build` runs from a shell.
+  const r = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      join(import.meta.dir, "../src/cli.ts"),
+      "build",
+      "--json",
+    ],
+    cwd: d,
+    env: { ...process.env, ENVY_ID: "abc123" },
+  });
+  expect(r.exitCode).toBe(0);
+  const out = JSON.parse(r.stdout.toString());
+  expect(out.steps[0].note).toContain("inlined ENVY_ID");
+  expect(out.steps[0].note).not.toContain("abc123");
+  const js = readFileSync(join(d, "build/core/core.js"), "utf8");
+  expect(js).toContain('"abc123"');
+  expect(js).not.toContain("ghp_personal");
+  expect(js).toContain("process.env.ENVY_TOKEN");
+});
+
+test("inline: a pattern is refused", () => {
+  expect(() => resolve({ name: "x", inline: ["ENVY_*"] }, "/tmp")).toThrow(
+    "exact name",
+  );
 });

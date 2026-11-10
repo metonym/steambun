@@ -159,6 +159,13 @@ export interface AppConfig {
   copyright?: string;
   /** LSApplicationCategoryType. */
   category?: string;
+  /**
+   * Env vars to bake into the built core, by exact name. Each
+   * `process.env.NAME` becomes the value set when `build` or `app` runs;
+   * a var that isn't set stays a run-time lookup. Anyone with a copy of
+   * the app can read these values, so never list a secret.
+   */
+  inline?: string[];
 }
 
 /** Type-check the config. Returns it unchanged. */
@@ -220,6 +227,11 @@ export function resolve(
   const id = c.id ?? `local.steambun.${name.toLowerCase()}`;
   if (!/^[A-Za-z][\w-]*(\.[A-Za-z][\w-]*)+$/.test(id))
     throw new Error(`steambun: bad id ${id}`);
+  for (const v of c.inline ?? [])
+    if (!/^[A-Za-z_]\w*$/.test(v))
+      throw new Error(
+        `steambun: bad inline name ${v}: list each env var by its exact name`,
+      );
   const core =
     c.core ?? CORE_ENTRIES.find((f) => existsSync(join(root, f))) ?? false;
   checkKeys([...(c.appMenu ?? []), ...Object.values(c.menus ?? {}).flat()]);
@@ -255,6 +267,7 @@ export function resolve(
     update: c.update ?? {},
     core: core || false,
     bun: c.bun ?? "bundled",
+    inline: c.inline ?? [],
     minBun: Bun.version.replace(/-.*/, ""),
     page: c.page ?? "index.html",
     bridge:
