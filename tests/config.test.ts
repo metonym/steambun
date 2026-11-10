@@ -196,6 +196,33 @@ test("inline: bakes the listed vars into the core, and only those", () => {
   expect(js).toContain("process.env.ENVY_TOKEN");
 });
 
+test("inline: a var that isn't set is a warning, not a value", () => {
+  const d = app({
+    "package.json": JSON.stringify({
+      name: "envy",
+      steambun: { core: "core.ts", bun: "system", inline: ["ENVY_UNSET"] },
+    }),
+    "index.html": "<p>hi</p>",
+    "core.ts": "console.log(process.env.ENVY_UNSET);",
+  });
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    NO_COLOR: "1",
+  };
+  delete env.ENVY_UNSET;
+  const r = Bun.spawnSync({
+    cmd: [process.execPath, join(import.meta.dir, "../src/cli.ts"), "build"],
+    cwd: d,
+    env,
+  });
+  expect(r.exitCode).toBe(0);
+  expect(r.stderr.toString()).toContain(
+    "! ENVY_UNSET isn't set, so the core reads it at run time",
+  );
+  const js = readFileSync(join(d, "build/core/core.js"), "utf8");
+  expect(js).toContain("process.env.ENVY_UNSET");
+});
+
 test("inline: a pattern is refused", () => {
   expect(() => resolve({ name: "x", inline: ["ENVY_*"] }, "/tmp")).toThrow(
     "exact name",
