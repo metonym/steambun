@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+**Fixes**
+
+- `serve()` refuses requests from other websites. A page on another site
+  could post to the core, open its socket, or read its replies through
+  DNS rebinding. A link from another site still opens a page.
+- `trusted()` and `sameOrigin()` are exported from `steambun/core`, for
+  routes and servers of your own.
+
 ## 0.1.0 — 2026-11-09
 
 The first release of steambun: a web page and an optional Bun core in a
