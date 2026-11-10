@@ -84,3 +84,47 @@ test("the app's sockets reach the app's handler", async () => {
   s2.stop(true);
   expect(got).toBe("echo hi");
 });
+
+const host = base.replace("http://", "");
+const at = (path: string, init?: RequestInit) => fetch(`${base}${path}`, init);
+
+test("a foreign Host is refused (DNS rebinding)", async () => {
+  const r = await at("/hi/bun", { headers: { host: "evil.example" } });
+  expect(r.status).toBe(403);
+  const f = await at("/x", {
+    headers: { host: `evil.example:${server.port}` },
+  });
+  expect(f.status).toBe(403);
+});
+
+test("a cross-site write is refused", async () => {
+  const put = (headers: Record<string, string>) =>
+    at("/_steambun/settings", { method: "PUT", headers, body: "{}" });
+  expect((await put({ origin: "https://evil.example" })).status).toBe(403);
+  expect((await put({ origin: "null" })).status).toBe(403);
+  expect((await put({ "sec-fetch-site": "cross-site" })).status).toBe(403);
+  // Another port on localhost is the same site but not the same origin.
+  expect((await put({ "sec-fetch-site": "same-site" })).status).toBe(403);
+});
+
+test("our pages, local processes and cross-site links still work", async () => {
+  const ours = { origin: `http://${host}`, "sec-fetch-site": "same-origin" };
+  const put = (headers: Record<string, string>) =>
+    at("/_steambun/settings", { method: "PUT", headers, body: "{}" });
+  expect((await put(ours)).status).toBe(200);
+  expect(
+    (await at("/hi/bun", { headers: { "sec-fetch-site": "none" } })).status,
+  ).toBe(200);
+  expect((await at("/hi/bun")).status).toBe(200);
+  const link = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" };
+  expect((await at("/x", { headers: link })).status).toBe(200);
+  // A navigation can't carry a write.
+  expect((await put(link)).status).toBe(403);
+});
+
+test("a foreign page can't open the app's socket", async () => {
+  const r = await at("/x", {
+    headers: { upgrade: "websocket", origin: "https://evil.example" },
+  });
+  expect(r.status).toBe(403);
+});

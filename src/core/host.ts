@@ -9,6 +9,7 @@
 //   /_steambun/ws           the native shell's link (token-checked)
 //   /_steambun/settings     durable UI settings (`settings: false` to drop)
 //   /_steambun/browser/…    browser panes and their agent API (`browser: false`)
+//   trusted()               a 403 for other websites, on every route
 //   STEAMBUN_READY <port>   on stdout once listening, under the shell only
 //   parent watch            exit when the shell dies, even by kill -9
 //
@@ -56,14 +57,78 @@ export interface ServeOptions<T, R extends string = string> {
   quiet?: boolean;
 }
 
-/** A page of ours: same host, loopback only. */
-function sameOrigin(req: Request): boolean {
+const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/;
+
+/**
+ * Stricter than trusted(): the request must come from a page on this
+ * server. Use it for routes that only the app's own page calls, such as
+ * one that runs a command. Local processes send no Origin, so they fail.
+ */
+export function sameOrigin(req: Request): boolean {
   const host = req.headers.get("host") ?? "";
-  if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return false;
+  if (!LOOPBACK.test(host)) return false;
   return req.headers.get("origin") === `http://${host}`;
 }
 
+/**
+ * The gate serve() puts in front of every request. The server listens on
+ * loopback, but a web page in any browser can still reach it. Two attacks:
+ *
+ * - DNS rebinding: a site points its own name at 127.0.0.1 and reads our
+ *   replies. Its requests carry its own Host, so we accept loopback names only.
+ * - Cross-site requests: a site posts to us, or opens a socket. Browsers
+ *   send Origin and Sec-Fetch-Site on these, so we refuse any other site.
+ *
+ * A request with neither header comes from a local process (an agent,
+ * the CLI, a test), which already runs as the user. A cross-site link
+ * may still open a page (a GET navigation), so a GET route must not write.
+ */
+export function trusted(req: Request): boolean {
+  const host = req.headers.get("host") ?? "";
+  if (!LOOPBACK.test(host)) return false;
+  const origin = req.headers.get("origin");
+  const site = req.headers.get("sec-fetch-site");
+  const ours =
+    (!origin || origin === `http://${host}`) &&
+    (!site || site === "same-origin" || site === "none");
+  if (ours) return true;
+  return (
+    (req.method === "GET" || req.method === "HEAD") &&
+    req.headers.get("sec-fetch-mode") === "navigate" &&
+    !req.headers.get("upgrade")
+  );
+}
+
 const forbidden = () => new Response("forbidden", { status: 403 });
+
+const METHODS = new Set([
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "OPTIONS",
+]);
+type Handler = (req: Request, srv: unknown) => unknown;
+
+/** Put trusted() in front of one route: a handler or a method map. */
+function guard(v: unknown): unknown {
+  if (typeof v === "function")
+    return (req: Request, srv: unknown) =>
+      trusted(req) ? (v as Handler)(req, srv) : forbidden();
+  if (
+    v &&
+    typeof v === "object" &&
+    !(v instanceof Response) &&
+    Object.keys(v).length > 0 &&
+    Object.keys(v).every((k) => METHODS.has(k))
+  )
+    return Object.fromEntries(Object.entries(v).map(([k, h]) => [k, guard(h)]));
+  // A static Response or an HTML bundle: Bun serves these before our code
+  // runs, and they are the same for every caller.
+  return v;
+}
 
 const isOurs = (
   ws: ServerWebSocket<unknown>,
@@ -105,8 +170,11 @@ export function serve<T = undefined, R extends string = never>(
     hostname: "127.0.0.1",
     idleTimeout: opts.idleTimeout,
     development: opts.development,
-    routes,
+    routes: Object.fromEntries(
+      Object.entries(routes).map(([k, v]) => [k, guard(v)]),
+    ),
     fetch(req, srv) {
+      if (!trusted(req)) return forbidden();
       const path = new URL(req.url).pathname;
       if (path === "/_steambun/ws") {
         if (!nativeAuth(req, srv.requestIP(req)?.address)) return forbidden();

@@ -15,6 +15,31 @@ route params included. It adds:
 | `/_steambun/settings`    | UI settings. `settings: false` turns it off.                |
 | `/_steambun/browser/:op` | Browser panes and their API. `browser: false` turns it off. |
 
+`serve()` also refuses requests from other websites with a 403. The
+server listens only on loopback, but any web page in your browser can
+still send it requests. So `serve()` checks every request with
+`trusted()`:
+
+- **The Host must be a loopback name** (`127.0.0.1`, `localhost` or
+  `[::1]`). This stops DNS rebinding.
+- **A browser request must come from your own page.** Browsers send
+  `Origin` and `Sec-Fetch-Site`, and `serve()` refuses any other site.
+- **A link from another site may still open a page.** It must be a GET
+  navigation, so a GET route must not change data.
+- **A request with neither header passes.** It comes from a local process,
+  such as the CLI, an agent or a test, which already runs as you.
+
+Static responses and HTML imports skip the check, since Bun serves them
+before your code runs. They are the same for every caller.
+
+For a route that only your page should call, such as one that runs a
+command, add `sameOrigin(req)`. It also refuses local processes:
+
+```ts
+"/api/run": (req) =>
+  sameOrigin(req) ? run(req) : new Response("forbidden", { status: 403 }),
+```
+
 ```ts
 import { Database } from "bun:sqlite";
 import { home, log, onSystem, serve } from "steambun/core";
@@ -48,7 +73,8 @@ onSystem(({ asleep, online, lowPower }) => {
 Other exports: `home(...parts)` for paths in the data folder,
 `jsonSettings()` and the `SettingsStore` type for your own store,
 `log`/`logger`, `spawnEnv()` and `which()` for the login shell's `PATH`,
-`nativeLinked()`/`waitLinked()`, and `setHome(dir)` to move the data
+`nativeLinked()`/`waitLinked()`, `trusted()` and `sameOrigin()` for a
+server you start yourself, and `setHome(dir)` to move the data
 folder when no shell runs the core.
 
 Keep long-lived resources (timers, child processes, sockets) on
