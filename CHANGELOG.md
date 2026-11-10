@@ -5,7 +5,8 @@
 **Features**
 
 - `inline` in the config bakes env vars into the built core, by exact
-  name. `build` and `app` print the names they inlined.
+  name. `build` and `app` print the names they inlined, and warn about
+  any that weren't set.
 
 **Fixes**
 

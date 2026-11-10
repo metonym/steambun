@@ -207,6 +207,7 @@ export async function build(
       .join(" · "),
     ms: since(t0),
   });
+  warnUnset(c);
 }
 
 /**
@@ -215,12 +216,29 @@ export async function build(
  */
 function inlined(c: Resolved) {
   const set = c.inline.filter((v) => Bun.env[v] !== undefined);
+  const unset = c.inline.filter((v) => Bun.env[v] === undefined);
   return {
     define: Object.fromEntries(
       set.map((v) => [`process.env.${v}`, JSON.stringify(Bun.env[v])]),
     ),
-    note: set.length > 0 ? `inlined ${set.join(", ")}` : undefined,
+    note:
+      [
+        set.length > 0 && `inlined ${set.join(", ")}`,
+        unset.length > 0 && `not set: ${unset.join(", ")}`,
+      ]
+        .filter(Boolean)
+        .join(" · ") || undefined,
+    unset,
   };
+}
+
+/** Say which `inline` vars weren't set, so a release can't miss one quietly. */
+function warnUnset(c: Resolved) {
+  const { unset } = inlined(c);
+  if (unset.length > 0)
+    warn(
+      `${unset.join(", ")} ${unset.length === 1 ? "isn't" : "aren't"} set, so the core reads ${unset.length === 1 ? "it" : "them"} at run time`,
+    );
 }
 
 /**
@@ -249,6 +267,7 @@ async function buildScript(c: Resolved, entry: string) {
       .filter(Boolean)
       .join(" · "),
   });
+  warnUnset(c);
 }
 
 /**

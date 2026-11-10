@@ -57,8 +57,15 @@ export default defineApp({
 OAuth client ID, into the built core. `build` and `app` replace each
 `process.env.NAME` you list with its value in the shell that runs them,
 and print the names they inlined. A var that isn't set stays a lookup at
-run time. `dev` runs the core with your shell's env, so the code works
-the same in both.
+run time, and the build warns you:
+
+```
+✓ core   build/core/MyApp · 58 MB · AOT, trimmed · not set: MYAPP_GITHUB_CLIENT_ID · 1.4 s
+! MYAPP_GITHUB_CLIENT_ID isn't set, so the core reads it at run time
+```
+
+`dev` runs the core with your shell's env, so `process.env.NAME` gives
+the same value in `dev` as in a build.
 
 ```ts
 inline: ["MYAPP_GITHUB_CLIENT_ID"],
