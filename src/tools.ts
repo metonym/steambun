@@ -194,6 +194,7 @@ export async function build(
     plugins: await plugins(c),
     minify: true,
     target: "bun",
+    define: inlined(c).define,
     throw: false,
   });
   buildResult(r, "the core");
@@ -201,9 +202,25 @@ export async function build(
     step: "core",
     path: shown(outfile),
     bytes: bytes(outfile),
-    note: aot ? "AOT, trimmed" : "JIT",
+    note: [aot ? "AOT, trimmed" : "JIT", inlined(c).note]
+      .filter(Boolean)
+      .join(" · "),
     ms: since(t0),
   });
+}
+
+/**
+ * `inline` as Bun's `define`: exact names only, so a var that merely
+ * shares a prefix (say, a token in .env) never ships in the app.
+ */
+function inlined(c: Resolved) {
+  const set = c.inline.filter((v) => Bun.env[v] !== undefined);
+  return {
+    define: Object.fromEntries(
+      set.map((v) => [`process.env.${v}`, JSON.stringify(Bun.env[v])]),
+    ),
+    note: set.length > 0 ? `inlined ${set.join(", ")}` : undefined,
+  };
 }
 
 /**
@@ -220,6 +237,7 @@ async function buildScript(c: Resolved, entry: string) {
     plugins: await plugins(c),
     minify: true,
     target: "bun",
+    define: inlined(c).define,
     throw: false,
   });
   buildResult(r, "the core");
@@ -227,7 +245,9 @@ async function buildScript(c: Resolved, entry: string) {
     step: "core",
     path: shown(outdir),
     bytes: r.outputs.reduce((n, o) => n + o.size, 0),
-    note: `runs on bun ${c.minBun} or later`,
+    note: [`runs on bun ${c.minBun} or later`, inlined(c).note]
+      .filter(Boolean)
+      .join(" · "),
   });
 }
 

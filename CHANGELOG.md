@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Features**
+
+- `inline` in the config bakes env vars into the built core, by exact
+  name. `build` and `app` print the names they inlined.
+
 **Fixes**
 
 - `serve()` refuses requests from other websites. A page on another site

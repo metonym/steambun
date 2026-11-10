@@ -47,10 +47,30 @@ export default defineApp({
 | `plist`   | none                                                       | Extra `Info.plist` keys                                                                                                                                                                                      |
 | `core`    | `core.ts` or `core/index.ts`, if one exists                | The core's entry file. `false`: no core, so the app is the page and the shell.                                                                                                                               |
 | `bun`     | `"bundled"`                                                | `"system"` runs the core on the user's Bun. See [Run the core on the user's Bun](guide.md#run-the-core-on-the-users-bun).                                                                                    |
+| `inline`  | none                                                       | Env vars to bake into the built core, by exact name. See below.                                                                                                                                              |
 | `page`    | `index.html`                                               | The page's HTML entry, when there's no core                                                                                                                                                                  |
 | `bridge`  | `native/bridge.ts`, if it exists                           | Your own native ops                                                                                                                                                                                          |
 | `swift`   | `native/Sources`                                           | Your Swift files                                                                                                                                                                                             |
 | `out`     | `build`                                                    | Where all output goes: the `.app`, the page, the core                                                                                                                                                        |
+
+`inline` bakes values that the core needs on every Mac, such as an
+OAuth client ID, into the built core. `build` and `app` replace each
+`process.env.NAME` you list with its value in the shell that runs them,
+and print the names they inlined. A var that isn't set stays a lookup at
+run time. `dev` runs the core with your shell's env, so the code works
+the same in both.
+
+```ts
+inline: ["MYAPP_GITHUB_CLIENT_ID"],
+```
+
+```sh
+MYAPP_GITHUB_CLIENT_ID=Iv1.abc123 bunx steambun app
+```
+
+List each var by its exact name. Bun loads `.env` files on its own, so a
+prefix could pick up a token you never meant to ship. Anyone with a copy
+of the app can read an inlined value, so never list a secret.
 
 A menu item is `"-"` for a separator, a standard role (`"copy"`,
 `"reload"`, `"fullscreen"`, …), or `{ title, command, key? }`. A command
